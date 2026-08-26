@@ -1,12 +1,12 @@
 -- blueprint_placer.lua
--- Modular system for directing an air constructor to build a blueprint.
+-- Modular system for directing a constructor to build a blueprint.
 -- VFS.Include this file in any widget.
 --
 -- Usage:
 --   local BP_PLACER = VFS.Include("LuaUI/Widgets/blueprint_placer.lua")
 --   local bp        = VFS.Include("LuaUI/Widgets/blueprints/general/mex_grid_aa_corner.lua")
 --
---   local state = BP_PLACER.New(bp, airConID, anchorX, anchorZ, rotation)
+--   local state = BP_PLACER.New(bp, builderID, anchorX, anchorZ, rotation)
 --   -- each frame:
 --   BP_PLACER.Update(state, frame, resources)   -- resources={metal,metalStorage,energy,energyStorage}
 --   -- on UnitFinished:
@@ -200,10 +200,10 @@ local function FindNextOfClass(queue, cls)
 end
 
 -- Issue a build order for a task item.
-local function IssueBuildTask(airConID, item)
+local function IssueBuildTask(builderID, item)
     if not item.defID then return false end
     local wy = Spring.GetGroundHeight(item.wx, item.wz) or 0
-    Spring.GiveOrderToUnit(airConID, -item.defID, {item.wx, wy, item.wz, item.f}, {})
+    Spring.GiveOrderToUnit(builderID, -item.defID, {item.wx, wy, item.wz, item.f}, {})
     return true
 end
 
@@ -255,12 +255,12 @@ end
 
 -- Create a new placer session.
 -- interrupts: optional list of interrupt definitions; defaults to M.DEFAULT_INTERRUPTS.
-function M.New(blueprint, airConID, anchorX, anchorZ, rotation, interrupts)
+function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
     rotation = rotation or 0
     local queue = BuildQueue(blueprint, anchorX, anchorZ, rotation)
     return {
         blueprint       = blueprint,
-        airConID        = airConID,
+        builderID       = builderID,
         anchorX         = anchorX,
         anchorZ         = anchorZ,
         rotation        = rotation,
@@ -320,20 +320,20 @@ end
 function M.Update(state, frame, resources)
     if state.done then return end
 
-    local airConID = state.airConID
-    if not Spring.GetUnitDefID(airConID) then
+    local builderID = state.builderID
+    if not Spring.GetUnitDefID(builderID) then
         state.done = true
         return
     end
 
-    local cmds   = Spring.GetUnitCommands(airConID, 1)
+    local cmds   = Spring.GetUnitCommands(builderID, 1)
     local isBusy = cmds and #cmds > 0
 
     if isBusy then
-        -- Air con is working.  Only interrupt for an incoming enemy threat.
+        -- Builder is working.  Only interrupt for an incoming enemy threat.
         local intr = EvalInterrupts(state, resources, frame)
         if intr and intr.isExternal and state.activeInterrupt ~= intr.name then
-            Spring.GiveOrderToUnit(airConID, CMD_STOP, {}, {})
+            Spring.GiveOrderToUnit(builderID, CMD_STOP, {}, {})
             state.activeInterrupt = intr.name
             -- currentTask was cancelled; it will be retried when idle
         end
@@ -371,7 +371,7 @@ function M.Update(state, frame, resources)
             elseif not state.lltPending then
                 local spot = FindLLTSpot(state.anchorX, state.anchorZ)
                 if spot then
-                    Spring.GiveOrderToUnit(airConID, -spot.defID, {spot.wx, spot.wy, spot.wz, spot.f}, {})
+                    Spring.GiveOrderToUnit(builderID, -spot.defID, {spot.wx, spot.wy, spot.wz, spot.f}, {})
                     state.lltPending = true
                 else
                     state.paused = true
@@ -386,7 +386,7 @@ function M.Update(state, frame, resources)
         -- Resource interrupt: jump to next unbuilt task of required class.
         local task = FindNextOfClass(state.queue, intr.buildType)
         if task then
-            IssueBuildTask(airConID, task)
+            IssueBuildTask(builderID, task)
             state.currentTask = task
         else
             -- Nothing of this class left — pause until resource recovers.
@@ -399,7 +399,7 @@ function M.Update(state, frame, resources)
     state.activeInterrupt = nil
     for _, item in ipairs(state.queue) do
         if not item.built then
-            IssueBuildTask(airConID, item)
+            IssueBuildTask(builderID, item)
             state.currentTask = item
             return
         end
