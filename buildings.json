@@ -1,0 +1,94 @@
+{
+  "buildings": [
+    {
+      "id": "e102f759-6678-4126-968b-4eae51356765",
+      "displayName": "Mex",
+      "unitDef": "cormex",
+      "width": 4,
+      "height": 4,
+      "category": "mt1",
+      "color": "#aab6b0"
+    },
+    {
+      "id": "d9a49564-b71b-448b-a324-28ca1eba4521",
+      "displayName": "Wind",
+      "unitDef": "corwin",
+      "width": 3,
+      "height": 3,
+      "category": "et1",
+      "color": "#a3970f"
+    },
+    {
+      "id": "b97def8a-8575-43c7-ba64-9e6f42929f0d",
+      "displayName": "CT",
+      "unitDef": "cornanotc",
+      "width": 3,
+      "height": 3,
+      "category": "bp",
+      "color": "#4c4b91"
+    },
+    {
+      "id": "631bc263-d0d4-4386-91b7-806031c7c0bc",
+      "displayName": "LAA",
+      "unitDef": "corrl",
+      "width": 3,
+      "height": 3,
+      "category": "General",
+      "color": "#914b4e"
+    },
+    {
+      "id": "4308dbd9-79b7-4cc1-b8bf-250532fac9c7",
+      "displayName": "Air T1",
+      "unitDef": "corap",
+      "width": 9,
+      "height": 6,
+      "category": "corap",
+      "color": "#60061d"
+    },
+    {
+      "id": "749d863c-0ae6-44f6-a4bf-642a1a860649",
+      "displayName": "BotT1",
+      "unitDef": "corlab",
+      "width": 6,
+      "height": 6,
+      "category": "bott1",
+      "color": "#8e1016"
+    },
+    {
+      "id": "3d76e1e8-b818-46f2-b4c8-964d41f2cccd",
+      "displayName": "Vech T1",
+      "unitDef": "corvp",
+      "width": 6,
+      "height": 6,
+      "category": "corvp",
+      "color": "#ab1212"
+    },
+    {
+      "id": "63c434d5-cdd8-4e4a-9956-1c2e10a13909",
+      "displayName": "com",
+      "unitDef": "com",
+      "width": 2,
+      "height": 2,
+      "category": "General",
+      "color": "#4a8f6b"
+    },
+    {
+      "id": "639149de-5939-4b04-abbc-c89086d47f60",
+      "displayName": "bot",
+      "unitDef": "bot",
+      "width": 2,
+      "height": 2,
+      "category": "General",
+      "color": "#4a8f6b"
+    },
+    {
+      "id": "e7db7785-b167-44cb-88c9-9793611ccd15",
+      "displayName": "mex_grid",
+      "unitDef": "mex_grid",
+      "width": 2,
+      "height": 2,
+      "category": "General",
+      "color": "#4a8f6b"
+    }
+  ]
+}

@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAR Blueprint Editor</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+  background: #0d1117;
+  color: #c9d1d9;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.toolbar-group { display: flex; align-items: center; gap: 4px; }
+.toolbar-sep { width: 1px; height: 22px; background: #30363d; margin: 0 2px; }
+
+button {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  padding: 3px 9px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+button:hover { background: #30363d; border-color: #484f58; }
+button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+button.primary:hover { background: #388bfd; }
+button.success { background: #1a4731; border-color: #2ea043; color: #7ee787; }
+button.success:hover { background: #238636; }
+button.warning { background: #3d2b0a; border-color: #d29922; color: #e3b341; }
+button.warning:hover { background: #9e6a03; }
+button.danger { background: #3d0c0c; border-color: #f85149; color: #ff7b72; }
+button.danger:hover { background: #8b0000; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+input[type=text], input[type=number] {
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+}
+input[type=text]:focus, input[type=number]:focus { border-color: #388bfd; }
+input[type=color] {
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: #21262d;
+  cursor: pointer;
+  width: 36px;
+  height: 24px;
+  padding: 1px;
+}
+
+label { font-size: 12px; color: #8b949e; }
+
+/* ── Main layout ── */
+#main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Palette ── */
+#palette {
+  width: 210px;
+  background: #161b22;
+  border-right: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#palette-header {
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-bottom: 1px solid #30363d;
+}
+#palette-search { width: 100%; }
+#category-filter { display: flex; flex-wrap: wrap; gap: 3px; }
+.cat-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  background: #21262d;
+  cursor: pointer;
+}
+.cat-btn.active { background: #1f6feb; border-color: #388bfd; color: #fff; }
+#palette-list { flex: 1; overflow-y: auto; padding: 4px; }
+.palette-card {
+  background: #21262d;
+  border: 2px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.palette-card:hover { background: #2d333b; border-color: #58a6ff; }
+.palette-card.armed { border-color: #f0883e; background: #2d1f12; cursor: crosshair; }
+.palette-card:active { cursor: grabbing; }
+.pal-swatch { width: 26px; height: 26px; border-radius: 4px; flex-shrink: 0; }
+.pal-info { flex: 1; min-width: 0; }
+.pal-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pal-meta { font-size: 10px; color: #8b949e; }
+#palette-footer {
+  padding: 7px;
+  border-top: 1px solid #30363d;
+  display: flex;
+  gap: 5px;
+}
+#palette-footer button { flex: 1; font-size: 11px; padding: 4px; }
+
+/* ── Canvas area ── */
+#canvas-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #090d13;
+  min-width: 0;
+}
+#grid-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  touch-action: none;
+}
+#canvas-status {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: rgba(22,27,34,0.88);
+  border-top: 1px solid #30363d;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: #8b949e;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  height: 20px;
+}
+.s-coord { color: #79c0ff; }
+.s-conflict { color: #f85149; }
+
+/* ── Inspector ── */
+#inspector {
+  width: 190px;
+  background: #161b22;
+  border-left: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+#inspector h4 {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid #30363d;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#inspector-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#insp-empty { font-size: 12px; color: #3d444e; text-align: center; padding-top: 20px; }
+#insp-content { display: none; flex-direction: column; gap: 10px; }
+.irow { display: flex; flex-direction: column; gap: 3px; }
+.irow label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+.irow span { font-size: 12px; word-break: break-all; }
+.irow input[type=number] { width: 70px; font-size: 12px; }
+.facing-big { font-size: 28px; text-align: center; line-height: 1; }
+.facing-hint { font-size: 10px; color: #484f58; text-align: center; }
+#insp-content button { font-size: 11px; padding: 4px; margin-top: 4px; }
+
+/* ── Modals ── */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+.overlay.hidden { display: none; }
+.modal {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 18px 20px;
+  min-width: 360px;
+  max-width: 580px;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.modal h3 { font-size: 15px; font-weight: 600; padding-bottom: 10px; border-bottom: 1px solid #30363d; }
+.fg { display: flex; flex-direction: column; gap: 4px; }
+.fg label { font-size: 11px; color: #8b949e; }
+.fg input, .fg select { width: 100%; }
+.frow { display: flex; gap: 10px; }
+.frow .fg { flex: 1; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 4px; }
+.scrollable-list {
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid #30363d; border-radius: 6px;
+}
+.list-item {
+  display: flex; align-items: center;
+  padding: 7px 10px; gap: 8px;
+  border-bottom: 1px solid #21262d; cursor: pointer;
+}
+.list-item:last-child { border-bottom: none; }
+.list-item:hover { background: #21262d; }
+.li-name { flex: 1; font-size: 12px; }
+.li-meta { font-size: 11px; color: #8b949e; }
+.shortcuts-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.shortcuts-tbl th { text-align: left; padding: 4px 8px; color: #8b949e; font-weight: 600; border-bottom: 1px solid #30363d; }
+.shortcuts-tbl td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
+.shortcuts-tbl td:first-child { font-family: monospace; color: #79c0ff; white-space: nowrap; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <div class="toolbar-group">
+    <button id="btn-new">New</button>
+    <button id="btn-load">Load…</button>
+    <button id="btn-save">Save…</button>
+  </div>
+  <div class="toolbar-sep"></div>
+  <div class="toolbar-group">
+    <button id="btn-import-lua">Import Lua…</button>
+    <button id="btn-import-bar">Import BAR…</button>
+  </div>
+  <div class="toolbar-sep"></div>
+  <div class="toolbar-group">
+    <button id="btn-export-lua" class="success">↓ Bot Lua</button>
+    <button id="btn-export-bar" class="primary">↑ BAR JSON</button>
+  </div>
+  <div class="toolbar-sep"></div>
+  <div class="toolbar-group">
+    <label>Name:</label>
+    <input type="text" id="bp-name" value="Untitled" style="width:130px">
+  </div>
+  <div class="toolbar-group">
+    <label>Grid:</label>
+    <input type="number" id="gw" value="40" min="5" max="300" style="width:46px">
+    <label>×</label>
+    <input type="number" id="gh" value="40" min="5" max="300" style="width:46px">
+    <button id="btn-center-view" title="Center view on grid">⊙</button>
+  </div>
+  <div class="toolbar-sep"></div>
+  <div class="toolbar-group">
+    <button id="btn-undo" title="Ctrl+Z">↩</button>
+    <button id="btn-redo" title="Ctrl+Y">↪</button>
+  </div>
+  <div class="toolbar-group" style="margin-left:auto">
+    <button id="btn-bld-file" class="warning" title="Pick buildings database file">Bld File</button>
+    <button id="btn-reset-bar" title="Forget saved BAR blueprints.json path" style="font-size:10px;padding:2px 6px">Reset BAR</button>
+    <button id="btn-help">?</button>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Palette -->
+  <div id="palette">
+    <div id="palette-header">
+      <input type="text" id="palette-search" placeholder="Search…">
+      <div id="category-filter"></div>
+    </div>
+    <div id="palette-list"></div>
+    <div id="palette-footer">
+      <button id="btn-add-bld">+ Add</button>
+      <button id="btn-edit-blds">Edit</button>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="canvas-wrap">
+    <canvas id="grid-canvas"></canvas>
+    <div id="canvas-status">
+      <span class="s-coord" id="s-coords">x=0  z=0</span>
+      <span class="s-conflict" id="s-conflict"></span>
+      <span id="s-zoom">100%</span>
+      <span id="s-bld-file" style="margin-left:auto;color:#484f58">No buildings file</span>
+    </div>
+  </div>
+
+  <!-- Inspector -->
+  <div id="inspector">
+    <h4>Inspector</h4>
+    <div id="inspector-body">
+      <div id="insp-empty">Select a building</div>
+      <div id="insp-content">
+        <div class="irow"><label>Building</label><span id="ii-name">–</span></div>
+        <div class="irow"><label>Unit Def</label><span id="ii-udef">–</span></div>
+        <div class="irow"><label>Natural Size</label><span id="ii-size">–</span></div>
+        <div class="irow">
+          <label>Facing</label>
+          <div class="facing-big" id="ii-facing">→</div>
+          <div class="facing-hint">R to rotate</div>
+        </div>
+        <div class="irow">
+          <label>Build Order</label>
+          <input type="number" id="ii-order" min="1">
+        </div>
+        <button class="danger" id="btn-del-sel">Delete  [Del]</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODALS ══ -->
+
+<!-- Add/Edit Building -->
+<div class="overlay hidden" id="modal-bld">
+  <div class="modal">
+    <h3 id="modal-bld-title">Add Building</h3>
+    <div class="fg"><label>Display Name</label><input type="text" id="bld-dname" placeholder="e.g. Metal Extractor"></div>
+    <div class="fg"><label>Unit Def (internal name)</label><input type="text" id="bld-udef" placeholder="e.g. cormex"></div>
+    <div class="frow">
+      <div class="fg"><label>Width (cells)</label><input type="number" id="bld-w" value="2" min="1" max="50"></div>
+      <div class="fg"><label>Height (cells)</label><input type="number" id="bld-h" value="2" min="1" max="50"></div>
+    </div>
+    <div class="fg"><label>Category</label><input type="text" id="bld-cat" placeholder="e.g. Economy, Defense, Production"></div>
+    <div class="fg"><label>Color</label><input type="color" id="bld-color" value="#4a8f6b"></div>
+    <div class="modal-actions">
+      <button id="btn-bld-cancel">Cancel</button>
+      <button id="btn-bld-ok" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Buildings List -->
+<div class="overlay hidden" id="modal-editblds">
+  <div class="modal">
+    <h3>Edit Buildings</h3>
+    <div class="scrollable-list" id="editbld-list"></div>
+    <div class="modal-actions"><button id="btn-editblds-close">Close</button></div>
+  </div>
+</div>
+
+<!-- Import BAR – pick blueprint -->
+<div class="overlay hidden" id="modal-barlist">
+  <div class="modal">
+    <h3>Select Blueprint to Import</h3>
+    <p style="font-size:12px;color:#8b949e">Click a blueprint to load it onto the grid.</p>
+    <div class="scrollable-list" id="barlist"></div>
+    <div class="modal-actions"><button id="btn-barlist-cancel">Cancel</button></div>
+  </div>
+</div>
+
+<!-- BAR paste-and-download modal -->
+<div class="overlay hidden" id="modal-bar-paste">
+  <div class="modal" style="min-width:480px">
+    <h3>Save to BAR blueprints.json</h3>
+    <p style="font-size:12px;color:#8b949e;line-height:1.5">
+      Chrome blocks direct access to the AppData folder.<br>
+      <strong style="color:#c9d1d9">1.</strong> Open your <code style="color:#79c0ff">blueprints.json</code> in a text editor<br>
+      &nbsp;&nbsp;&nbsp;<span style="color:#484f58">%LOCALAPPDATA%\Programs\Beyond-All-Reason\data\LuaUI\Config\blueprints.json</span><br>
+      <strong style="color:#c9d1d9">2.</strong> Select-all, copy, and paste it into the box below<br>
+      <strong style="color:#c9d1d9">3.</strong> Click <em>Append &amp; Download</em> — then replace your original file with the download
+    </p>
+    <div class="fg">
+      <label>Paste blueprints.json contents here</label>
+      <textarea id="bar-paste-area" rows="8" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:7px;font-family:monospace;font-size:11px;resize:vertical;outline:none" placeholder='{"savedBlueprints":[...]}'></textarea>
+    </div>
+    <p id="bar-paste-status" style="font-size:11px;color:#8b949e;min-height:16px"></p>
+    <div class="modal-actions">
+      <button id="btn-bar-paste-cancel">Cancel</button>
+      <button id="btn-bar-paste-ok" class="primary">Append &amp; Download</button>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts -->
+<div class="overlay hidden" id="modal-help">
+  <div class="modal">
+    <h3>Keyboard Shortcuts</h3>
+    <table class="shortcuts-tbl">
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td>Click palette → click grid</td><td>Place building</td></tr>
+        <tr><td>Drag from palette → drop on grid</td><td>Place building</td></tr>
+        <tr><td>Drag placed building</td><td>Move building</td></tr>
+        <tr><td>Drag on empty grid</td><td>Box-select multiple</td></tr>
+        <tr><td>Shift + click</td><td>Add to selection</td></tr>
+        <tr><td>R</td><td>Rotate selected building(s)</td></tr>
+        <tr><td>Delete / Backspace</td><td>Delete selected</td></tr>
+        <tr><td>Escape</td><td>Cancel / deselect</td></tr>
+        <tr><td>Ctrl+Z</td><td>Undo</td></tr>
+        <tr><td>Ctrl+Y</td><td>Redo</td></tr>
+        <tr><td>Ctrl+C</td><td>Copy selection</td></tr>
+        <tr><td>Ctrl+V</td><td>Paste</td></tr>
+        <tr><td>Scroll wheel</td><td>Zoom</td></tr>
+        <tr><td>Middle-click drag / Space+drag</td><td>Pan</td></tr>
+        <tr><td>?</td><td>This help</td></tr>
+      </tbody>
+    </table>
+    <div class="modal-actions"><button id="btn-help-close">Close</button></div>
+  </div>
+</div>
+
+<!-- Hidden file inputs (fallback when FSA not available) -->
+<input type="file" id="fi-load"       accept=".json"       style="display:none">
+<input type="file" id="fi-lua"        accept=".lua,.txt"   style="display:none">
+<input type="file" id="fi-bar"        accept=".json"       style="display:none">
+<input type="file" id="fi-bldfile"    accept=".json"       style="display:none">
+
+<script>
+'use strict';
+// ─── Constants ────────────────────────────────────────────────────────────────
+const CELL   = 24;   // px per cell at zoom 1
+const WU     = 16;   // world units per cell
+const MAX_UNDO = 60;
+const ARROWS = ['↑','→','↓','←'];
+const FACING_NAME = ['North','East','South','West'];
+const CAT_COLORS = [
+  '#4a8f6b','#6b8f4a','#4a6b8f','#8f4a6b','#8f6b4a',
+  '#4a8f8f','#8f8f4a','#6b4a8f','#4a4a8f','#8f4a4a',
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let db  = { buildings: [] };
+let dbHandle  = null;
+let barHandle = null;
+
+let state = { name:'Untitled', gw:40, gh:40, placements:[] };
+let undoStack = [], redoStack = [];
+
+// View
+let vScale = 1, vX = 0, vY = 0;
+
+// Interaction
+let armedId   = null;   // building ID armed from palette
+let selIds    = new Set();
+let clipboard = [];
+
+let iMode = null;       // 'move'|'select'|'pan'
+let dragPx  = {x:0,y:0};
+let dragCell= {c:0,r:0};
+let moveState = null;   // {items:[{id,oc,or}], adc, adr}
+let selBox  = null;     // {x1,y1,x2,y2}
+let spaceDown = false;
+let hover   = {c:-1,r:-1};
+let curDragBldId = null; // building being HTML-dragged from palette
+
+let conflicts = new Set();
+let needRender= false;
+let rafId     = null;
+
+const FSA = 'showOpenFilePicker' in window;
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+function uid() {
+  return crypto.randomUUID ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2)+Date.now().toString(36);
+}
+
+function hexRgba(hex,a){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function clampText(ctx,txt,maxW){
+  if(ctx.measureText(txt).width<=maxW) return txt;
+  while(txt.length>1&&ctx.measureText(txt+'…').width>maxW) txt=txt.slice(0,-1);
+  return txt+'…';
+}
+
+// ─── IndexedDB ────────────────────────────────────────────────────────────────
+function openIDB(){
+  return new Promise((ok,err)=>{
+    const q=indexedDB.open('bar-bp-editor',1);
+    q.onupgradeneeded=e=>e.target.result.createObjectStore('h',{keyPath:'k'});
+    q.onsuccess=e=>ok(e.target.result);
+    q.onerror=e=>err(e.target.error);
+  });
+}
+async function idbSave(key,val){
+  const d=await openIDB();
+  return new Promise((ok,er)=>{const t=d.transaction('h','readwrite');t.objectStore('h').put({k:key,v:val});t.oncomplete=ok;t.onerror=er;});
+}
+async function idbLoad(key){
+  const d=await openIDB();
+  return new Promise(ok=>{const t=d.transaction('h','readonly');const q=t.objectStore('h').get(key);q.onsuccess=e=>ok(e.target.result?.v??null);q.onerror=()=>ok(null);});
+}
+async function idbDel(key){
+  const d=await openIDB();
+  return new Promise(ok=>{const t=d.transaction('h','readwrite');t.objectStore('h').delete(key);t.oncomplete=ok;t.onerror=ok;});
+}
+
+// ─── FSA helpers ─────────────────────────────────────────────────────────────
+async function getPerm(h,write=false){
+  const o={mode:write?'readwrite':'read'};
+  if(await h.queryPermission(o)==='granted') return true;
+  return await h.requestPermission(o)==='granted';
+}
+async function readH(h){ const f=await h.getFile(); return f.text(); }
+async function writeH(h,txt){ const w=await h.createWritable(); await w.write(txt); await w.close(); }
+function dlText(name,txt){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));
+  a.download=name; a.click();
+}
+
+// ─── Buildings DB ─────────────────────────────────────────────────────────────
+function getBld(id){ return db.buildings.find(b=>b.id===id)||null; }
+function getBldByDef(def){ return db.buildings.find(b=>b.unitDef.toLowerCase()===def.toLowerCase())||null; }
+
+function catColor(cat){
+  const cats=[...new Set(db.buildings.map(b=>b.category).filter(Boolean))].sort();
+  return CAT_COLORS[cats.indexOf(cat)%CAT_COLORS.length]||CAT_COLORS[0];
+}
+
+async function saveDB(){
+  const j=JSON.stringify(db,null,2);
+  if(dbHandle && await getPerm(dbHandle,true)) await writeH(dbHandle,j);
+}
+
+async function applyDBHandle(h){
+  dbHandle=h;
+  await idbSave('bld-h',h);
+  const txt=await readH(h);
+  try{
+    db=JSON.parse(txt);
+    if(!Array.isArray(db.buildings)) db.buildings=[];
+  }catch{
+    // File was empty or not valid JSON — initialise it
+    db={buildings:[]};
+    await saveDB();
+  }
+  el('s-bld-file').textContent='Bld: '+h.name;
+  renderPalette();
+}
+
+// ─── Effective size (swap w/h when facing E or W) ─────────────────────────────
+function effSz(bld,facing){
+  const rot=facing===1||facing===3;
+  return { w:rot?bld.height:bld.width, h:rot?bld.width:bld.height };
+}
+
+// ─── Coordinate conversion ────────────────────────────────────────────────────
+function gc(){ return { c:Math.floor(state.gw/2), r:Math.floor(state.gh/2) }; }
+
+function toWorld(p){
+  const b=getBld(p.buildingId); if(!b) return {x:0,z:0};
+  const {w,h}=effSz(b,p.facing), g=gc();
+  return { x:Math.round((p.col+w/2-g.c)*WU), z:Math.round((p.row+h/2-g.r)*WU) };
+}
+
+function fromWorld(wx,wz,bld,facing){
+  const {w,h}=effSz(bld,facing), g=gc();
+  return { col:Math.round(wx/WU-w/2+g.c), row:Math.round(wz/WU-h/2+g.r) };
+}
+
+// ─── Pixel ↔ cell ─────────────────────────────────────────────────────────────
+function pxToCell(px,py){ return {c:Math.floor((px-vX)/(CELL*vScale)), r:Math.floor((py-vY)/(CELL*vScale))}; }
+function cellPx(c,r){ return {x:c*CELL*vScale+vX, y:r*CELL*vScale+vY}; }
+
+// ─── Hit test ─────────────────────────────────────────────────────────────────
+function hitAt(c,r){
+  for(let i=state.placements.length-1;i>=0;i--){
+    const p=state.placements[i], b=getBld(p.buildingId); if(!b) continue;
+    const {w,h}=effSz(b,p.facing);
+    if(c>=p.col&&c<p.col+w&&r>=p.row&&r<p.row+h) return p;
+  }
+  return null;
+}
+
+// ─── Conflicts ────────────────────────────────────────────────────────────────
+function recomputeConflicts(){
+  const cnt=new Map();
+  for(const p of state.placements){
+    const b=getBld(p.buildingId); if(!b) continue;
+    const {w,h}=effSz(b,p.facing);
+    for(let dc=0;dc<w;dc++) for(let dr=0;dr<h;dr++){
+      const k=`${p.col+dc},${p.row+dr}`;
+      cnt.set(k,(cnt.get(k)||0)+1);
+    }
+  }
+  conflicts.clear();
+  for(const[k,v] of cnt) if(v>1) conflicts.add(k);
+  const n=conflicts.size;
+  el('s-conflict').textContent=n>0?`⚠ ${n} overlap`:'';
+}
+
+// ─── Undo/Redo ────────────────────────────────────────────────────────────────
+function pushUndo(){ undoStack.push(JSON.stringify(state.placements)); if(undoStack.length>MAX_UNDO) undoStack.shift(); redoStack=[]; }
+function undo(){
+  if(!undoStack.length) return;
+  redoStack.push(JSON.stringify(state.placements));
+  state.placements=JSON.parse(undoStack.pop());
+  selIds.clear(); recomputeConflicts(); updateInspector(); sched();
+}
+function redo(){
+  if(!redoStack.length) return;
+  undoStack.push(JSON.stringify(state.placements));
+  state.placements=JSON.parse(redoStack.pop());
+  selIds.clear(); recomputeConflicts(); updateInspector(); sched();
+}
+
+// ─── Build order ─────────────────────────────────────────────────────────────
+function normalizeOrder(){ state.placements.sort((a,b)=>a.buildOrder-b.buildOrder).forEach((p,i)=>p.buildOrder=i+1); }
+
+function swapOrder(pid,target){
+  pushUndo();
+  const p=state.placements.find(x=>x.id===pid);
+  const other=state.placements.find(x=>x.buildOrder===target);
+  if(!p) return;
+  const old=p.buildOrder;
+  p.buildOrder=target;
+  if(other) other.buildOrder=old;
+  normalizeOrder(); updateInspector(); sched();
+}
+
+// ─── Placement ops ────────────────────────────────────────────────────────────
+function place(buildingId,col,row,facing=0){
+  pushUndo();
+  const maxO=state.placements.length?Math.max(...state.placements.map(p=>p.buildOrder)):0;
+  state.placements.push({id:uid(),buildingId,col,row,facing,buildOrder:maxO+1});
+  recomputeConflicts(); sched();
+}
+
+function deleteSelected(){
+  if(!selIds.size) return;
+  pushUndo();
+  state.placements=state.placements.filter(p=>!selIds.has(p.id));
+  selIds.clear(); normalizeOrder(); recomputeConflicts(); updateInspector(); sched();
+}
+
+function rotateSelected(){
+  if(!selIds.size) return;
+  pushUndo();
+  state.placements.filter(p=>selIds.has(p.id)).forEach(p=>p.facing=(p.facing+1)%4);
+  recomputeConflicts(); updateInspector(); sched();
+}
+
+function copySelected(){
+  const sel=state.placements.filter(p=>selIds.has(p.id)); if(!sel.length) return;
+  const mc=Math.min(...sel.map(p=>p.col)), mr=Math.min(...sel.map(p=>p.row));
+  clipboard=sel.map(p=>({...p,id:null,col:p.col-mc,row:p.row-mr}));
+}
+
+function paste(){
+  if(!clipboard.length) return;
+  pushUndo();
+  const off=2, maxO=state.placements.length?Math.max(...state.placements.map(p=>p.buildOrder)):0;
+  const nids=[];
+  clipboard.forEach((c,i)=>{const id=uid();nids.push(id);state.placements.push({...c,id,col:c.col+off,row:c.row+off,buildOrder:maxO+i+1});});
+  selIds.clear(); nids.forEach(id=>selIds.add(id));
+  recomputeConflicts(); updateInspector(); sched();
+}
+
+// ─── Canvas ───────────────────────────────────────────────────────────────────
+const canvas=document.getElementById('grid-canvas');
+const ctx=canvas.getContext('2d');
+const wrap=document.getElementById('canvas-wrap');
+
+function el(id){ return document.getElementById(id); }
+
+function resizeCanvas(){
+  canvas.width=wrap.clientWidth;
+  canvas.height=wrap.clientHeight-20;
+  sched();
+}
+
+function centerView(){
+  vScale=1;
+  const tw=state.gw*CELL, th=state.gh*CELL;
+  // fit if too big
+  const scX=canvas.width/tw, scY=canvas.height/th;
+  if(scX<1||scY<1) vScale=Math.min(scX,scY)*0.9;
+  vX=(canvas.width-state.gw*CELL*vScale)/2;
+  vY=(canvas.height-state.gh*CELL*vScale)/2;
+  sched();
+}
+
+function sched(){ needRender=true; if(!rafId) rafId=requestAnimationFrame(frame); }
+function frame(){ rafId=null; if(needRender){needRender=false;render();} }
+
+function render(){
+  const W=canvas.width,H=canvas.height,cs=CELL*vScale;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#090d13'; ctx.fillRect(0,0,W,H);
+
+  // Grid bg
+  ctx.fillStyle='#0f1623';
+  ctx.fillRect(vX,vY,state.gw*cs,state.gh*cs);
+
+  // Grid lines
+  const c0=Math.max(0,Math.floor(-vX/cs)), c1=Math.min(state.gw,Math.ceil((W-vX)/cs));
+  const r0=Math.max(0,Math.floor(-vY/cs)), r1=Math.min(state.gh,Math.ceil((H-vY)/cs));
+  for(let c=c0;c<=c1;c++){
+    const x=c*cs+vX;
+    ctx.strokeStyle=c%10===0?'#253a5c':c%5===0?'#1a2c47':'#131c2e';
+    ctx.lineWidth=c%10===0?1.5:0.5;
+    ctx.beginPath(); ctx.moveTo(x,vY); ctx.lineTo(x,vY+state.gh*cs); ctx.stroke();
+  }
+  for(let r=r0;r<=r1;r++){
+    const y=r*cs+vY;
+    ctx.strokeStyle=r%10===0?'#253a5c':r%5===0?'#1a2c47':'#131c2e';
+    ctx.lineWidth=r%10===0?1.5:0.5;
+    ctx.beginPath(); ctx.moveTo(vX,y); ctx.lineTo(vX+state.gw*cs,y); ctx.stroke();
+  }
+
+  // Center cross
+  const g=gc();
+  ctx.strokeStyle='#1e4a3a'; ctx.lineWidth=1; ctx.setLineDash([4,6]);
+  ctx.beginPath(); ctx.moveTo(g.c*cs+vX,vY); ctx.lineTo(g.c*cs+vX,vY+state.gh*cs); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(vX,g.r*cs+vY); ctx.lineTo(vX+state.gw*cs,g.r*cs+vY); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Conflicts
+  for(const k of conflicts){
+    const[c,r]=k.split(',').map(Number);
+    if(c<c0||c>c1||r<r0||r>r1) continue;
+    ctx.fillStyle='rgba(248,81,73,0.28)';
+    ctx.fillRect(c*cs+vX,r*cs+vY,cs,cs);
+  }
+
+  // Move preview
+  if(iMode==='move'&&moveState){
+    const dc=hover.c-dragCell.c-moveState.adc, dr=hover.r-dragCell.r-moveState.adr;
+    for(const m of moveState.items){
+      const p=state.placements.find(x=>x.id===m.id); if(!p) continue;
+      const b=getBld(p.buildingId); if(!b) continue;
+      const{w,h}=effSz(b,p.facing), nc=m.oc+dc, nr=m.or+dr;
+      ctx.fillStyle=hexRgba(b.color,0.35); ctx.strokeStyle='#f0883e'; ctx.lineWidth=2;
+      ctx.fillRect(nc*cs+vX,nr*cs+vY,w*cs,h*cs);
+      ctx.strokeRect(nc*cs+vX+1,nr*cs+vY+1,w*cs-2,h*cs-2);
+    }
+  }
+
+  // Placed buildings
+  for(const p of state.placements){
+    const b=getBld(p.buildingId); if(!b) continue;
+    const{w,h}=effSz(b,p.facing);
+    const px=p.col*cs+vX, py=p.row*cs+vY, pw=w*cs, ph=h*cs;
+    if(px+pw<0||px>W||py+ph<0||py>H) continue;
+    const sel=selIds.has(p.id), oob=p.col<0||p.row<0||p.col+w>state.gw||p.row+h>state.gh;
+
+    // Fill
+    ctx.fillStyle=hexRgba(b.color,0.65); ctx.fillRect(px,py,pw,ph);
+    // Border
+    if(oob){ ctx.strokeStyle='#ffaa00'; ctx.setLineDash([3,3]); }
+    else    { ctx.strokeStyle=sel?'#ffffff':hexRgba(b.color,1); ctx.setLineDash([]); }
+    ctx.lineWidth=sel?2.5:1.5; ctx.strokeRect(px+.5,py+.5,pw-1,ph-1); ctx.setLineDash([]);
+
+    // Order badge
+    const bs=Math.max(12,Math.min(18,cs*0.65));
+    ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(px+2,py+2,bs+2,bs);
+    ctx.fillStyle='#fff'; ctx.font=`bold ${Math.max(7,bs*0.65)}px monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(String(p.buildOrder),px+2+bs/2+1,py+2+bs/2);
+
+    // Label
+    if(pw>36&&ph>18){
+      ctx.fillStyle='rgba(255,255,255,0.88)';
+      ctx.font=`${Math.max(8,Math.min(11,cs*0.42))}px sans-serif`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      const lbl=pw<54?b.unitDef:b.displayName;
+      ctx.fillText(clampText(ctx,lbl,pw-6),px+pw/2,py+ph/2);
+    }
+
+    // Facing arrow
+    if(cs>=14){
+      ctx.fillStyle='rgba(255,255,255,0.65)';
+      ctx.font=`${Math.max(9,Math.min(16,cs*0.55))}px sans-serif`;
+      ctx.textAlign='center'; ctx.textBaseline='bottom';
+      ctx.fillText(ARROWS[p.facing],px+pw/2,py+ph-1);
+    }
+  }
+
+  // Ghost: armed building or drag-over
+  const ghostId=armedId||curDragBldId;
+  if(ghostId&&hover.c>=0){
+    const b=getBld(ghostId); if(b){
+      const{w,h}=effSz(b,0);
+      ctx.fillStyle=hexRgba(b.color,0.38); ctx.strokeStyle='#f0883e'; ctx.lineWidth=2; ctx.setLineDash([4,4]);
+      ctx.fillRect(hover.c*cs+vX,hover.r*cs+vY,w*cs,h*cs);
+      ctx.strokeRect(hover.c*cs+vX+1,hover.r*cs+vY+1,w*cs-2,h*cs-2); ctx.setLineDash([]);
+    }
+  }
+
+  // Box-select
+  if(iMode==='select'&&selBox){
+    const{x1,y1,x2,y2}=selBox;
+    const sx=Math.min(x1,x2),sy=Math.min(y1,y2),sw=Math.abs(x2-x1),sh=Math.abs(y2-y1);
+    ctx.strokeStyle='#58a6ff'; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
+    ctx.strokeRect(sx,sy,sw,sh);
+    ctx.fillStyle='rgba(88,166,255,0.08)'; ctx.fillRect(sx,sy,sw,sh);
+    ctx.setLineDash([]);
+  }
+
+  // Status zoom
+  el('s-zoom').textContent=`Zoom: ${Math.round(vScale*100)}%`;
+}
+
+// ─── Inspector ────────────────────────────────────────────────────────────────
+function updateInspector(){
+  const empty=el('insp-empty'), content=el('insp-content');
+  if(selIds.size===0){ empty.textContent='Select a building'; empty.style.display=''; content.style.display='none'; return; }
+  if(selIds.size>1){ empty.textContent=`${selIds.size} selected`; empty.style.display=''; content.style.display='none'; return; }
+  const pid=[...selIds][0], p=state.placements.find(x=>x.id===pid);
+  if(!p){ empty.style.display=''; content.style.display='none'; return; }
+  const b=getBld(p.buildingId);
+  empty.style.display='none'; content.style.display='flex';
+  el('ii-name').textContent=b?b.displayName:'(unknown)';
+  el('ii-udef').textContent=b?b.unitDef:p.buildingId;
+  el('ii-size').textContent=b?`${b.width}×${b.height}`:'?';
+  el('ii-facing').textContent=ARROWS[p.facing]+' '+FACING_NAME[p.facing];
+  el('ii-order').value=p.buildOrder;
+}
+
+// ─── Canvas events ────────────────────────────────────────────────────────────
+canvas.addEventListener('dragover',e=>{
+  e.preventDefault(); e.dataTransfer.dropEffect='copy';
+  const r=canvas.getBoundingClientRect();
+  hover=pxToCell(e.clientX-r.left,e.clientY-r.top); sched();
+});
+canvas.addEventListener('dragleave',()=>{ curDragBldId=null; hover={c:-1,r:-1}; sched(); });
+canvas.addEventListener('drop',e=>{
+  e.preventDefault();
+  const bid=e.dataTransfer.getData('text/plain')||curDragBldId; curDragBldId=null;
+  if(!bid) return;
+  const r=canvas.getBoundingClientRect(), {c,r:row}=pxToCell(e.clientX-r.left,e.clientY-r.top);
+  place(bid,c,row);
+  armedId=null; renderPalette();
+});
+
+canvas.addEventListener('mousemove',e=>{
+  const r=canvas.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+  hover=pxToCell(px,py);
+
+  // World coords in status
+  if(hover.c>=0&&hover.c<state.gw&&hover.r>=0&&hover.r<state.gh){
+    const g=gc();
+    el('s-coords').textContent=`x=${(hover.c-g.c)*WU}  z=${(hover.r-g.r)*WU}`;
+  }
+
+  if(iMode==='pan'){ vX+=e.movementX; vY+=e.movementY; sched(); return; }
+  if(iMode==='move'){ sched(); return; }
+  if(iMode==='select'){ selBox.x2=px; selBox.y2=py; sched(); return; }
+
+  canvas.style.cursor=armedId?'crosshair':(hitAt(hover.c,hover.r)?'move':'default');
+  sched();
+});
+
+canvas.addEventListener('mousedown',e=>{
+  const r=canvas.getBoundingClientRect(), px=e.clientX-r.left, py=e.clientY-r.top;
+  const cell=pxToCell(px,py);
+  dragPx={x:px,y:py}; dragCell={...cell};
+
+  if(e.button===1||(e.button===0&&spaceDown)){ iMode='pan'; canvas.style.cursor='grabbing'; e.preventDefault(); return; }
+  if(e.button!==0) return;
+
+  // Armed placement
+  if(armedId){
+    place(armedId,cell.c,cell.r);
+    if(!e.shiftKey){ armedId=null; renderPalette(); }
+    return;
+  }
+
+  const hit=hitAt(cell.c,cell.r);
+  if(hit){
+    if(e.shiftKey){ if(selIds.has(hit.id)) selIds.delete(hit.id); else selIds.add(hit.id); }
+    else if(!selIds.has(hit.id)){ selIds.clear(); selIds.add(hit.id); }
+    updateInspector();
+    // Start move
+    moveState={
+      items:[...selIds].map(id=>{ const p=state.placements.find(x=>x.id===id); return{id,oc:p.col,or:p.row}; }),
+      adc:cell.c-hit.col, adr:cell.r-hit.row,
+    };
+    iMode='move'; canvas.style.cursor='grabbing'; sched(); return;
+  }
+
+  // Box select
+  selIds.clear(); selBox={x1:px,y1:py,x2:px,y2:py}; iMode='select'; updateInspector(); sched();
+});
+
+canvas.addEventListener('mouseup',e=>{
+  if(iMode==='pan'){ iMode=null; canvas.style.cursor=armedId?'crosshair':'default'; return; }
+  if(iMode==='move'){
+    const dc=hover.c-dragCell.c-moveState.adc, dr=hover.r-dragCell.r-moveState.adr;
+    if(dc!==0||dr!==0){
+      pushUndo();
+      for(const m of moveState.items){
+        const p=state.placements.find(x=>x.id===m.id); if(p){p.col=m.oc+dc;p.row=m.or+dr;}
+      }
+      recomputeConflicts();
+    }
+    iMode=null; moveState=null; canvas.style.cursor='move'; sched(); return;
+  }
+  if(iMode==='select'&&selBox){
+    const{x1,y1,x2,y2}=selBox;
+    const mnx=Math.min(x1,x2),mxx=Math.max(x1,x2),mny=Math.min(y1,y2),mxy=Math.max(y1,y2);
+    for(const p of state.placements){
+      const b=getBld(p.buildingId); if(!b) continue;
+      const{w,h}=effSz(b,p.facing);
+      const tl=cellPx(p.col,p.row), br=cellPx(p.col+w,p.row+h);
+      // Select if bounding boxes overlap
+      if(tl.x<mxx&&br.x>mnx&&tl.y<mxy&&br.y>mny) selIds.add(p.id);
+    }
+    updateInspector(); selBox=null; iMode=null; sched();
+  }
+});
+
+canvas.addEventListener('mouseleave',()=>{
+  hover={c:-1,r:-1};
+  if(iMode==='move'){ iMode=null; moveState=null; }
+  if(iMode==='select'){ selBox=null; iMode=null; }
+  sched();
+});
+
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=canvas.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const fac=e.deltaY<0?1.12:1/1.12;
+  const ns=Math.min(10,Math.max(0.08,vScale*fac));
+  vX=mx-(mx-vX)*(ns/vScale); vY=my-(my-vY)*(ns/vScale); vScale=ns; sched();
+},{passive:false});
+
+// ─── Keyboard ─────────────────────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  if(e.key===' '){ spaceDown=true; e.preventDefault(); return; }
+  if(e.key==='Delete'||e.key==='Backspace'){ deleteSelected(); e.preventDefault(); return; }
+  if(e.key==='r'||e.key==='R'){ rotateSelected(); return; }
+  if(e.key==='Escape'){
+    armedId=null; selIds.clear(); iMode=null; selBox=null; moveState=null;
+    renderPalette(); updateInspector(); sched(); return;
+  }
+  if(e.key==='?'||e.key==='/'){ showM('modal-help'); return; }
+  if(e.ctrlKey||e.metaKey){
+    if(e.key==='z'){ undo(); e.preventDefault(); return; }
+    if(e.key==='y'||(e.key==='Z'&&e.shiftKey)){ redo(); e.preventDefault(); return; }
+    if(e.key==='c'){ copySelected(); e.preventDefault(); return; }
+    if(e.key==='v'){ paste(); e.preventDefault(); return; }
+  }
+});
+document.addEventListener('keyup',e=>{ if(e.key===' ') spaceDown=false; });
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+let activeCat='all';
+
+function renderPalette(){
+  const search=el('palette-search').value.toLowerCase();
+  const cf=el('category-filter');
+  // Categories
+  const cats=['all',...new Set(db.buildings.map(b=>b.category).filter(Boolean))];
+  cf.innerHTML='';
+  cats.forEach(cat=>{
+    const btn=document.createElement('button');
+    btn.className='cat-btn'+(activeCat===cat?' active':'');
+    btn.textContent=cat==='all'?'All':cat;
+    btn.dataset.cat=cat;
+    if(cat!=='all'&&activeCat===cat) btn.style.background=catColor(cat);
+    btn.onclick=()=>{ activeCat=cat; renderPalette(); };
+    cf.appendChild(btn);
+  });
+  // List
+  const list=el('palette-list'); list.innerHTML='';
+  const filtered=db.buildings.filter(b=>{
+    const mc=activeCat==='all'||b.category===activeCat;
+    const ms=!search||b.displayName.toLowerCase().includes(search)||b.unitDef.toLowerCase().includes(search);
+    return mc&&ms;
+  });
+  if(!filtered.length){ list.innerHTML='<div style="padding:12px;text-align:center;color:#3d444e;font-size:12px">No buildings</div>'; return; }
+  filtered.forEach(b=>{
+    const card=document.createElement('div');
+    card.className='palette-card'+(armedId===b.id?' armed':'');
+    card.draggable=true;
+    card.innerHTML=`<div class="pal-swatch" style="background:${b.color}"></div><div class="pal-info"><div class="pal-name">${b.displayName}</div><div class="pal-meta">${b.width}×${b.height} · ${b.category}</div></div>`;
+    card.onclick=()=>{ armedId=armedId===b.id?null:b.id; selIds.clear(); updateInspector(); renderPalette(); sched(); };
+    card.addEventListener('dragstart',e=>{
+      curDragBldId=b.id;
+      e.dataTransfer.setData('text/plain',b.id);
+      e.dataTransfer.effectAllowed='copy';
+    });
+    card.addEventListener('dragend',()=>curDragBldId=null);
+    list.appendChild(card);
+  });
+}
+
+// ─── Modals ───────────────────────────────────────────────────────────────────
+function showM(id){ el(id).classList.remove('hidden'); }
+function hideM(id){ el(id).classList.add('hidden'); }
+document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{ if(e.target===o) o.classList.add('hidden'); }));
+
+// ─── Add/Edit building modal ──────────────────────────────────────────────────
+let editBldId=null;
+
+function openBldModal(bld=null){
+  editBldId=bld?bld.id:null;
+  el('modal-bld-title').textContent=bld?'Edit Building':'Add Building';
+  el('bld-dname').value=bld?bld.displayName:'';
+  el('bld-udef').value=bld?bld.unitDef:'';
+  el('bld-w').value=bld?bld.width:2;
+  el('bld-h').value=bld?bld.height:2;
+  el('bld-cat').value=bld?bld.category:'';
+  el('bld-color').value=bld?bld.color:'#4a8f6b';
+  showM('modal-bld');
+  setTimeout(()=>el('bld-dname').focus(),50);
+}
+
+async function saveBldModal(){
+  const dn=el('bld-dname').value.trim(), ud=el('bld-udef').value.trim();
+  if(!dn||!ud){ alert('Display name and unit def are required.'); return; }
+  const bld={
+    id:editBldId||uid(),
+    displayName:dn, unitDef:ud,
+    width:Math.max(1,parseInt(el('bld-w').value)||2),
+    height:Math.max(1,parseInt(el('bld-h').value)||2),
+    category:el('bld-cat').value.trim()||'General',
+    color:el('bld-color').value,
+  };
+  if(editBldId){ const i=db.buildings.findIndex(x=>x.id===editBldId); if(i>=0) db.buildings[i]=bld; }
+  else db.buildings.push(bld);
+  await saveDB(); renderPalette(); hideM('modal-bld'); recomputeConflicts(); sched();
+}
+
+function openEditBldsModal(){
+  const list=el('editbld-list'); list.innerHTML='';
+  if(!db.buildings.length){ list.innerHTML='<div class="list-item" style="color:#484f58">No buildings yet. Add some first.</div>'; showM('modal-editblds'); return; }
+  db.buildings.forEach(b=>{
+    const d=document.createElement('div'); d.className='list-item';
+    d.innerHTML=`<div style="width:14px;height:14px;background:${b.color};border-radius:3px;flex-shrink:0"></div><span class="li-name">${b.displayName}</span><span class="li-meta">${b.unitDef} ${b.width}×${b.height}</span><button style="font-size:10px;padding:2px 6px" data-e="${b.id}">Edit</button><button class="danger" style="font-size:10px;padding:2px 5px" data-d="${b.id}">✕</button>`;
+    d.querySelector('[data-e]').onclick=e=>{ e.stopPropagation(); hideM('modal-editblds'); openBldModal(b); };
+    d.querySelector('[data-d]').onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm(`Delete "${b.displayName}"?`)) return;
+      db.buildings=db.buildings.filter(x=>x.id!==b.id);
+      await saveDB(); renderPalette(); openEditBldsModal();
+    };
+    list.appendChild(d);
+  });
+  showM('modal-editblds');
+}
+
+// ─── Export: Bot Lua ──────────────────────────────────────────────────────────
+function exportLua(){
+  const sorted=[...state.placements].sort((a,b)=>a.buildOrder-b.buildOrder);
+  const rows=sorted.map(p=>{
+    const b=getBld(p.buildingId), {x,z}=toWorld(p), n=b?b.unitDef:'unknown';
+    return `    {n="${n}", x=${String(x).padStart(5)}, z=${String(z).padStart(5)}, f=${p.facing}},`;
+  });
+  const name=state.name||'Untitled';
+  const g=gc();
+  const content=`-- Blueprint: ${name}\n-- Generated by blueprint_editor.html\n-- Grid: ${state.gw}×${state.gh} cells, center at cell (${g.c},${g.r}), 1 cell = ${WU} world units\nlocal M = {}\nM.layout = {\n${rows.join('\n')}\n}\nreturn M\n`;
+  dlText(`${name.replace(/\s+/g,'_')}.lua`, content);
+}
+
+// ─── Export: BAR JSON ─────────────────────────────────────────────────────────
+let pendingBAREntry=null;
+
+function buildBAREntry(){
+  const units=[...state.placements].sort((a,b)=>a.buildOrder-b.buildOrder).map(p=>{
+    const b=getBld(p.buildingId), {x,z}=toWorld(p);
+    return {unitName:b?b.unitDef:'unknown', facing:p.facing, position:[x,0,z]};
+  });
+  return {ordered:true, name:'', spacing:0, facing:0, units};
+}
+
+async function exportBAR(){
+  pendingBAREntry=buildBAREntry();
+  el('bar-paste-area').value='';
+  el('bar-paste-status').textContent='';
+  showM('modal-bar-paste');
+}
+
+function doBARPasteAppend(){
+  const raw=el('bar-paste-area').value.trim();
+  const status=el('bar-paste-status');
+  if(!raw){
+    // Nothing pasted — download the entry alone for manual insertion
+    dlText(`${(state.name||'blueprint').replace(/\s+/g,'_')}_BAR_entry.json`,JSON.stringify(pendingBAREntry,null,2));
+    status.textContent='No content pasted — downloaded the entry only. Paste it inside the savedBlueprints [ ] array manually.';
+    status.style.color='#e3b341';
+    return;
+  }
+  let json;
+  try{ json=JSON.parse(raw); }
+  catch(e){ status.textContent='Invalid JSON: '+e.message; status.style.color='#f85149'; return; }
+  if(!json.savedBlueprints){ status.textContent='No "savedBlueprints" array found in pasted content.'; status.style.color='#f85149'; return; }
+  json.savedBlueprints.push(pendingBAREntry);
+  dlText('blueprints.json',JSON.stringify(json,null,2));
+  status.textContent=`Done! blueprints.json downloaded with ${json.savedBlueprints.length} blueprint(s). Replace your original file with this download.`;
+  status.style.color='#7ee787';
+}
+
+// ─── Save / Load (editor format) ─────────────────────────────────────────────
+function saveEditorJson(){
+  const data={name:state.name,gw:state.gw,gh:state.gh,placements:state.placements};
+  dlText(`${(state.name||'blueprint').replace(/\s+/g,'_')}_editor.json`,JSON.stringify(data,null,2));
+}
+
+function applyEditorJson(txt){
+  let data; try{ data=JSON.parse(txt); }catch(e){ alert('Invalid JSON: '+e.message); return; }
+  pushUndo();
+  state.name=data.name||'Untitled';
+  state.gw=data.gw||30; state.gh=data.gh||30;
+  state.placements=data.placements||[];
+  el('bp-name').value=state.name;
+  el('gw').value=state.gw; el('gh').value=state.gh;
+  selIds.clear(); recomputeConflicts(); updateInspector(); centerView(); sched();
+}
+
+// ─── Import: Lua ──────────────────────────────────────────────────────────────
+function importLua(txt){
+  const re=/\{[^}]*n\s*=\s*"([^"]+)"[^}]*x\s*=\s*(-?\d+)[^}]*z\s*=\s*(-?\d+)[^}]*f\s*=\s*(\d+)[^}]*\}/g;
+  const entries=[]; let m;
+  while((m=re.exec(txt))!==null) entries.push({n:m[1],x:+m[2],z:+m[3],f:+m[4]});
+  if(!entries.length){ alert('No {n="...",x=N,z=N,f=N} entries found.'); return; }
+
+  pushUndo(); state.placements=[];
+  const unknown=new Set(); let order=1;
+  for(const e of entries){
+    let b=getBldByDef(e.n);
+    if(!b){
+      b={id:uid(),displayName:e.n,unitDef:e.n,width:2,height:2,category:'Unknown',color:'#666677'};
+      db.buildings.push(b); unknown.add(e.n);
+    }
+    const{col,row}=fromWorld(e.x,e.z,b,e.f);
+    state.placements.push({id:uid(),buildingId:b.id,col,row,facing:e.f,buildOrder:order++});
+  }
+  if(unknown.size){ saveDB(); renderPalette(); }
+  recomputeConflicts(); updateInspector(); centerView(); sched();
+  alert(`Imported ${entries.length} buildings.${unknown.size?`\nCreated ${unknown.size} placeholder(s): ${[...unknown].join(', ')}`:''}`);
+}
+
+// ─── Import: BAR JSON ─────────────────────────────────────────────────────────
+let barImportRaw=null;
+
+function showBARList(txt){
+  try{ barImportRaw=JSON.parse(txt); }catch(e){ alert('Invalid JSON: '+e.message); return; }
+  const bps=barImportRaw.savedBlueprints||[];
+  if(!bps.length){ alert('No savedBlueprints found.'); return; }
+  const list=el('barlist'); list.innerHTML='';
+  bps.forEach((bp,i)=>{
+    const d=document.createElement('div'); d.className='list-item';
+    d.innerHTML=`<span class="li-name">#${i+1} ${bp.name||'(unnamed)'}</span><span class="li-meta">${bp.units?bp.units.length:0} units</span>`;
+    d.onclick=()=>{ loadBARBlueprint(bp); hideM('modal-barlist'); };
+    list.appendChild(d);
+  });
+  showM('modal-barlist');
+}
+
+function loadBARBlueprint(bp){
+  pushUndo(); state.name=bp.name||'Imported'; state.placements=[];
+  el('bp-name').value=state.name;
+  const unknown=new Set(); let order=1;
+  for(const u of bp.units||[]){
+    let b=getBldByDef(u.unitName);
+    if(!b){
+      b={id:uid(),displayName:u.unitName,unitDef:u.unitName,width:2,height:2,category:'Unknown',color:'#666677'};
+      db.buildings.push(b); unknown.add(u.unitName);
+    }
+    const wx=u.position?.[0]??0, wz=u.position?.[2]??0, facing=u.facing??0;
+    const{col,row}=fromWorld(wx,wz,b,facing);
+    state.placements.push({id:uid(),buildingId:b.id,col,row,facing,buildOrder:order++});
+  }
+  if(unknown.size){ saveDB(); renderPalette(); }
+  recomputeConflicts(); updateInspector(); centerView(); sched();
+}
+
+// ─── Toolbar buttons ──────────────────────────────────────────────────────────
+el('btn-new').onclick=()=>{
+  if(state.placements.length&&!confirm('New blueprint? Unsaved changes will be lost.')) return;
+  pushUndo(); state.placements=[]; state.name='Untitled';
+  el('bp-name').value='Untitled'; selIds.clear();
+  recomputeConflicts(); updateInspector(); centerView(); sched();
+};
+
+el('btn-load').onclick=async()=>{
+  if(FSA){
+    try{
+      const[h]=await window.showOpenFilePicker({types:[{description:'Blueprint JSON',accept:{'application/json':['.json']}}],multiple:false});
+      applyEditorJson(await readH(h));
+    }catch(e){ if(e.name!=='AbortError') el('fi-load').click(); }
+  } else el('fi-load').click();
+};
+
+el('btn-save').onclick=saveEditorJson;
+el('btn-export-lua').onclick=exportLua;
+el('btn-export-bar').onclick=exportBAR;
+
+el('btn-import-lua').onclick=async()=>{
+  if(FSA){
+    try{
+      const[h]=await window.showOpenFilePicker({types:[{description:'Lua file',accept:{'text/plain':['.lua','.txt']}}],multiple:false});
+      importLua(await readH(h));
+    }catch(e){ if(e.name!=='AbortError') el('fi-lua').click(); }
+  } else el('fi-lua').click();
+};
+
+el('btn-import-bar').onclick=async()=>{
+  if(FSA){
+    try{
+      const[h]=await window.showOpenFilePicker({types:[{description:'BAR JSON',accept:{'application/json':['.json']}}],multiple:false});
+      showBARList(await readH(h));
+    }catch(e){ if(e.name!=='AbortError') el('fi-bar').click(); }
+  } else el('fi-bar').click();
+};
+
+el('btn-undo').onclick=undo;
+el('btn-redo').onclick=redo;
+el('btn-center-view').onclick=centerView;
+el('btn-help').onclick=()=>showM('modal-help');
+el('btn-help-close').onclick=()=>hideM('modal-help');
+
+el('btn-bld-file').onclick=async()=>{
+  if(FSA){
+    // Try open existing first, offer to create if abort
+    try{
+      const[h]=await window.showOpenFilePicker({types:[{description:'Buildings JSON',accept:{'application/json':['.json']}}],multiple:false});
+      await applyDBHandle(h);
+    }catch(e){
+      if(e.name==='AbortError'){
+        // offer create new
+        if(!confirm('Create a new buildings.json file?')) return;
+        try{
+          const h=await window.showSaveFilePicker({suggestedName:'buildings.json',types:[{description:'Buildings JSON',accept:{'application/json':['.json']}}]});
+          dbHandle=h; await idbSave('bld-h',h); db={buildings:[]};
+          await saveDB(); el('s-bld-file').textContent='Bld: '+h.name; renderPalette();
+        }catch(e2){}
+      }
+    }
+  } else el('fi-bldfile').click();
+};
+
+el('btn-reset-bar').onclick=()=>{
+  // no longer used for file path; repurposed as direct paste-modal shortcut
+  pendingBAREntry=buildBAREntry();
+  el('bar-paste-area').value=''; el('bar-paste-status').textContent='';
+  showM('modal-bar-paste');
+};
+
+el('bp-name').oninput=e=>state.name=e.target.value;
+el('gw').onchange=e=>{ state.gw=Math.max(5,Math.min(300,+e.target.value||40)); e.target.value=state.gw; recomputeConflicts(); sched(); };
+el('gh').onchange=e=>{ state.gh=Math.max(5,Math.min(300,+e.target.value||40)); e.target.value=state.gh; recomputeConflicts(); sched(); };
+
+el('palette-search').oninput=renderPalette;
+el('btn-add-bld').onclick=()=>openBldModal(null);
+el('btn-edit-blds').onclick=openEditBldsModal;
+el('btn-bld-cancel').onclick=()=>hideM('modal-bld');
+el('btn-bld-ok').onclick=saveBldModal;
+el('btn-editblds-close').onclick=()=>hideM('modal-editblds');
+el('btn-barlist-cancel').onclick=()=>hideM('modal-barlist');
+el('btn-bar-paste-cancel').onclick=()=>hideM('modal-bar-paste');
+el('btn-bar-paste-ok').onclick=doBARPasteAppend;
+el('btn-del-sel').onclick=deleteSelected;
+
+el('ii-order').onchange=e=>{
+  const pid=[...selIds][0], v=parseInt(e.target.value);
+  if(pid&&v>=1) swapOrder(pid,v);
+};
+
+// File input fallbacks
+el('fi-load').onchange=async e=>{ const f=e.target.files[0]; if(f){ applyEditorJson(await f.text()); e.target.value=''; } };
+el('fi-lua').onchange=async e=>{ const f=e.target.files[0]; if(f){ importLua(await f.text()); e.target.value=''; } };
+el('fi-bar').onchange=async e=>{ const f=e.target.files[0]; if(f){ showBARList(await f.text()); e.target.value=''; } };
+el('fi-bldfile').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  db=JSON.parse(await f.text()); if(!db.buildings) db.buildings=[];
+  el('s-bld-file').textContent='Bld: '+f.name; renderPalette(); sched(); e.target.value='';
+};
+
+// Enter key in building modal
+document.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!el('modal-bld').classList.contains('hidden')){ saveBldModal(); } });
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+async function init(){
+  resizeCanvas();
+  window.addEventListener('resize',resizeCanvas);
+
+  // Restore buildings handle
+  const bh=await idbLoad('bld-h');
+  if(bh){ try{ if(await getPerm(bh,false)){ const txt=await readH(bh); db=JSON.parse(txt); if(!db.buildings) db.buildings=[]; dbHandle=bh; el('s-bld-file').textContent='Bld: '+bh.name; } }catch{} }
+
+  // Restore BAR handle
+  const barh=await idbLoad('bar-h');
+  if(barh){ try{ if(await getPerm(barh,false)) barHandle=barh; }catch{} }
+
+  renderPalette();
+  centerView();
+}
+
+init();
+</script>
+</body>
+</html>
