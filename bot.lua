@@ -78,6 +78,28 @@ local sLower  = string.lower
 local sFind   = string.find
 local sFormat = string.format
 
+do
+    local rawUnits    = spGetUnitsInCylinder
+    local rawFeatures = spGetFeaturesInCylinder
+    local function ClampInMap(x, z, r)
+        local mapX = Game.mapSizeX or 8192
+        local mapZ = Game.mapSizeZ or 8192
+        if r > mapX * 0.5 then r = mFloor(mapX * 0.5) end
+        if r > mapZ * 0.5 then r = mFloor(mapZ * 0.5) end
+        if x < r then x = r elseif x > mapX - r then x = mapX - r end
+        if z < r then z = r elseif z > mapZ - r then z = mapZ - r end
+        return x, z, r
+    end
+    function spGetUnitsInCylinder(x, z, r, ...)
+        x, z, r = ClampInMap(x, z, r)
+        return rawUnits(x, z, r, ...)
+    end
+    function spGetFeaturesInCylinder(x, z, r)
+        x, z, r = ClampInMap(x, z, r)
+        return rawFeatures(x, z, r)
+    end
+end
+
 local function UnitHash(unitID, salt)
     local h = (unitID * 2654435761 + salt * 40503) % 2147483647
     h = (h * 48271) % 2147483647
@@ -329,6 +351,8 @@ local st = {
     factoryWaitState             = {},
     incompleteFactories          = {},
     incompleteFactoryCount       = 0,
+    hasAdvancedFactory  = false,
+    hasT2Lab            = false,
     combatReaimFrame             = {},
     pendingFactoryBlueprints     = 0,
     factoriesNeedingTurrets      = {},
@@ -2023,22 +2047,26 @@ local function CanAffordCombatUnit(defID)
 end
 cfg.CanAffordCombatUnit = CanAffordCombatUnit
 
--- I hate this nonsense
--- TODO: make it actualy tech up in time
 cfg.CanTechUpToFactory = function(fID)
     local def = UnitDefs[fID]
-    local cost = (def and def.metalCost) or 0
+    if not def then return false end
 
-    local cheapestFactoryCost = GetCheapestFactoryInfo().cost or 0
-    if cost <= cheapestFactoryCost * cfg.ADV_FACTORY_TIER_RATIO then 
-        return true 
+    local techLevel = def.customParams and tonumber(def.customParams.techlevel) or 1
+
+    if techLevel <= 1 then
+        if st.hasT2Lab or (st.hasAdvancedFactory and (st.advConCount or 0) > 0) then
+            return false
+        end
+        return true
     end
+
+    local cost = def.metalCost or 0
 
     local paybackSecs = cfg.ADV_FACTORY_PAYBACK_SECS or 1
     local requiredIncome = cost / paybackSecs
 
-    if (st.metalIncome or 0) >= requiredIncome then 
-        return true 
+    if (st.metalIncome or 0) >= requiredIncome then
+        return true
     end
 
     local currentMetal = st.currentMetal or 0
@@ -2441,7 +2469,12 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
         end
     end
 
-    -- radial placement diagnostics: TryTile records why it rejects each tile
+    local function ClaimSpot(key, tx, tz, f)
+        if not key then return end
+        local halfR = ((mMax(xsize, zsize) * 8) / 2 + 8)
+        st.claimedSpots[key] = { frame = frame, x = tx, z = tz, r2 = halfR * halfR, isFactory = false, isAirFactory = false, facing = f, defID = defID, isMex = false }
+    end
+
     local diagReject = nil
     local diagActive = false
 
@@ -2515,7 +2548,8 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
                 end
 
                 if facClear then
-                    return tx, ty, tz, f, mFloor(tx) .. "_" .. mFloor(tz)
+                    local key = mFloor(tx) .. "_" .. mFloor(tz)
+                    return tx, ty, tz, f, key
                 end
             end
         end
@@ -2539,6 +2573,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
                 local rx, ry, rz, rf, rk = TryTile(ux + math.cos(ang) * r, uz + math.sin(ang) * r)
                 if rx then
                     diagActive = false
+                    ClaimSpot(rk, rx, rz, rf)
                     return rx, ry, rz, rf, rk
                 end
                 if diagActive then
@@ -2559,7 +2594,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
     if preferFacing then
         local dirX, dirZ = GetFacingVector(preferFacing)
         local tx, ty, tz, f, key = TryTile(ux + dirX * stepSize, uz + dirZ * stepSize)
-        if tx then return tx, ty, tz, f, key end
+        if tx then ClaimSpot(key, tx, tz, f) return tx, ty, tz, f, key end
     end
 
     local ax, az = 1, 0
@@ -2575,7 +2610,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
     local function consider(gx, gz, withinPrefer)
         local tx, ty, tz, f, key = TryTile(gx, gz)
         if tx then
-            if not fdx or not withinPrefer then return tx, ty, tz, f, key end
+            if not fdx or not withinPrefer then ClaimSpot(key, tx, tz, f) return tx, ty, tz, f, key end
             -- cover depth minus how far toward the enemy it sits, with a mild
             -- distance penalty so the builder still prefers close
             local ok, cover = HasExitPath(tx, tz, {})
@@ -2595,7 +2630,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
         local latOff = lat
         for s = 1, (lat == 0 and 1 or 2) do
             if s == 2 then latOff = -lat end
-            for along = 0, preferRing do
+            for along = -preferRing, preferRing do
                 local gx = gridStartX + (ax * along + px * latOff) * stepSize
                 local gz = gridStartZ + (az * along + pz * latOff) * stepSize
                 local r1, r2, r3, r4, r5 = consider(gx, gz, true)
@@ -2603,7 +2638,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
             end
         end
     end
-    if bestTX then return bestTX, bestTY, bestTZ, bestF, bestKey end
+    if bestTX then ClaimSpot(bestKey, bestTX, bestTZ, bestF) return bestTX, bestTY, bestTZ, bestF, bestKey end
 
     -- Tight mode (eco/mex): only build close in; never send the builder
     -- sprinting to the far edge of the search ring.
@@ -2614,8 +2649,7 @@ local function FindBuildSpot(ux, uz, defID, spacingOverride, excludeUnitID, pref
         local latOff = lat
         for s = 1, (lat == 0 and 1 or 2) do
             if s == 2 then latOff = -lat end
-            local alongStart = (lat <= preferRing) and (preferRing + 1) or 0
-            for along = alongStart, maxRing do
+            for along = -maxRing, maxRing do
                 local gx = gridStartX + (ax * along + px * latOff) * stepSize
                 local gz = gridStartZ + (az * along + pz * latOff) * stepSize
                 local r1, r2, r3, r4, r5 = consider(gx, gz, false)
@@ -3244,6 +3278,8 @@ local function UpdateMacroState(myTeam, units)
     st.activeMexBuilders, st.activeEnergyBuilders = 0, 0
     st.ourTech, st.armyValue = 0, 0
     st.myFactoriesCount, st.incompleteFactoryCount, st.factoriesNeedingTurretsCount = 0, 0, 0
+    st.hasAdvancedFactory = false
+    st.hasT2Lab = false
     st.myAntinukes, st.antinukeCount = {}, 0
     st.defenseCount = 0
     st.defenseGroundCount = 0
@@ -3292,6 +3328,14 @@ local function UpdateMacroState(myTeam, units)
                 if hp and maxHp and hp < maxHp then
                     st.incompleteFactoryCount = st.incompleteFactoryCount + 1
                     st.incompleteFactories[st.incompleteFactoryCount] = uID
+                else
+                    local techLevel = d.customParams and tonumber(d.customParams.techlevel) or 1
+                    if techLevel >= 2 then
+                        st.hasAdvancedFactory = true
+                        if techLevel == 2 then
+                            st.hasT2Lab = true
+                        end
+                    end
                 end
             end
 
@@ -4064,7 +4108,6 @@ local function ProcessUnitOrders(unitID, frame)
     local spGetGroundHeight    = Spring.GetGroundHeight
     local spGetMyTeamID        = Spring.GetMyTeamID
     local spGetUnitHealth      = Spring.GetUnitHealth
-    local spGetUnitsInCylinder = Spring.GetUnitsInCylinder
     local spGetUnitTeam        = Spring.GetUnitTeam
     local spAreTeamsAllied     = Spring.AreTeamsAllied
     local spGetGaiaTeamID      = Spring.GetGaiaTeamID
@@ -4181,7 +4224,6 @@ local function ProcessUnitOrders(unitID, frame)
             end
 
             local dynamicLazLimit = math.floor(st.combatUnitCount / 80) + math.floor(st.metalIncome / 400)
-            local dynamicJammerLimit = math.floor(st.metalIncome / 80) + math.floor(st.baseRadius / 1000)
             local dynamicRadarLimit = st.myFactoriesCount + math.floor(st.baseRadius / 600)
 
             local totalActiveProjects = st.incompleteFactoryCount + st.pendingFactoryBlueprints + st.unclaimedMexCount
@@ -4203,7 +4245,7 @@ local function ProcessUnitOrders(unitID, frame)
                 if cDef and (cDef.metalCost or 0) >= 250 then advancedConID = cache.cons[i] break end
             end
             local needAdvancedCon = (advancedConID ~= nil)
-                and (st.advConCount or 0) < 8
+                and (st.advConCount or 0) < 1
                 and (st.metalIncome or 0) >= 40
                 and not st.metalStalling
 
@@ -4246,7 +4288,7 @@ local function ProcessUnitOrders(unitID, frame)
             end
 
             if not choice and realConBots >= 3 then
-                if st.jammerCount < dynamicJammerLimit and #cache.jammers > 0 and not st.metalStalling and not st.energyStalling then
+                if #cache.jammers > 0 and not st.metalStalling and not st.energyStalling and math.random() < 0.05 then
                     choice = cache.jammers[1] st.jammerCount = st.jammerCount + 1
                 elseif st.radarCount < dynamicRadarLimit and #cache.radars > 0 and not st.metalStalling and not st.energyStalling then
                     choice = cache.radars[1] st.radarCount = st.radarCount + 1
@@ -4447,9 +4489,9 @@ local function ProcessUnitOrders(unitID, frame)
             if uDef.weapons then
                 for i = 1, #uDef.weapons do
                     local wDef = uDef.weapons[i].weaponDef and WeaponDefs[uDef.weapons[i].weaponDef]
-                    if wDef and wDef.commandFire then
+                    if wDef and (wDef.manualFire or wDef.commandFire) then
                         dgunRange = wDef.range or 250
-                        dgunEnergyCost = wDef.energyCost or 0
+                        dgunEnergyCost = wDef.energyCost or wDef.energyPerShot or 0
                         break
                     end
                 end
@@ -4482,7 +4524,7 @@ local function ProcessUnitOrders(unitID, frame)
             -- The dgun only fires because an enemy is on top of us
             -- TODO: Work further on dgun logic
             local curEnergy = Spring.GetTeamResources(myTeamID, "energy")
-            if dgunTarget and curEnergy >= dgunEnergyCost then
+            if dgunTarget and dgunEnergyCost > 0 and curEnergy and curEnergy >= dgunEnergyCost then
                 if isCloaked then
                     Spring.GiveOrderToUnit(unitID, CMD_CLOAK, {0}, {})
                 end
