@@ -7,7 +7,7 @@ M.layout = {
     {n="cormex", x=   96, z=  160, f=0},
     {n="corwin", x=  120, z=  216, f=0},
     {n="corwin", x=  168, z=  216, f=0},
-    {n="corlab", x=  192, z=   80, f=3},
+    {n="corlab", x=  192, z=   80, f=1},
     {n="cormex", x=  176, z=    0, f=0},
     {n="corwin", x=   72, z=  216, f=0},
     {n="corwin", x=   40, z=  168, f=0},

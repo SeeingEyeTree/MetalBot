@@ -288,6 +288,7 @@ label { font-size: 12px; color: #8b949e; }
     <label>×</label>
     <input type="number" id="gh" value="40" min="5" max="300" style="width:46px">
     <button id="btn-center-view" title="Center view on grid">⊙</button>
+    <button id="btn-center-content" title="Center all buildings on grid">⊞</button>
   </div>
   <div class="toolbar-sep"></div>
   <div class="toolbar-group">
@@ -705,6 +706,24 @@ function resizeCanvas(){
   canvas.width=wrap.clientWidth;
   canvas.height=wrap.clientHeight-20;
   sched();
+}
+
+function centerContent(){
+  if(!state.placements.length) return;
+  let minC=Infinity,maxC=-Infinity,minR=Infinity,maxR=-Infinity;
+  for(const p of state.placements){
+    const b=getBld(p.buildingId); if(!b) continue;
+    const{w,h}=effSz(b,p.facing);
+    minC=Math.min(minC,p.col); maxC=Math.max(maxC,p.col+w);
+    minR=Math.min(minR,p.row); maxR=Math.max(maxR,p.row+h);
+  }
+  const g=gc();
+  const dc=Math.round(g.c-(minC+maxC)/2);
+  const dr=Math.round(g.r-(minR+maxR)/2);
+  if(dc===0&&dr===0) return;
+  pushUndo();
+  for(const p of state.placements){ p.col+=dc; p.row+=dr; }
+  recomputeConflicts(); sched();
 }
 
 function centerView(){
@@ -1248,6 +1267,7 @@ el('btn-import-bar').onclick=async()=>{
 el('btn-undo').onclick=undo;
 el('btn-redo').onclick=redo;
 el('btn-center-view').onclick=centerView;
+el('btn-center-content').onclick=centerContent;
 el('btn-help').onclick=()=>showM('modal-help');
 el('btn-help-close').onclick=()=>hideM('modal-help');
 

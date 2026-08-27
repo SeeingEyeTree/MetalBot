@@ -22,17 +22,21 @@ M.ENEMY_ALERT_RADIUS = 800    -- build LLT when enemy within this radius
 M.ENEMY_CLEAR_RADIUS = 1020   -- nanos reclaim LLTs when all enemies outside this
 M.GRID_SPACING       = 480    -- anchor-to-anchor between adjacent blueprints
 
+-- Registry of every building successfully placed by any placer state.
+-- Each entry: {n=unitName, wx=worldX, wz=worldZ}
+M.registry = {}
+
 local GRID_SPACING       = M.GRID_SPACING
 local ENEMY_ALERT_RADIUS = M.ENEMY_ALERT_RADIUS
 local ENEMY_CLEAR_RADIUS = M.ENEMY_CLEAR_RADIUS
-local METAL_LOW_FRAC     = 0.15   -- metal interrupt threshold
-local ENERGY_LOW_FRAC    = 0.15   -- energy interrupt threshold
+local METAL_LOW_FRAC     = 0.17   -- metal interrupt threshold
+local ENERGY_LOW_FRAC    = 0.17   -- energy interrupt threshold
 local CORRL_UNIT         = "corrl"
 local LLT_NAMES          = {"corhllt", "corlt", "armhllt", "armlt"}  -- LLT candidates
 local LLT_SEARCH_RADIUS  = 200    -- world-unit radius to try placing LLT around anchor
 local CMD_STOP           = 0
 local CMD_RECLAIM        = 90
-local TASK_MATCH_RADIUS2 = 48 * 48  -- sq-distance for UnitFinished → task matching
+local TASK_MATCH_RADIUS2 = 32 * 32  -- sq-distance for UnitFinished → task matching
 
 -- ── Classification ────────────────────────────────────────────────────────────
 
@@ -99,37 +103,25 @@ local function GetLLTDefID()
 end
 
 -- Build a flat queue from the blueprint layout (rotated to world space).
--- Order: nano → metal → energy → other → corrl
--- Items only need a `built` flag; no `dispatched` field.
+-- Preserves blueprint layout order. cls is set for interrupt lookups only.
 local function BuildQueue(blueprint, anchorX, anchorZ, rotation)
-    local nano, metal, energy, other, corrl_items = {}, {}, {}, {}, {}
+    local queue = {}
     for _, u in ipairs(blueprint.layout) do
         local rx, rz = RotateOffset(u.x, u.z, rotation)
         local rf = (u.f + rotation) % 4
         local ud = UnitDefNames and UnitDefNames[u.n]
         local defID = ud and ud.id
-        local item = {
-            n     = u.n,
-            defID = defID,
-            wx    = anchorX + rx,
-            wz    = anchorZ + rz,
-            f     = rf,
-            cls   = ClassifyUnit(u.n),
-            built = false,
+        queue[#queue+1] = {
+            n       = u.n,
+            defID   = defID,
+            wx      = anchorX + rx,
+            wz      = anchorZ + rz,
+            f       = rf,
+            cls     = ClassifyUnit(u.n),
+            built   = false,
+            retries = 0,
         }
-        if     item.cls == "corrl"  then corrl_items[#corrl_items+1] = item
-        elseif item.cls == "nano"   then nano[#nano+1]   = item
-        elseif item.cls == "metal"  then metal[#metal+1] = item
-        elseif item.cls == "energy" then energy[#energy+1] = item
-        else                             other[#other+1]  = item
-        end
     end
-    local queue = {}
-    for _, t in ipairs(nano)        do queue[#queue+1] = t end
-    for _, t in ipairs(metal)       do queue[#queue+1] = t end
-    for _, t in ipairs(energy)      do queue[#queue+1] = t end
-    for _, t in ipairs(other)       do queue[#queue+1] = t end
-    for _, t in ipairs(corrl_items) do queue[#queue+1] = t end
     return queue
 end
 
@@ -288,6 +280,7 @@ function M.OnUnitFinished(state, unitID, unitDefID, x, z)
         if not item.built and item.defID == unitDefID then
             if PosMatchesTask(item, x, z) then
                 item.built = true
+                M.registry[#M.registry + 1] = {n = item.n, wx = item.wx, wz = item.wz}
                 if state.currentTask == item then
                     state.currentTask = nil
                 end
@@ -345,6 +338,31 @@ function M.Update(state, frame, resources)
     -- If we had a task in flight and the unit didn't appear, the build command
     -- was silently dropped.  Clear currentTask so it gets retried this frame.
     if state.currentTask and not state.currentTask.built then
+        local t = state.currentTask
+        t.retries = t.retries + 1
+        if t.retries >= 1 then
+            Spring.Echo(string.format("[BP] STUCK builder=%d %s at (%.0f, %.0f) retry#%d",
+                builderID, t.n or "?", t.wx, t.wz, t.retries))
+            local nearby = {}
+            local r2 = 320 * 320
+            for _, b in ipairs(M.registry) do
+                local dx = b.wx - t.wx
+                local dz = b.wz - t.wz
+                local d2 = dx * dx + dz * dz
+                if d2 <= r2 then
+                    nearby[#nearby + 1] = {n = b.n, wx = b.wx, wz = b.wz, d = math.floor(math.sqrt(d2) + 0.5)}
+                end
+            end
+            table.sort(nearby, function(a, b) return a.d < b.d end)
+            if #nearby > 0 then
+                Spring.Echo("[BP]   nearby registry (within 320):")
+                for _, b in ipairs(nearby) do
+                    Spring.Echo(string.format("[BP]     %s at (%.0f, %.0f)  dist=%d", b.n, b.wx, b.wz, b.d))
+                end
+            else
+                Spring.Echo("[BP]   no registry entries within 320 units")
+            end
+        end
         state.currentTask = nil
     elseif state.currentTask then
         state.currentTask = nil  -- built successfully; just tidy up
@@ -388,14 +406,12 @@ function M.Update(state, frame, resources)
         if task then
             IssueBuildTask(builderID, task)
             state.currentTask = task
-        else
-            -- Nothing of this class left — pause until resource recovers.
-            state.paused = true
+            return
         end
-        return
+        -- No items of this class remain — fall through to normal build order.
     end
 
-    -- No interrupt — build the next unbuilt item in default order.
+    -- No interrupt (or interrupt class exhausted) — build next unbuilt item in order.
     state.activeInterrupt = nil
     for _, item in ipairs(state.queue) do
         if not item.built then

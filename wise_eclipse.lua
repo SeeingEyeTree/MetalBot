@@ -1,0 +1,491 @@
+-- wise_eclipse.lua  ─  mex-grid scaling bot for Beyond All Reason
+-- Commander builds com_starter; bot lab makes 2 con bots (nanos + bot_starter);
+-- air lab expands mex_grids outward using blueprint_placer (one air con per grid).
+-- COR only. Expansion blocked east of the bot_starter column.
+
+local widget = widget
+local Spring = Spring
+local CMD    = CMD
+
+local spGetUnitPosition = Spring.GetUnitPosition
+local spGetUnitDefID    = Spring.GetUnitDefID
+local spGiveOrderToUnit = Spring.GiveOrderToUnit
+local spGetMyTeamID     = Spring.GetMyTeamID
+local spGetGroundHeight = Spring.GetGroundHeight
+
+local CMD_GUARD = (CMD and CMD.GUARD) or 25
+local CMD_STOP  = 0
+
+function widget:GetInfo()
+    return {
+        name    = "Wise Eclipse",
+        desc    = "Mex-scaling bot using blueprint_placer (COR)",
+        author  = "",
+        date    = "2026",
+        license = "GNU GPL, v3 or later",
+        layer   = 0,
+        enabled = true
+    }
+end
+
+-- ── Blueprints and placer (loaded in Initialize) ──────────────────────────────
+local BP_PLACER    = nil
+local COM_STARTER  = nil
+local BOT_STARTER  = nil
+local MEX_GRID_BP  = nil
+local EMPTY_GRID_BP = nil
+
+-- ── State ─────────────────────────────────────────────────────────────────────
+local myTeamID    = nil
+local commanderID = nil
+local baseX, baseZ = nil, nil
+local GRID_SPACING = nil   -- assigned from BP_PLACER after Initialize
+
+local botLabID    = nil
+local airLabID    = nil
+
+local conBot1ID       = nil   -- first con bot (builds perimeter nanos)
+local conBot2ID       = nil   -- second con bot (builds bot_starter)
+local conBotsQueued   = false
+local conBot1Assigned = false
+local conBot2Assigned = false
+
+local emptyGridState  = nil   -- con bot 1 builds perimeter nanos
+local botStarterState = nil
+local gridStates      = {}    -- active mex_grid placer states
+
+-- Grid expansion
+local completedAnchors  = {}  -- {anchorX,anchorZ} of grids fully done
+local assignedAnchors   = {}  -- "ax,az" keys for all assigned grids (prevents double-assign)
+local pendingPlacements = {}  -- {anchorX,anchorZ,rotation} waiting for a free air con
+local freeAirCons       = {}  -- air con IDs that have exited the lab but need assignment
+local airConsQueued     = false
+
+
+-- ── Helpers ───────────────────────────────────────────────────────────────────
+
+local function DefID(name)
+    local ud = UnitDefNames[name]
+    return ud and ud.id
+end
+
+local function GiveBuild(unitID, defID, x, y, z, facing, shift)
+    spGiveOrderToUnit(unitID, -defID, {x, y, z, facing}, shift and {"shift"} or {})
+end
+
+local function IsCommander(uDefID)
+    local d = uDefID and UnitDefs[uDefID]
+    if not d then return false end
+    return d.customParams ~= nil
+        and (d.customParams.iscommander ~= nil or d.customParams.is_commander ~= nil)
+end
+
+local airFactoryCache = {}
+local function IsAirFactory(uDefID)
+    if not uDefID then return false end
+    if airFactoryCache[uDefID] ~= nil then return airFactoryCache[uDefID] end
+    local d = UnitDefs[uDefID]
+    local result = false
+    if d and d.isFactory and d.buildOptions and #d.buildOptions > 0 then
+        local total, airCount = 0, 0
+        for _, optID in ipairs(d.buildOptions) do
+            local bd = UnitDefs[optID]
+            if bd then
+                total = total + 1
+                if bd.canFly then airCount = airCount + 1 end
+            end
+        end
+        result = total > 0 and (airCount == total)
+    end
+    airFactoryCache[uDefID] = result
+    return result
+end
+
+local function FindConBotDefID(labDefID)
+    local d = UnitDefs[labDefID]
+    if not d or not d.buildOptions then return nil end
+    local best, bestCost = nil, math.huge
+    for _, optID in ipairs(d.buildOptions) do
+        local od = UnitDefs[optID]
+        if od and od.isBuilder and not od.canFly and not od.isFactory
+                and od.speed and od.speed > 0 then
+            local cost = od.metalCost or 999999
+            if cost < bestCost then bestCost = cost; best = optID end
+        end
+    end
+    return best
+end
+
+local function FindAirConDefID(labDefID)
+    local d = UnitDefs[labDefID]
+    if not d or not d.buildOptions then return nil end
+    for _, optID in ipairs(d.buildOptions) do
+        local od = UnitDefs[optID]
+        if od and od.isBuilder and od.canFly and not od.isFactory then
+            return optID
+        end
+    end
+    return nil
+end
+
+-- Mirrors blueprint_placer internal (not exported from that module).
+local function RotateOffset(x, z, r)
+    if     r == 0 then return  x,  z
+    elseif r == 1 then return -z,  x
+    elseif r == 2 then return -x, -z
+    elseif r == 3 then return  z, -x
+    end
+    return x, z
+end
+
+-- Return the rotation (0–3) that places bp's corrl on the side facing the existing grid.
+-- dx = new_anchor_x - existing_anchor_x, dz = new_anchor_z - existing_anchor_z.
+-- (Matches the sign convention used in blueprint_placer.FindValidPlacement.)
+local function FindCorrlRotation(bp, dx, dz)
+    local corrX, corrZ
+    for _, u in ipairs(bp.layout) do
+        if u.n == "corrl" then corrX, corrZ = u.x, u.z; break end
+    end
+    if not corrX then return 0 end
+    for r = 0, 3 do
+        local rcx, rcz = RotateOffset(corrX, corrZ, r)
+        -- corrl must be on the side facing the existing grid (opposite of dx/dz).
+        local ok = (dx > 0 and rcx < 0)   -- new is east,  corrl faces west
+                or (dx < 0 and rcx > 0)   -- new is west,  corrl faces east
+                or (dz > 0 and rcz < 0)   -- new is south, corrl faces north
+                or (dz < 0 and rcz > 0)   -- new is north, corrl faces south
+        if ok then return r end
+    end
+    return 0
+end
+
+local function AnchorKey(ax, az)
+    return tostring(ax) .. "," .. tostring(az)
+end
+
+local function GroundBotFilter(defID)
+    local ud = UnitDefs[defID]
+    return ud ~= nil and ud.isBuilder and not ud.canFly and not ud.isFactory
+end
+
+-- ── Grid expansion (forward-declared so TryAssign's closure can reference TryExpand) ──
+local TryExpand
+
+local function TryAssign()
+    while #freeAirCons > 0 and #pendingPlacements > 0 do
+        local conID = table.remove(freeAirCons, 1)
+        local p     = table.remove(pendingPlacements, 1)
+        if not spGetUnitDefID(conID) then
+            -- Dead con; put the placement back and try with next con.
+            table.insert(pendingPlacements, 1, p)
+        else
+            local state = BP_PLACER.New(MEX_GRID_BP, conID, p.anchorX, p.anchorZ, p.rotation)
+            state.onComplete = function(s)
+                completedAnchors[#completedAnchors + 1] = {anchorX = s.anchorX, anchorZ = s.anchorZ}
+                -- Queue one new air con so the next expansion has a builder.
+                if airLabID and spGetUnitDefID(airLabID) then
+                    local defID = FindAirConDefID(spGetUnitDefID(airLabID))
+                    if defID then
+                        spGiveOrderToUnit(airLabID, -defID, {0}, {"shift"})
+                    end
+                end
+                TryExpand()
+            end
+            gridStates[#gridStates + 1] = state
+        end
+    end
+end
+
+TryExpand = function()
+    local result = BP_PLACER.FindValidPlacement(MEX_GRID_BP, completedAnchors)
+    if not result then return end
+    -- East constraint: no mex_grid further east than the bot_starter column.
+    if result.anchorX > baseX + GRID_SPACING then return end
+    -- Duplicate guard.
+    local key = AnchorKey(result.anchorX, result.anchorZ)
+    if assignedAnchors[key] then return end
+    assignedAnchors[key] = true
+    pendingPlacements[#pendingPlacements + 1] = result
+    TryAssign()
+end
+
+-- ── Commander → com_starter (direct queue, same as test_com_starter.lua) ─────
+
+local function QueueComBlueprint(anchorX, anchorZ)
+    local first = true
+    local count = 0
+    for _, u in ipairs(COM_STARTER.layout) do
+        local ud = UnitDefNames and UnitDefNames[u.n]
+        if ud then
+            local wx = anchorX + u.x
+            local wz = anchorZ + u.z
+            local wy = spGetGroundHeight(wx, wz) or 0
+            local opts = first and {} or {"shift"}
+            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, u.f}, opts)
+            first = false
+            count = count + 1
+        end
+    end
+    Spring.Echo("[WE] QueueComBlueprint: queued " .. count .. " orders at "
+        .. math.floor(anchorX) .. "," .. math.floor(anchorZ))
+end
+
+local function StartComBlueprint()
+    local cx, _, cz = spGetUnitPosition(commanderID)
+    if not cx then Spring.Echo("[WE] StartComBlueprint: no position"); return end
+    baseX = math.floor(cx / 16 + 0.5) * 16
+    baseZ = math.floor(cz / 16 + 0.5) * 16
+    Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ)
+
+    -- Block the commander cell so TryExpand never places a mex_grid here.
+    -- Not added to completedAnchors: the mex_grid system seeds itself from
+    -- the offset initial anchors in StartAirExpansion, so FindValidPlacement
+    -- never generates natural GRID_SPACING positions adjacent to the commander.
+    assignedAnchors[AnchorKey(baseX, baseZ)] = true
+
+    QueueComBlueprint(baseX, baseZ)
+end
+
+-- ── Con bot 1 → perimeter nanos ───────────────────────────────────────────────
+
+local function AssignConBot1()
+    Spring.Echo("[WE] AssignConBot1")
+    emptyGridState = BP_PLACER.New(EMPTY_GRID_BP, conBot1ID, baseX, baseZ, 0)
+    if commanderID then
+        spGiveOrderToUnit(commanderID, CMD_GUARD, {conBot1ID}, {"shift"})
+    end
+    conBot1Assigned = true
+end
+
+-- ── Con bot 2 → bot_starter (east of com) ────────────────────────────────────
+
+local function AssignConBot2()
+    Spring.Echo("[WE] AssignConBot2")
+    local bsX = baseX + GRID_SPACING
+    local bsZ = baseZ
+    -- bot_starter is east of com; dx = new_x - existing_x = +GRID_SPACING.
+    local rot = FindCorrlRotation(BOT_STARTER, GRID_SPACING, 0)
+
+    -- Mark assigned so TryExpand doesn't place a mex_grid on top of bot_starter.
+    local key = AnchorKey(bsX, bsZ)
+    assignedAnchors[key] = true
+
+    botStarterState = BP_PLACER.New(BOT_STARTER, conBot2ID, bsX, bsZ, rot, {})
+    botStarterState.onComplete = function(s)
+        -- Add bot_starter as a completed anchor so mex_grids can expand adjacent to it.
+        completedAnchors[#completedAnchors + 1] = {anchorX = s.anchorX, anchorZ = s.anchorZ}
+        TryExpand()
+    end
+    conBot2Assigned = true
+end
+
+-- ── Air lab → initial 3 mex_grids ─────────────────────────────────────────────
+
+local function StartAirExpansion()
+    Spring.Echo("[WE] StartAirExpansion airConsQueued=" .. tostring(airConsQueued) .. " baseX=" .. tostring(baseX))
+    if airConsQueued then return end
+    airConsQueued = true
+
+    local initials = {
+        {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
+        {ax = baseX,                az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
+        {ax = baseX,                az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
+    }
+    for _, init in ipairs(initials) do
+        local key = AnchorKey(init.ax, init.az)
+        if not assignedAnchors[key] then
+            assignedAnchors[key] = true
+            local rot = FindCorrlRotation(MEX_GRID_BP, init.dx, init.dz)
+            pendingPlacements[#pendingPlacements + 1] = {
+                anchorX  = init.ax,
+                anchorZ  = init.az,
+                rotation = rot,
+            }
+        end
+    end
+
+    -- Queue one air con per initial placement.
+    local airDefID = FindAirConDefID(spGetUnitDefID(airLabID))
+    if airDefID then
+        spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
+        spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
+        spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
+    end
+end
+
+-- ── Widget callbacks ──────────────────────────────────────────────────────────
+
+function widget:Initialize()
+    Spring.Echo("[WE] Initialize")
+    local ok1, r1 = pcall(VFS.Include, "LuaUI/Widgets/blueprint_placer.lua")
+    local ok2, r2 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/com_starter.lua")
+    local ok3, r3 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/bot_starter.lua")
+    local ok4, r4 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/mex_grid_aa_corner.lua")
+    local ok5, r5 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/empty_grid.lua")
+    if not ok1 then Spring.Echo("[WE] ERROR loading blueprint_placer: "    .. tostring(r1)); return end
+    if not ok2 then Spring.Echo("[WE] ERROR loading com_starter: "         .. tostring(r2)); return end
+    if not ok3 then Spring.Echo("[WE] ERROR loading bot_starter: "         .. tostring(r3)); return end
+    if not ok4 then Spring.Echo("[WE] ERROR loading mex_grid_aa_corner: "  .. tostring(r4)); return end
+    if not ok5 then Spring.Echo("[WE] ERROR loading empty_grid: "          .. tostring(r5)); return end
+    BP_PLACER    = r1
+    COM_STARTER  = r2
+    BOT_STARTER  = r3
+    MEX_GRID_BP  = r4
+    EMPTY_GRID_BP = r5
+    GRID_SPACING = BP_PLACER.GRID_SPACING
+    Spring.Echo("[WE] Loaded OK. GRID_SPACING=" .. tostring(GRID_SPACING))
+
+    myTeamID = spGetMyTeamID()
+    local units = Spring.GetTeamUnits(myTeamID) or {}
+    for _, uid in ipairs(units) do
+        if IsCommander(spGetUnitDefID(uid)) then
+            commanderID = uid
+            break
+        end
+    end
+    if commanderID then
+        Spring.Echo("[WE] Commander found in Initialize id=" .. commanderID)
+        StartComBlueprint()
+    end
+end
+
+function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
+    if not myTeamID then myTeamID = spGetMyTeamID() end
+    if teamID ~= myTeamID then return end
+
+    local dName = UnitDefs[unitDefID] and UnitDefs[unitDefID].name or "?"
+    Spring.Echo("[WE] UnitCreated id=" .. unitID .. " def=" .. dName .. " builder=" .. tostring(builderID))
+
+    if not baseX then return end
+
+    local d = unitDefID and UnitDefs[unitDefID]
+    if not d then return end
+
+    -- Detect labs.
+    if d.isFactory then
+        local isAir = IsAirFactory(unitDefID)
+        Spring.Echo("[WE]   factory isAir=" .. tostring(isAir))
+        if isAir and not airLabID then
+            airLabID = unitID
+            Spring.Echo("[WE]   -> airLabID=" .. unitID)
+        elseif not isAir and not botLabID then
+            botLabID = unitID
+            Spring.Echo("[WE]   -> botLabID=" .. unitID)
+        end
+        return
+    end
+
+    -- First two con bots from bot lab.
+    if builderID == botLabID and d.isBuilder and not d.canFly and not d.isFactory then
+        spGiveOrderToUnit(unitID, CMD_STOP, {}, {})   -- clear factory guard order
+        if not conBot1ID then
+            Spring.Echo("[WE] ConBot1 detected id=" .. unitID)
+            conBot1ID = unitID
+            AssignConBot1()
+        elseif not conBot2ID then
+            Spring.Echo("[WE] ConBot2 detected id=" .. unitID)
+            conBot2ID = unitID
+            AssignConBot2()
+        end
+        return
+    end
+
+    -- Air constructors from air lab get pooled for grid assignment.
+    if builderID == airLabID and d.isBuilder and d.canFly and not d.isFactory then
+        spGiveOrderToUnit(unitID, CMD_STOP, {}, {})   -- clear factory guard order
+        Spring.Echo("[WE] AirCon detected id=" .. unitID .. " freeAirCons#=" .. (#freeAirCons+1))
+        freeAirCons[#freeAirCons + 1] = unitID
+        TryAssign()
+    end
+end
+
+function widget:UnitFinished(unitID, unitDefID, teamID)
+    if teamID ~= myTeamID then return end
+
+    local dName = UnitDefs[unitDefID] and UnitDefs[unitDefID].name or "?"
+    Spring.Echo("[WE] UnitFinished id=" .. unitID .. " def=" .. dName)
+
+    -- Commander detection (mirrors test_com_starter pattern).
+    if IsCommander(unitDefID) and not commanderID then
+        Spring.Echo("[WE] Commander detected in UnitFinished id=" .. unitID)
+        commanderID = unitID
+        StartComBlueprint()
+    end
+
+    if not baseX then return end
+
+    -- Bot lab done → queue 2 con bots.
+    if unitID == botLabID and not conBotsQueued then
+        Spring.Echo("[WE] BotLab finished -> queueing 2 con bots")
+        local defID = FindConBotDefID(unitDefID)
+        Spring.Echo("[WE]   conBotDefID=" .. tostring(defID))
+        if defID then
+            spGiveOrderToUnit(botLabID, -defID, {0}, {})
+            spGiveOrderToUnit(botLabID, -defID, {0}, {})
+            conBotsQueued = true
+        end
+        -- fall through so comStarterState is notified the bot lab finished
+    end
+
+    -- Air lab done → seed initial mex_grids.
+    if unitID == airLabID then
+        Spring.Echo("[WE] AirLab finished -> StartAirExpansion")
+        StartAirExpansion()
+        -- fall through to also notify placer states below
+    end
+
+    -- Notify all active placer states so they can mark queue items as built.
+    local x, _, z = spGetUnitPosition(unitID)
+    if emptyGridState and not emptyGridState.done then
+        BP_PLACER.OnUnitFinished(emptyGridState, unitID, unitDefID, x, z)
+    end
+    if botStarterState and not botStarterState.done then
+        BP_PLACER.OnUnitFinished(botStarterState, unitID, unitDefID, x, z)
+    end
+    for _, gs in ipairs(gridStates) do
+        if not gs.done then
+            BP_PLACER.OnUnitFinished(gs, unitID, unitDefID, x, z)
+        end
+    end
+end
+
+function widget:GameFrame(frame)
+    if not myTeamID or not baseX then return end
+
+    local _, m, ms  = pcall(Spring.GetTeamResources, myTeamID, "metal")
+    local _, em, ems = pcall(Spring.GetTeamResources, myTeamID, "energy")
+    local resources = {
+        metal = m or 0, metalStorage = ms or 1000,
+        energy = em or 0, energyStorage = ems or 1000,
+    }
+
+    if frame % 10 == 0 then
+        if emptyGridState and not emptyGridState.done then
+            BP_PLACER.Update(emptyGridState, frame, resources)
+        end
+        if botStarterState and not botStarterState.done then
+            BP_PLACER.Update(botStarterState, frame, resources)
+        end
+        for _, gs in ipairs(gridStates) do
+            if not gs.done then
+                BP_PLACER.Update(gs, frame, resources)
+            end
+        end
+    end
+
+    if frame % 30 == 0 then
+        local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+        for _, gs in ipairs(gridStates) do
+            if not gs.done then
+                local units = Spring.GetUnitsInCylinder(gs.anchorX, gs.anchorZ, BP_PLACER.ENEMY_CLEAR_RADIUS)
+                local clear = true
+                if units then
+                    for _, uid in ipairs(units) do
+                        if Spring.GetUnitAllyTeam(uid) ~= myAlly then clear = false; break end
+                    end
+                end
+                if clear then BP_PLACER.HandleEnemyClear(gs) end
+            end
+        end
+    end
+end
