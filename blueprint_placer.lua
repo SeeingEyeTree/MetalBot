@@ -502,4 +502,58 @@ function M.FindValidPlacement(blueprint, existingGrids)
     return nil
 end
 
+-- Find ALL valid anchors+rotations adjacent to existing grids.
+-- Returns a list of {anchorX, anchorZ, rotation}; deduplicates by position.
+function M.FindAllValidPlacements(blueprint, existingGrids)
+    local corrX, corrZ = FindCorrl(blueprint.layout)
+    if not corrX then return {} end
+
+    local DIRS = {
+        { GRID_SPACING, 0},
+        {-GRID_SPACING, 0},
+        {0,  GRID_SPACING},
+        {0, -GRID_SPACING},
+    }
+
+    local results = {}
+    local seen    = {}
+
+    for _, grid in ipairs(existingGrids) do
+        local gx, gz = grid.anchorX, grid.anchorZ
+        for _, dir in ipairs(DIRS) do
+            local newX = gx + dir[1]
+            local newZ = gz + dir[2]
+            local key  = tostring(newX) .. "," .. tostring(newZ)
+            if not seen[key] then
+                for r = 0, 3 do
+                    local rcx, rcz = RotateOffset(corrX, corrZ, r)
+                    local ok = false
+                    if dir[1] > 0 and rcx < 0 then ok = true end
+                    if dir[1] < 0 and rcx > 0 then ok = true end
+                    if dir[2] > 0 and rcz < 0 then ok = true end
+                    if dir[2] < 0 and rcz > 0 then ok = true end
+                    if ok then
+                        local corrWorldX = newX + rcx
+                        local corrWorldZ = newZ + rcz
+                        local corrY      = Spring.GetGroundHeight(corrWorldX, corrWorldZ) or 0
+                        local corrUD     = UnitDefNames and UnitDefNames[CORRL_UNIT]
+                        local corrDefID  = corrUD and corrUD.id
+                        local valid      = true
+                        if corrDefID then
+                            local res = Spring.TestBuildOrder(corrDefID, corrWorldX, corrY, corrWorldZ, (0 + r) % 4)
+                            valid = res and res ~= 0
+                        end
+                        if valid then
+                            seen[key] = true
+                            results[#results + 1] = {anchorX = newX, anchorZ = newZ, rotation = r}
+                            break  -- correct rotation found for this position; move on
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return results
+end
+
 return M

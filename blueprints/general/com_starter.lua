@@ -45,5 +45,7 @@ M.layout = {
     {n="cornanotc", x= -216, z= -216, f=0},
     {n="cornanotc", x= -216, z=  216, f=0},
     {n="cornanotc", x=  216, z=  216, f=0},
+    {n="corestor", x=  -96, z=  160, f=0},
+    {n="corestor", x=  -96, z=   96, f=0},
 }
 return M

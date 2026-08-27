@@ -6,7 +6,7 @@
       "unitDef": "cormex",
       "width": 4,
       "height": 4,
-      "category": "mt1",
+      "category": "metal",
       "color": "#aab6b0"
     },
     {
@@ -42,7 +42,7 @@
       "unitDef": "corap",
       "width": 9,
       "height": 6,
-      "category": "corap",
+      "category": "lab",
       "color": "#60061d"
     },
     {
@@ -51,7 +51,7 @@
       "unitDef": "corlab",
       "width": 6,
       "height": 6,
-      "category": "bott1",
+      "category": "lab",
       "color": "#8e1016"
     },
     {
@@ -60,7 +60,7 @@
       "unitDef": "corvp",
       "width": 6,
       "height": 6,
-      "category": "corvp",
+      "category": "lab",
       "color": "#ab1212"
     },
     {
@@ -79,7 +79,7 @@
       "width": 2,
       "height": 2,
       "category": "General",
-      "color": "#4a8f6b"
+      "color": "#999415"
     },
     {
       "id": "e7db7785-b167-44cb-88c9-9793611ccd15",
@@ -89,6 +89,42 @@
       "height": 2,
       "category": "General",
       "color": "#4a8f6b"
+    },
+    {
+      "id": "7e0f8d70-50ec-4a9b-9415-92fafc300dd1",
+      "displayName": "Air T2",
+      "unitDef": "coraap",
+      "width": 9,
+      "height": 9,
+      "category": "lab",
+      "color": "#b45e0e"
+    },
+    {
+      "id": "f0c9a75d-58f0-44d2-a851-ae8567a6a872",
+      "displayName": "BotT2",
+      "unitDef": "coralab",
+      "width": 9,
+      "height": 9,
+      "category": "lab",
+      "color": "#4a8f6b"
+    },
+    {
+      "id": "a07ee231-8bd6-41c4-971c-97af1e15b988",
+      "displayName": "VechT2",
+      "unitDef": "coravp",
+      "width": 9,
+      "height": 9,
+      "category": "lab",
+      "color": "#b3c90d"
+    },
+    {
+      "id": "c436efe1-b886-47e0-826a-bc7488710f1f",
+      "displayName": "Corestor",
+      "unitDef": "corestor",
+      "width": 4,
+      "height": 4,
+      "category": "storage",
+      "color": "#fff700"
     }
   ]
 }
