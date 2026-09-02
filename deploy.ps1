@@ -17,14 +17,18 @@ $dst = "$barBase\data\LuaUI\Widgets"
 Write-Host "Deploying to: $dst"
 
 $files = @(
-    "wise_eclipse.lua",
+    "macro_controller.lua",
     "blueprint_placer.lua",
+    "blueprints_data.lua",
     "blueprints\general\com_starter.lua",
     "blueprints\general\bot_starter.lua",
     "blueprints\general\mex_grid_aa_corner.lua",
     "blueprints\general\empty_grid.lua",
     "blueprints\general\VechT1_and_BotT2.lua",
+    "blueprints\general\energy_grid_t1.lua",
+    "blueprints\general\4AirT2.lua",
     "blueprints\general\fussion_grid_60x60.lua",
+    "blueprints\general\mex_grid_t2.lua",
     "lab_controller.lua",
     "unit_controller.lua"
 )

@@ -423,8 +423,11 @@ label { font-size: 12px; color: #8b949e; }
     <table class="shortcuts-tbl">
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td>Click palette → click grid</td><td>Place building</td></tr>
-        <tr><td>Drag from palette → drop on grid</td><td>Place building</td></tr>
+        <tr><td>Click palette card</td><td>Arm building (stays armed)</td></tr>
+        <tr><td>Click same card again / Escape</td><td>Disarm</td></tr>
+        <tr><td>Click grid (armed)</td><td>Place one building</td></tr>
+        <tr><td>Click + drag grid (armed)</td><td>Place a line (H or V, snapped)</td></tr>
+        <tr><td>Drag from palette → drop on grid</td><td>Place building (one-shot)</td></tr>
         <tr><td>Drag placed building</td><td>Move building</td></tr>
         <tr><td>Drag on empty grid</td><td>Box-select multiple</td></tr>
         <tr><td>Shift + click</td><td>Add to selection</td></tr>
@@ -475,14 +478,16 @@ let undoStack = [], redoStack = [];
 let vScale = 1, vX = 0, vY = 0;
 
 // Interaction
-let armedId   = null;   // building ID armed from palette
+let armedId     = null;   // building ID armed from palette
+let armedFacing = 0;      // facing for next placement (R rotates this)
 let selIds    = new Set();
 let clipboard = [];
 
-let iMode = null;       // 'move'|'select'|'pan'
+let iMode = null;       // 'move'|'select'|'pan'|'linedrag'
 let dragPx  = {x:0,y:0};
 let dragCell= {c:0,r:0};
-let moveState = null;   // {items:[{id,oc,or}], adc, adr}
+let moveState    = null;   // {items:[{id,oc,or}], adc, adr}
+let lineDragStart= null;   // {c,r} — start cell of line drag
 let selBox  = null;     // {x1,y1,x2,y2}
 let spaceDown = false;
 let hover   = {c:-1,r:-1};
@@ -655,6 +660,26 @@ function swapOrder(pid,target){
   p.buildOrder=target;
   if(other) other.buildOrder=old;
   normalizeOrder(); updateInspector(); sched();
+}
+
+// ─── Line drag helper ─────────────────────────────────────────────────────────
+function getLineCells(start,end,bld,facing){
+  const{w,h}=effSz(bld,facing);
+  const dx=end.c-start.c, dz=end.r-start.r;
+  const cells=[];
+  if(Math.abs(dx)>=Math.abs(dz)){
+    // Horizontal line
+    const step=w, dir=dx>=0?1:-1;
+    let c=start.c;
+    while(dir>0?c<=end.c:c>=end.c){ cells.push({c,r:start.r}); c+=dir*step; }
+  } else {
+    // Vertical line
+    const step=h, dir=dz>=0?1:-1;
+    let r=start.r;
+    while(dir>0?r<=end.r:r>=end.r){ cells.push({c:start.c,r}); r+=dir*step; }
+  }
+  if(!cells.length) cells.push({c:start.c,r:start.r});
+  return cells;
 }
 
 // ─── Placement ops ────────────────────────────────────────────────────────────
@@ -837,10 +862,22 @@ function render(){
   const ghostId=armedId||curDragBldId;
   if(ghostId&&hover.c>=0){
     const b=getBld(ghostId); if(b){
-      const{w,h}=effSz(b,0);
+      const facing=ghostId===armedId?armedFacing:0;
       ctx.fillStyle=hexRgba(b.color,0.38); ctx.strokeStyle='#f0883e'; ctx.lineWidth=2; ctx.setLineDash([4,4]);
-      ctx.fillRect(hover.c*cs+vX,hover.r*cs+vY,w*cs,h*cs);
-      ctx.strokeRect(hover.c*cs+vX+1,hover.r*cs+vY+1,w*cs-2,h*cs-2); ctx.setLineDash([]);
+      if(iMode==='linedrag'&&lineDragStart&&ghostId===armedId){
+        // Draw the full line of ghost buildings
+        const cells=getLineCells(lineDragStart,hover,b,armedFacing);
+        const{w,h}=effSz(b,armedFacing);
+        for(const cell of cells){
+          ctx.fillRect(cell.c*cs+vX,cell.r*cs+vY,w*cs,h*cs);
+          ctx.strokeRect(cell.c*cs+vX+1,cell.r*cs+vY+1,w*cs-2,h*cs-2);
+        }
+      } else {
+        const{w,h}=effSz(b,facing);
+        ctx.fillRect(hover.c*cs+vX,hover.r*cs+vY,w*cs,h*cs);
+        ctx.strokeRect(hover.c*cs+vX+1,hover.r*cs+vY+1,w*cs-2,h*cs-2);
+      }
+      ctx.setLineDash([]);
     }
   }
 
@@ -887,7 +924,6 @@ canvas.addEventListener('drop',e=>{
   if(!bid) return;
   const r=canvas.getBoundingClientRect(), {c,r:row}=pxToCell(e.clientX-r.left,e.clientY-r.top);
   place(bid,c,row);
-  armedId=null; renderPalette();
 });
 
 canvas.addEventListener('mousemove',e=>{
@@ -903,6 +939,7 @@ canvas.addEventListener('mousemove',e=>{
   if(iMode==='pan'){ vX+=e.movementX; vY+=e.movementY; sched(); return; }
   if(iMode==='move'){ sched(); return; }
   if(iMode==='select'){ selBox.x2=px; selBox.y2=py; sched(); return; }
+  if(iMode==='linedrag'){ sched(); return; }
 
   canvas.style.cursor=armedId?'crosshair':(hitAt(hover.c,hover.r)?'move':'default');
   sched();
@@ -916,11 +953,10 @@ canvas.addEventListener('mousedown',e=>{
   if(e.button===1||(e.button===0&&spaceDown)){ iMode='pan'; canvas.style.cursor='grabbing'; e.preventDefault(); return; }
   if(e.button!==0) return;
 
-  // Armed placement
+  // Armed placement — start a line drag (mouseup commits)
   if(armedId){
-    place(armedId,cell.c,cell.r);
-    if(!e.shiftKey){ armedId=null; renderPalette(); }
-    return;
+    lineDragStart={c:cell.c,r:cell.r};
+    iMode='linedrag'; canvas.style.cursor='crosshair'; return;
   }
 
   const hit=hitAt(cell.c,cell.r);
@@ -941,6 +977,19 @@ canvas.addEventListener('mousedown',e=>{
 });
 
 canvas.addEventListener('mouseup',e=>{
+  if(iMode==='linedrag'){
+    if(armedId){
+      const bld=getBld(armedId);
+      if(bld){
+        const cells=getLineCells(lineDragStart,hover,bld,armedFacing);
+        pushUndo();
+        const maxO=state.placements.length?Math.max(...state.placements.map(p=>p.buildOrder)):0;
+        cells.forEach((cell,i)=>state.placements.push({id:uid(),buildingId:armedId,col:cell.c,row:cell.r,facing:armedFacing,buildOrder:maxO+i+1}));
+        recomputeConflicts(); sched();
+      }
+    }
+    iMode=null; lineDragStart=null; canvas.style.cursor='crosshair'; return;
+  }
   if(iMode==='pan'){ iMode=null; canvas.style.cursor=armedId?'crosshair':'default'; return; }
   if(iMode==='move'){
     const dc=hover.c-dragCell.c-moveState.adc, dr=hover.r-dragCell.r-moveState.adr;
@@ -971,6 +1020,7 @@ canvas.addEventListener('mouseleave',()=>{
   hover={c:-1,r:-1};
   if(iMode==='move'){ iMode=null; moveState=null; }
   if(iMode==='select'){ selBox=null; iMode=null; }
+  if(iMode==='linedrag'){ iMode=null; lineDragStart=null; }
   sched();
 });
 
@@ -987,9 +1037,13 @@ document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
   if(e.key===' '){ spaceDown=true; e.preventDefault(); return; }
   if(e.key==='Delete'||e.key==='Backspace'){ deleteSelected(); e.preventDefault(); return; }
-  if(e.key==='r'||e.key==='R'){ rotateSelected(); return; }
+  if(e.key==='r'||e.key==='R'){
+    if(armedId){ armedFacing=(armedFacing+1)%4; sched(); }
+    else rotateSelected();
+    return;
+  }
   if(e.key==='Escape'){
-    armedId=null; selIds.clear(); iMode=null; selBox=null; moveState=null;
+    armedId=null; armedFacing=0; selIds.clear(); iMode=null; selBox=null; moveState=null; lineDragStart=null;
     renderPalette(); updateInspector(); sched(); return;
   }
   if(e.key==='?'||e.key==='/'){ showM('modal-help'); return; }
@@ -1033,7 +1087,11 @@ function renderPalette(){
     card.className='palette-card'+(armedId===b.id?' armed':'');
     card.draggable=true;
     card.innerHTML=`<div class="pal-swatch" style="background:${b.color}"></div><div class="pal-info"><div class="pal-name">${b.displayName}</div><div class="pal-meta">${b.width}×${b.height} · ${b.category}</div></div>`;
-    card.onclick=()=>{ armedId=armedId===b.id?null:b.id; selIds.clear(); updateInspector(); renderPalette(); sched(); };
+    card.onclick=()=>{
+      if(armedId===b.id){ armedId=null; armedFacing=0; }
+      else { armedId=b.id; armedFacing=0; selIds.clear(); updateInspector(); }
+      renderPalette(); sched();
+    };
     card.addEventListener('dragstart',e=>{
       curDragBldId=b.id;
       e.dataTransfer.setData('text/plain',b.id);

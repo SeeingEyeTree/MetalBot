@@ -130,22 +130,23 @@ end
 -- Higher priority overrides lower.  Add new entries to extend the interrupt system.
 
 M.DEFAULT_INTERRUPTS = {
-    {
-        name       = "enemy",
-        priority   = 3,
-        buildType  = "defense",
-        isExternal = true,  -- build an LLT externally, not from the blueprint queue
-        check      = function(state, res, frame)
-            local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
-            local units  = Spring.GetUnitsInCylinder(state.anchorX, state.anchorZ, ENEMY_ALERT_RADIUS)
-            if not units then return false end
-            for i = 1, #units do
-                local ally = Spring.GetUnitAllyTeam and Spring.GetUnitAllyTeam(units[i])
-                if ally and ally ~= myAlly then return true end
-            end
-            return false
-        end,
-    },
+    -- TODO: re-enable enemy interrupt once placement & reclaim logic is stable
+    -- {
+    --     name       = "enemy",
+    --     priority   = 3,
+    --     buildType  = "defense",
+    --     isExternal = true,
+    --     check      = function(state, res, frame)
+    --         local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+    --         local units  = Spring.GetUnitsInCylinder(state.anchorX, state.anchorZ, ENEMY_ALERT_RADIUS)
+    --         if not units then return false end
+    --         for i = 1, #units do
+    --             local ally = Spring.GetUnitAllyTeam and Spring.GetUnitAllyTeam(units[i])
+    --             if ally and ally ~= myAlly then return true end
+    --         end
+    --         return false
+    --     end,
+    -- },
     {
         name      = "energy",
         priority  = 2,
@@ -243,6 +244,35 @@ local function IsNano(defID)
     return ud.isBuilder and not ud.isFactory and not ud.canFly
 end
 
+-- Count friendly nano turrets (from any grid, not just this one) that can
+-- physically reach world position (wx, wz).  Searches within 500 units so
+-- nanos from adjacent completed grids are included.
+local function CountNanosInRange(wx, wz)
+    local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+    if not myAlly then return 0 end
+    local units = Spring.GetUnitsInCylinder(wx, wz, 500)
+    if not units then return 0 end
+    local count = 0
+    for _, uid in ipairs(units) do
+        if Spring.GetUnitAllyTeam(uid) == myAlly then
+            local defID = Spring.GetUnitDefID(uid)
+            if IsNano(defID) then
+                local ud = UnitDefs[defID]
+                local reach = ((ud and ud.buildDistance) or 300) - 32
+                local ux, _, uz = Spring.GetUnitPosition(uid)
+                if ux then
+                    local dx, dz = ux - wx, uz - wz
+                    if dx*dx + dz*dz <= reach * reach then
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+    return count
+end
+M.CountNanosInRange = CountNanosInRange
+
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 -- Create a new placer session.
@@ -250,22 +280,29 @@ end
 function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
     rotation = rotation or 0
     local queue = BuildQueue(blueprint, anchorX, anchorZ, rotation)
+    local totalNanos = 0
+    for _, u in ipairs(blueprint.layout) do
+        if ClassifyUnit(u.n) == "nano" then totalNanos = totalNanos + 1 end
+    end
     return {
-        blueprint       = blueprint,
-        builderID       = builderID,
-        anchorX         = anchorX,
-        anchorZ         = anchorZ,
-        rotation        = rotation,
-        queue           = queue,
-        currentTask     = nil,   -- item currently being built; nil when idle
-        interrupts      = interrupts or M.DEFAULT_INTERRUPTS,
-        activeInterrupt = nil,
-        nanoUnitIDs     = {},
-        lltUnitIDs      = {},
-        lltPending      = false,
-        done            = false,
-        paused          = false,
-        onComplete      = nil,
+        blueprint          = blueprint,
+        builderID          = builderID,
+        anchorX            = anchorX,
+        anchorZ            = anchorZ,
+        rotation           = rotation,
+        queue              = queue,
+        currentTask        = nil,
+        interrupts         = interrupts or M.DEFAULT_INTERRUPTS,
+        activeInterrupt    = nil,
+        nanoUnitIDs        = {},
+        lltUnitIDs         = {},
+        lltPending         = false,
+        done               = false,
+        paused             = false,
+        onComplete         = nil,
+        totalNanos         = totalNanos,
+        nanoThresholdFired = false,
+        onNanoThreshold    = nil,   -- fires when ≥7/12 of nanos are built
     }
 end
 
@@ -295,6 +332,13 @@ function M.OnUnitFinished(state, unitID, unitDefID, x, z)
         local dz = (z or 0) - state.anchorZ
         if math.abs(dx) <= 240 and math.abs(dz) <= 240 then
             state.nanoUnitIDs[#state.nanoUnitIDs+1] = unitID
+            if not state.nanoThresholdFired and state.onNanoThreshold and state.totalNanos > 0 then
+                local thresh = math.ceil(state.totalNanos * 7 / 12)
+                if #state.nanoUnitIDs >= thresh then
+                    state.nanoThresholdFired = true
+                    pcall(state.onNanoThreshold, state)
+                end
+            end
         end
     end
 
@@ -401,14 +445,17 @@ function M.Update(state, frame, resources)
             return
         end
 
-        -- Resource interrupt: jump to next unbuilt task of required class.
+        -- Resource interrupt: jump to next unbuilt task of required class,
+        -- but only if at least 2 nanos are in range to build it quickly.
+        -- If the grid has no nanos yet, the air con alone is too slow to help.
         local task = FindNextOfClass(state.queue, intr.buildType)
-        if task then
+        if task and CountNanosInRange(task.wx, task.wz) >= 2 then
             IssueBuildTask(builderID, task)
             state.currentTask = task
             return
         end
-        -- No items of this class remain — fall through to normal build order.
+        -- No items of this class remain, or not enough nanos in range —
+        -- fall through to normal build order.
     end
 
     -- No interrupt (or interrupt class exhausted) — build next unbuilt item in order.
