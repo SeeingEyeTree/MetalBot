@@ -15,7 +15,7 @@
       "unitDef": "corwin",
       "width": 3,
       "height": 3,
-      "category": "et1",
+      "category": "e",
       "color": "#a3970f"
     },
     {
@@ -125,6 +125,42 @@
       "height": 4,
       "category": "storage",
       "color": "#fff700"
+    },
+    {
+      "id": "9da5b1a7-7a44-40a6-ad3c-407e490e173a",
+      "displayName": "Corfusison",
+      "unitDef": "tbd",
+      "width": 5,
+      "height": 5,
+      "category": "e",
+      "color": "#cad714"
+    },
+    {
+      "id": "d5da75f4-8257-4058-9090-80ddbfd93b6b",
+      "displayName": "afus",
+      "unitDef": "corafus",
+      "width": 6,
+      "height": 6,
+      "category": "e",
+      "color": "#c8d41c"
+    },
+    {
+      "id": "d138db8d-5aef-41e0-8b93-bef28f60f538",
+      "displayName": "armfus",
+      "unitDef": "armfus",
+      "width": 6,
+      "height": 5,
+      "category": "e",
+      "color": "#afa90e"
+    },
+    {
+      "id": "87a76b97-30cf-4fe1-bef3-aa33b26a68f3",
+      "displayName": "mexT2",
+      "unitDef": "cormoho",
+      "width": 4,
+      "height": 4,
+      "category": "metal",
+      "color": "#c4cfc9"
     }
   ]
 }

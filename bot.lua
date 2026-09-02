@@ -335,6 +335,14 @@ local cfg = {
 
     ANTI_CLUMP_MIN         = 220,
     ANTI_CLUMP_MAX         = 650,  -- anti-clump ring kept wide on purpose; a tight disc clumped the whole army
+
+    SPREAD_HOLD_DIST     = 160,
+
+    CMD_REPEAT           = (CMD and CMD.REPEAT) or 34,
+    AIRCON_BP_SLOT_Z     = 488,   -- north-south step between stacked blueprint instances (480 height + 8 gap)
+    AIRCON_INIT_EAST     = 288,   -- distance east of air lab center to first blueprint center (lab_half + gap + bp_west_half)
+    AIRCON_COL_STEP      = 520,   -- east step per column (424 width + 96 unit corridor)
+    AIRCON_CORVP_TRIGGER = 2,     -- corvp orders per column before opening next column
 }
 
 local st = {
@@ -511,7 +519,252 @@ local st = {
         recalled       = 0,
         lastUnease     = 0,   -- unease at the last fired recall
     },
+
+    -- Start blueprint state
+    startBlueprintDone  = false,
+    startAnchorX        = nil,
+    startAnchorZ        = nil,
+
+    -- Turret builder: one ground con whose only job is cornanotc placement
+    expectTurretBuilder = false,
+    turretBuilderID     = nil,
+    turretTasksQueued   = false,
+    turretBuildTasks    = {},
+
+    airConGrid = {
+        labID         = nil,
+        defIDs        = nil,
+        jobs          = {},   -- [1..N] {tasks, cursor, airConID, anchorX, anchorZ, expanded}
+        anchorX       = nil,  -- base anchor from initJobs
+        anchorZ       = nil,
+        occupiedSlots = {},   -- [key]=true for every tile added as a job
+        airConDefID   = nil,  -- cached for queuing more cons during expansion
+    },
+
+    metalExpansion = {
+        triggered   = false,  -- one-shot: fires once at 6min+stall
+        awaitingLab = false,  -- true while commander is building the lab
+    },
 }
+
+-- ── Air con blueprint grid (1 top-level local via IIFE to stay under 200-local limit) ──
+local airCon = (function()
+    local BP = VFS.Include("LuaUI/Widgets/blueprints_data.lua") or {}
+    local addJobAt  -- forward declaration; assigned below after IIFE locals are in scope
+
+    local function getDefIDs()
+        local cache = st.airConGrid.defIDs
+        if cache then return cache end
+        cache = {}
+        for id, d in pairs(UnitDefs) do
+            if d and d.name then cache[d.name] = id end
+        end
+        st.airConGrid.defIDs = cache
+        return cache
+    end
+
+    -- Scan 8 directions from base center at increasing distances to find
+    -- a clear area for the air-con blueprint grid.  Returns (anchorX, anchorZ)
+    -- for the first slot center (col=1, slot=0).
+    local function findAnchor(labX, labZ)
+        local myTeam    = spGetMyTeamID()   -- use captured alias (safe in headless multi-widget)
+        local cx        = st.baseCenterX or labX
+        local cz        = st.baseCenterZ or labZ
+        local baseR     = st.baseRadius  or 300
+        local scanR     = 350           -- cylinder radius for obstacle counting
+        local bpHalfW   = 250           -- half-width of one blueprint slot
+        local dirs = {
+            { 1,  0}, {-1,  0}, { 0,  1}, { 0, -1},
+            { 1,  1}, { 1, -1}, {-1,  1}, {-1, -1},
+        }
+        -- normalise diagonals
+        for _, d in ipairs(dirs) do
+            local len = mSqrt(d[1]*d[1] + d[2]*d[2])
+            d[1] = d[1] / len
+            d[2] = d[2] / len
+        end
+
+        local bestCount = math.huge
+        local bestX, bestZ = labX + cfg.AIRCON_INIT_EAST, labZ
+
+        for _, d in ipairs(dirs) do
+            for step = 1, 5 do
+                local dist = baseR + bpHalfW + (step - 1) * 200
+                local tx = cx + d[1] * dist
+                local tz = cz + d[2] * dist
+                local units = spGetUnitsInCylinder(tx, tz, scanR, myTeam)
+                local count = units and #units or 0
+                if count < bestCount then
+                    bestCount = count
+                    bestX = tx
+                    bestZ = tz
+                end
+                if count == 0 then break end
+            end
+        end
+        return bestX, bestZ
+    end
+
+    -- Initialise three mexGrid jobs spread 480 units apart in z.
+    local function initJobs(labX, labZ)
+        local grid = st.airConGrid
+        local ax, az = findAnchor(labX, labZ)
+        grid.anchorX      = ax
+        grid.anchorZ      = az
+        grid.jobs         = {}
+        grid.occupiedSlots = {}
+        local anchors = { {ax, az}, {ax, az + 480}, {ax, az - 480} }
+        for _, a in ipairs(anchors) do
+            local key = math.floor(a[1]) .. "_" .. math.floor(a[2])
+            grid.occupiedSlots[key] = true
+            addJobAt(a[1], a[2])
+        end
+    end
+
+    -- Assign this air con to its dedicated job and return its next unbuilt task.
+    -- When a job is fully assigned, expands to adjacent tiles and frees the unit.
+    local function getNextTaskForUnit(unitID, frame)
+        local grid = st.airConGrid
+        if not grid.labID or #grid.jobs == 0 then return nil end
+        local job = nil
+        for i = 1, #grid.jobs do
+            if grid.jobs[i].airConID == unitID then job = grid.jobs[i] break end
+        end
+        if not job then
+            for i = 1, #grid.jobs do
+                if not grid.jobs[i].airConID then
+                    grid.jobs[i].airConID = unitID
+                    job = grid.jobs[i]
+                    break
+                end
+            end
+        end
+        if not job then return nil end
+        local tasks = job.tasks
+        while job.cursor <= #tasks do
+            local task = tasks[job.cursor]
+            job.cursor = job.cursor + 1
+            if task and not task.assigned then
+                task.assigned = true
+                local claimKey = math.floor(task.wx / 10) .. "_" .. math.floor(task.wz / 10)
+                st.claimedSpots[claimKey] = {
+                    frame=frame, x=task.wx, z=task.wz, r2=32*32,
+                    isFactory=false, isAirFactory=false,
+                    facing=task.facing, defID=task.defID, isMex=(task.n == "cormex"),
+                }
+                return task
+            end
+        end
+        -- Job exhausted: expand to adjacent tiles then free unit to claim new work
+        if not job.expanded and job.anchorX then
+            job.expanded = true
+            local dirs = { {480,0},{-480,0},{0,480},{0,-480} }
+            for _, d in ipairs(dirs) do
+                local nX  = job.anchorX + d[1]
+                local nZ  = job.anchorZ + d[2]
+                local key = math.floor(nX) .. "_" .. math.floor(nZ)
+                if not grid.occupiedSlots[key] then
+                    grid.occupiedSlots[key] = true
+                    addJobAt(nX, nZ)
+                    if grid.airConDefID and grid.labID then
+                        spGiveOrderToUnit(grid.labID, -grid.airConDefID, {}, {"shift"})
+                    end
+                end
+            end
+        end
+        job.airConID = nil  -- release unit so it can claim a newly-added adjacent job
+        return nil
+    end
+
+    -- Turret positions relative to the start anchor.
+    local startTurretOffsets = {
+        {x= -24, z= 216, f=1},   -- top
+        {x= 216, z=  24, f=1},   -- right
+        {x= 216, z= -24, f=1},   -- right
+        {x=  24, z=-216, f=1},   -- bottom
+        {x=-216, z= 216, f=1},   -- top-left corner
+        {x= 216, z= 216, f=1},   -- top-right corner
+        {x=-216, z=-216, f=1},   -- bottom-left corner
+        {x= 216, z=-216, f=1},   -- bottom-right corner
+    }
+
+    local function InitTurretTasks()
+        local ax, az = st.startAnchorX, st.startAnchorZ
+        if not ax then return end
+        local defIDs = getDefIDs()
+        local nanoID = defIDs["cornanotc"]
+        if not nanoID then return end
+        st.turretBuildTasks  = {}
+        st.turretTasksQueued = false
+        for _, off in ipairs(startTurretOffsets) do
+            st.turretBuildTasks[#st.turretBuildTasks + 1] = {
+                defID  = nanoID,
+                wx     = ax + off.x,
+                wz     = az + off.z,
+                facing = off.f,
+            }
+        end
+    end
+
+    -- Queue all BP.start units on the commander as shift build orders.
+    local function QueueStartBlueprint(comID, anchorX, anchorZ)
+        local defIDs = getDefIDs()
+        for _, u in ipairs(BP.start or {}) do
+            local defID = defIDs[u.n]
+            if defID then
+                local wx = anchorX + u.x
+                local wz = anchorZ + u.z
+                local wy = Spring.GetGroundHeight(wx, wz)
+                Spring.GiveOrderToUnit(comID, -defID, {wx, wy, wz, u.f}, {"shift"})
+            end
+        end
+    end
+
+    -- Create a single mexGrid job at the given anchor position.
+    addJobAt = function(anchorX, anchorZ)
+        local grid   = st.airConGrid
+        local defIDs = getDefIDs()
+        local tasks  = {}
+        for _, u in ipairs(BP.mexGrid or {}) do
+            local defID = defIDs[u.n]
+            if defID then
+                tasks[#tasks + 1] = {
+                    n=u.n, defID=defID,
+                    wx=anchorX + u.x, wz=anchorZ + u.z,
+                    facing=u.f, assigned=false,
+                }
+            end
+        end
+        grid.jobs[#grid.jobs + 1] = {
+            tasks=tasks, cursor=1, airConID=nil,
+            anchorX=anchorX, anchorZ=anchorZ, expanded=false,
+        }
+    end
+
+    -- Add `count` mexGrid jobs along the Z axis from the base anchor, skipping occupied slots.
+    local function addMexJobs(count)
+        local grid = st.airConGrid
+        local ax, az = grid.anchorX, grid.anchorZ
+        if not ax then return end
+        local added, i = 0, 1
+        while added < count do
+            local pair = math.ceil(i / 2)
+            local sign = (i % 2 == 1) and 1 or -1
+            local aZ   = az + sign * (pair + 1) * 480
+            local key  = math.floor(ax) .. "_" .. math.floor(aZ)
+            if not grid.occupiedSlots[key] then
+                grid.occupiedSlots[key] = true
+                addJobAt(ax, aZ)
+                added = added + 1
+            end
+            i = i + 1
+            if i > count * 4 then break end
+        end
+    end
+
+    return { initJobs=initJobs, getNextTaskForUnit=getNextTaskForUnit, getDefIDs=getDefIDs, findAnchor=findAnchor, InitTurretTasks=InitTurretTasks, QueueStartBlueprint=QueueStartBlueprint, addMexJobs=addMexJobs, addJobAt=addJobAt }
+end)()
+
 
 local ui = {
     showGUI = false,
@@ -693,6 +946,7 @@ function widget:Initialize()
     if IsSpectating() then return end
 
     local myTeam = spGetMyTeamID()
+    st.myTeam = myTeam
     if myTeam then
         local units = spGetTeamUnits(myTeam)
         if units then
@@ -738,7 +992,7 @@ function widget:Initialize()
     -- If you want to tweak the bot while playing, you'll love this
     -- Remember where the enemies base is so we can reload the widget without forgetting! :)
     local gid = GetGameID()
-    local bc = WG and WG.MetalAIBaseCache
+    local bc = WG and WG["MetalAIBaseCache_" .. (st.myTeam or 0)]
     if bc and bc.gameID == gid then
         if bc.bases and next(bc.bases) ~= nil then
             st.enemyBases = bc.bases
@@ -815,6 +1069,16 @@ function widget:UnitCreated(unitID, unitDefID, teamID)
         spGiveOrderToUnit(unitID, cfg.CMD_FLY, { 0 }, 0)
         st.flyStateSet[unitID] = true
     end
+    -- Designate the next new ground constructor as the con turret builder
+    if st.expectTurretBuilder then
+        local d2 = UnitDefs[unitDefID]
+        if d2 and d2.isBuilder and not d2.isFactory and not d2.canFly
+           and d2.speed and d2.speed > 0 then
+            st.turretBuilderID    = unitID
+            st.expectTurretBuilder = false
+            airCon.InitTurretTasks()
+        end
+    end
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID)
@@ -829,6 +1093,15 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
     retreatDirCache[unitID] = nil
     trapperTargets[unitID] = nil
     st.supportTarget[unitID] = nil
+    -- Free turret builder on death
+    if unitID == st.turretBuilderID then st.turretBuilderID = nil end
+    -- Free air con job assignment on death so another unit can take over
+    for i = 1, #st.airConGrid.jobs do
+        if st.airConGrid.jobs[i].airConID == unitID then
+            st.airConGrid.jobs[i].airConID = nil
+            break
+        end
+    end
 
     for key, assign in pairs(st.scoutAssignments) do
         if assign.unitID == unitID then st.scoutAssignments[key] = nil end
@@ -837,6 +1110,11 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
 
     for key, base in pairs(st.enemyBases) do
         if base.id == unitID then st.enemyBases[key] = nil end
+    end
+
+    -- Reset air con grid when the tracked air lab is destroyed
+    if unitID == st.airConGrid.labID then
+        st.airConGrid.labID = nil
     end
 end
 
@@ -3210,6 +3488,58 @@ cfg.IsResourceStalling = function(cur, pull, income)
     return (cur or 0) < mMax(50, (income or 0) * 2)
 end
 
+-- One-shot trigger: after 6 min of metal stalling, build air lab + 5 air cons for mex grid expansion.
+cfg.checkMetalExpansion = function(frame)
+    local exp = st.metalExpansion
+    if exp.triggered then return end
+    if frame < 18000 then return end        -- 6 minutes at 30 FPS
+    if not st.metalStalling then return end
+    exp.triggered = true
+
+    local labID = st.airConGrid.labID
+    if labID then
+        -- Air lab already exists: add 5 more mex jobs and queue 5 more air cons
+        airCon.addMexJobs(5)
+        local facDef = UnitDefs[spGetUnitDefID(labID)]
+        local airConDefID = nil
+        if facDef and facDef.buildOptions then
+            for bi = 1, #facDef.buildOptions do
+                local optDef = UnitDefs[facDef.buildOptions[bi]]
+                if optDef and optDef.isBuilder and optDef.canFly and not optDef.isFactory then
+                    airConDefID = facDef.buildOptions[bi]
+                    break
+                end
+            end
+        end
+        if airConDefID then
+            st.airConGrid.airConDefID = airConDefID
+            for _ = 1, 5 do
+                spGiveOrderToUnit(labID, -airConDefID, {}, {"shift"})
+            end
+        end
+    else
+        -- No air lab yet: order the commander to build one
+        local comID = st.myCommanders and st.myCommanders[1]
+        if not comID then exp.triggered = false return end
+        local airLabDefID = nil
+        local cheapest = math.huge
+        for id, d in pairs(UnitDefs) do
+            if d and d.isFactory and IsAirFactory(id) then
+                local cost = d.metalCost or math.huge
+                if cost < cheapest then cheapest = cost airLabDefID = id end
+            end
+        end
+        if not airLabDefID then return end
+        local cx, _, cz = spGetUnitPosition(comID)
+        if not cx then return end
+        local tx, ty, tz, facing = FindBuildSpot(cx, cz, airLabDefID, nil, comID, cfg.BUILD_RADIUS)
+        if tx then
+            spGiveOrderToUnit(comID, -airLabDefID, {tx, ty, tz, facing}, {})
+            exp.awaitingLab = true
+        end
+    end
+end
+
 local function UpdateMacroState(myTeam, units)
     st.pendingCommittedMetal = 0
 
@@ -3316,6 +3646,16 @@ local function UpdateMacroState(myTeam, units)
             if isCmd or (d.name and sFind(sLower(d.name), "commander")) then
                 st.myCommanderCount = st.myCommanderCount + 1
                 st.myCommanders[st.myCommanderCount] = uID
+                -- Queue start blueprint once on the very first commander sighting
+                if not st.startBlueprintDone then
+                    local cx, _, cz = spGetUnitPosition(uID)
+                    if cx then
+                        st.startAnchorX = cx
+                        st.startAnchorZ = cz
+                        airCon.QueueStartBlueprint(uID, cx, cz)
+                        st.startBlueprintDone = true
+                    end
+                end
             end
 
             if d.isFactory then
@@ -3334,6 +3674,67 @@ local function UpdateMacroState(myTeam, units)
                         st.hasAdvancedFactory = true
                         if techLevel == 2 then
                             st.hasT2Lab = true
+                        end
+                    end
+                end
+
+                -- Detect completed air lab; initialise 3 blueprint jobs and queue 3 air cons
+                if IsAirFactory(spGetUnitDefID(uID)) and not st.airConGrid.labID then
+                    if hp and maxHp and hp >= maxHp then
+                        local lx, _, lz = spGetUnitPosition(uID)
+                        if lx then
+                            st.airConGrid.labID = uID
+                            airCon.initJobs(lx, lz)
+                            local facDef = UnitDefs[spGetUnitDefID(uID)]
+                            local airConDefID = nil
+                            if facDef and facDef.buildOptions then
+                                for bi = 1, #facDef.buildOptions do
+                                    local optDef = UnitDefs[facDef.buildOptions[bi]]
+                                    if optDef and optDef.isBuilder and optDef.canFly and not optDef.isFactory then
+                                        airConDefID = facDef.buildOptions[bi]
+                                        break
+                                    end
+                                end
+                            end
+                            if airConDefID then
+                                st.airConGrid.airConDefID = airConDefID
+                                for _ = 1, 3 do
+                                    spGiveOrderToUnit(uID, -airConDefID, {}, {"shift"})
+                                end
+                                -- If the expansion system triggered this lab, add 5 mex jobs + 5 more cons
+                                if st.metalExpansion.awaitingLab then
+                                    st.metalExpansion.awaitingLab = false
+                                    airCon.addMexJobs(5)
+                                    for _ = 1, 5 do
+                                        spGiveOrderToUnit(uID, -airConDefID, {}, {"shift"})
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                -- Detect first completed corlab to queue the con turret builder
+                if not st.expectTurretBuilder and not st.turretBuilderID then
+                    local labName = d.name and sLower(d.name) or ""
+                    if sFind(labName, "corlab") then
+                        if hp and maxHp and hp >= maxHp then
+                            local conDefID = nil
+                            local cheapest = math.huge
+                            if d.buildOptions then
+                                for bi = 1, #d.buildOptions do
+                                    local optDef = UnitDefs[d.buildOptions[bi]]
+                                    if optDef and optDef.isBuilder and not optDef.isFactory
+                                       and not optDef.canFly and optDef.speed and optDef.speed > 0 then
+                                        local cost = optDef.metalCost or 999999
+                                        if cost < cheapest then cheapest = cost conDefID = d.buildOptions[bi] end
+                                    end
+                                end
+                            end
+                            if conDefID then
+                                spGiveOrderToUnit(uID, -conDefID, {}, {})
+                                st.expectTurretBuilder = true
+                            end
                         end
                     end
                 end
@@ -3516,6 +3917,8 @@ local function UpdateMacroState(myTeam, units)
         end
     end
     st.turretDbg.needTurrets = st.factoriesNeedingTurretsCount
+
+    cfg.checkMetalExpansion(st.frameNum)
 end
 
 
@@ -4046,12 +4449,11 @@ local function AssignScoutOrder(unitID, frame)
     return false
 end
 
-local SPREAD_HOLD_DIST = 160
 local function GiveSpreadMove(unitID, ux, uz, tx, tz, minR, maxR, targetID)
     local sx, sz = GetFlankSpreadPos(unitID, tx, tz, minR, maxR, targetID)
     sx, sz = NudgeOutOfLava(sx, sz, ux, uz)
     local dx, dz = sx - ux, sz - uz
-    if dx * dx + dz * dz >= SPREAD_HOLD_DIST * SPREAD_HOLD_DIST then
+    if dx * dx + dz * dz >= cfg.SPREAD_HOLD_DIST * cfg.SPREAD_HOLD_DIST then
         spGiveOrderToUnit(unitID, cfg.CMD_MOVE, { sx, spGetGroundHeight(sx, sz), sz }, {})
     end
 end
@@ -4368,6 +4770,22 @@ local function ProcessUnitOrders(unitID, frame)
     elseif uDef.isBuilder and not uDef.isFactory then
         local ux, uy, uz = spGetUnitPosition(unitID)
         if not ux then return end
+
+        -- Turret builder: only build cornanotc from the start blueprint
+        if unitID == st.turretBuilderID then
+            if not st.turretTasksQueued and NeedsOrders(unitID, false, false, false) then
+                local tasks = st.turretBuildTasks
+                local first = true
+                for i = 1, #tasks do
+                    local task = tasks[i]
+                    local wy = spGetGroundHeight(task.wx, task.wz)
+                    spGiveOrderToUnit(unitID, -task.defID, {task.wx, wy, task.wz, task.facing}, first and {} or {"shift"})
+                    first = false
+                end
+                st.turretTasksQueued = (#tasks > 0)
+            end
+            return
+        end
 
         if isTrapperUnit then
             local currentCmds = spGetUnitCommands(unitID, 1)
@@ -4814,7 +5232,7 @@ local function ProcessUnitOrders(unitID, frame)
         local myTeamID = spGetMyTeamID()
         local conBuildDist = uDef.buildDistance or 200
         local reclaimScanRadius = (cfg.ENEMY_RECLAIM_CHASE_RANGE * st.mapLinearScale) or 1000
-        local enemyUnit = FindEnemyReclaimTarget(ux, uz, reclaimScanRadius, myTeamID, nil, true)
+        local enemyUnit = not uDef.canFly and FindEnemyReclaimTarget(ux, uz, reclaimScanRadius, myTeamID, nil, true)
         if enemyUnit then
             local cmds = spGetUnitCommands(unitID, 1)
             if not cmds or #cmds == 0 or cmds[1].id ~= cfg.CMD_RECLAIM or cmds[1].params[1] ~= enemyUnit then
@@ -4824,7 +5242,7 @@ local function ProcessUnitOrders(unitID, frame)
             return
         end
 
-        local emergencyType = ((not IsUnitBuildingFactory(unitID))) and CheckEmergencyEconomy(unitID) or nil
+        local emergencyType = (not uDef.canFly and not IsUnitBuildingFactory(unitID)) and CheckEmergencyEconomy(unitID) or nil
         if emergencyType then
             local cache = GetBuildCache(uDefID)
             local emergencyDef, eSpacing = nil, cfg.MIN_SPACING
@@ -4872,7 +5290,17 @@ local function ProcessUnitOrders(unitID, frame)
             end
         end
 
-        if (not IsUnitBuildingFactory(unitID)) and NeedsOrders(unitID, false, false, false) then
+        -- Flying builders (air cons) prefer building the blueprint eco grid
+        if uDef.canFly and st.airConGrid.labID and NeedsOrders(unitID, false, false, false) then
+            local bpTask = airCon.getNextTaskForUnit(unitID, frame)
+            if bpTask then
+                local wy = spGetGroundHeight(bpTask.wx, bpTask.wz)
+                spGiveOrderToUnit(unitID, -bpTask.defID, { bpTask.wx, wy, bpTask.wz, bpTask.facing }, {})
+                return
+            end
+        end
+
+        if not uDef.canFly and (not IsUnitBuildingFactory(unitID)) and NeedsOrders(unitID, false, false, false) then
             local cache = GetBuildCache(uDefID)
             local tx, ty, tz, facing, key, defID
             local claimRadius = cfg.MIN_SPACING
@@ -6247,7 +6675,7 @@ function widget:GameFrame(frame)
         -- we don't want to lose data on a widget reload
         -- so then let's do this
         if WG then
-            WG.MetalAIBaseCache = {
+            WG["MetalAIBaseCache_" .. (st.myTeam or 0)] = {
                 gameID = GetGameID(),
                 bases = st.enemyBases,
                 enemyDefenses = st.enemyDefenses,

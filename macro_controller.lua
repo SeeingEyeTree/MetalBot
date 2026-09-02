@@ -72,6 +72,20 @@ local labBuilders       = {}  -- labID -> builderID, cleared after lab finishes
 local pendingStops      = {}  -- {unitID, fireFrame} deferred CMD_STOP orders
 local currentFrame      = 0
 
+-- Energy grid state
+local FUSION_GRID_BP      = nil
+local eGridStates         = {}   -- active energy grid placer states
+local pendingEGrids       = {}   -- {anchorX,anchorZ,rotation} waiting for a free air con
+local eGridAssignedKeys   = {}   -- anchor keys already assigned (prevents duplicates)
+local completedEGridCount = 0
+local eGridsPlaced        = 0    -- total energy grid anchors generated (for position step)
+local firstThreeMexDone   = false
+local target_e_grid       = 1
+local energyStallFrames   = 0    -- consecutive frames energy demand > production
+local e_avg_demand        = 0    -- exponential moving average of energy demand
+local e_avg_prod          = 0    -- exponential moving average of energy production
+local EGRID_SPACING       = 960  -- 2 * GRID_SPACING; energy grids are ~880 units wide
+
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -183,11 +197,11 @@ end
 local TryExpand
 
 local function TryAssign()
+    -- Mex grids first.
     while #freeAirCons > 0 and #pendingPlacements > 0 do
         local conID = table.remove(freeAirCons, 1)
         local p     = table.remove(pendingPlacements, 1)
         if not spGetUnitDefID(conID) then
-            -- Dead con; put the placement back and try with next con.
             table.insert(pendingPlacements, 1, p)
         else
             local state = BP_PLACER.New(MEX_GRID_BP, conID, p.anchorX, p.anchorZ, p.rotation)
@@ -196,6 +210,21 @@ local function TryAssign()
                 TryExpand()
             end
             gridStates[#gridStates + 1] = state
+        end
+    end
+    -- Energy grids get leftover free cons.
+    while #freeAirCons > 0 and #pendingEGrids > 0 do
+        local conID = table.remove(freeAirCons, 1)
+        local p     = table.remove(pendingEGrids, 1)
+        if not spGetUnitDefID(conID) then
+            table.insert(pendingEGrids, 1, p)
+        else
+            local state = BP_PLACER.New(FUSION_GRID_BP, conID, p.anchorX, p.anchorZ, p.rotation)
+            state.onComplete = function()
+                completedEGridCount = completedEGridCount + 1
+                Spring.Echo("[WE] Energy grid done, total=" .. completedEGridCount)
+            end
+            eGridStates[#eGridStates + 1] = state
         end
     end
 end
@@ -216,6 +245,52 @@ TryExpand = function()
         end
     end
     TryAssign()
+end
+
+-- ── Energy grid placement ─────────────────────────────────────────────────────
+
+-- Generate anchor positions for energy grids in a column west of mex expansion.
+-- Energy grids are ~880 units wide so space them EGRID_SPACING (960) apart.
+-- Column steps further west every 3 grids to avoid overlap with mex grids.
+local function NextEGridPos()
+    local col = math.floor(eGridsPlaced / 3)
+    local row = eGridsPlaced % 3
+    local rowOffsets = {0, -EGRID_SPACING, EGRID_SPACING}
+    local ax = baseX - (3 + col * 2) * GRID_SPACING
+    local az = baseZ + rowOffsets[row + 1]
+    return ax, az
+end
+
+-- Decide whether to queue one more energy grid.
+-- Protection against queue flooding: only add when no egrid is already pending
+-- and the number of "active" (non-floated) energy grids is below target.
+local function TryQueueEGrid()
+    if not firstThreeMexDone then return end
+    if not airLabID or not spGetUnitDefID(airLabID) then return end
+    if not FUSION_GRID_BP then return end
+    if #pendingEGrids > 0 then return end  -- one in flight is enough
+
+    -- Energy storage percentage; if > 70% energy is being floated.
+    local okE, eCur, eStorage = pcall(Spring.GetTeamResources, myTeamID, "energy")
+    local e_stor = (okE and eStorage and eStorage > 0) and (eCur / eStorage) or 0
+    local floated = e_stor > 0.7
+
+    -- "Expandable" grids = grids being built where we still need more energy.
+    local expandable = floated and 0 or (#eGridStates + #pendingEGrids)
+
+    if expandable < target_e_grid then
+        local ax, az = NextEGridPos()
+        local key = AnchorKey(ax, az)
+        if not eGridAssignedKeys[key] then
+            eGridAssignedKeys[key] = true
+            eGridsPlaced = eGridsPlaced + 1
+            pendingEGrids[#pendingEGrids + 1] = {anchorX = ax, anchorZ = az, rotation = 0}
+            Spring.Echo("[WE] Queuing energy grid #" .. eGridsPlaced .. " at " .. math.floor(ax) .. "," .. math.floor(az))
+            local airDefID = FindAirConDefID(spGetUnitDefID(airLabID))
+            if airDefID then spGiveOrderToUnit(airLabID, -airDefID, {0}, {}) end
+            TryAssign()
+        end
+    end
 end
 
 -- ── Commander → com_starter (direct queue, same as test_com_starter.lua) ─────
@@ -315,6 +390,7 @@ local function StartAirExpansion()
     Spring.Echo("[WE] StartAirExpansion airConsQueued=" .. tostring(airConsQueued) .. " baseX=" .. tostring(baseX))
     if airConsQueued then return end
     airConsQueued = true
+    firstThreeMexDone = true  -- first 3 mex grids are now queued; enable energy grid logic
 
     local initials = {
         {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
@@ -363,18 +439,21 @@ function widget:Initialize()
     local ok4, r4 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/mex_grid_aa_corner.lua")
     local ok5, r5 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/empty_grid.lua")
     local ok6, r6 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/VechT1_and_BotT2.lua")
-    if not ok1 then Spring.Echo("[WE] ERROR loading blueprint_placer: "    .. tostring(r1)); return end
-    if not ok2 then Spring.Echo("[WE] ERROR loading com_starter: "         .. tostring(r2)); return end
-    if not ok3 then Spring.Echo("[WE] ERROR loading bot_starter: "         .. tostring(r3)); return end
-    if not ok4 then Spring.Echo("[WE] ERROR loading mex_grid_aa_corner: "  .. tostring(r4)); return end
-    if not ok5 then Spring.Echo("[WE] ERROR loading empty_grid: "          .. tostring(r5)); return end
-    if not ok6 then Spring.Echo("[WE] ERROR loading VechT1_and_BotT2: "    .. tostring(r6)); return end
+    local ok7, r7 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/fussion_grid_60x60.lua")
+    if not ok1 then Spring.Echo("[WE] ERROR loading blueprint_placer: "       .. tostring(r1)); return end
+    if not ok2 then Spring.Echo("[WE] ERROR loading com_starter: "            .. tostring(r2)); return end
+    if not ok3 then Spring.Echo("[WE] ERROR loading bot_starter: "            .. tostring(r3)); return end
+    if not ok4 then Spring.Echo("[WE] ERROR loading mex_grid_aa_corner: "     .. tostring(r4)); return end
+    if not ok5 then Spring.Echo("[WE] ERROR loading empty_grid: "             .. tostring(r5)); return end
+    if not ok6 then Spring.Echo("[WE] ERROR loading VechT1_and_BotT2: "       .. tostring(r6)); return end
+    if not ok7 then Spring.Echo("[WE] ERROR loading fussion_grid_60x60: "     .. tostring(r7)); return end
     BP_PLACER      = r1
     COM_STARTER    = r2
     BOT_STARTER    = r3
     MEX_GRID_BP    = r4
     EMPTY_GRID_BP  = r5
     VECH_BOT_T2_BP = r6
+    FUSION_GRID_BP = r7
     GRID_SPACING = BP_PLACER.GRID_SPACING
     Spring.Echo("[WE] Loaded OK. GRID_SPACING=" .. tostring(GRID_SPACING))
 
@@ -518,6 +597,11 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             BP_PLACER.OnUnitFinished(gs, unitID, unitDefID, x, z)
         end
     end
+    for _, es in ipairs(eGridStates) do
+        if not es.done then
+            BP_PLACER.OnUnitFinished(es, unitID, unitDefID, x, z)
+        end
+    end
 end
 
 function widget:GameFrame(frame)
@@ -560,6 +644,11 @@ function widget:GameFrame(frame)
                 BP_PLACER.Update(gs, frame, resources)
             end
         end
+        for _, es in ipairs(eGridStates) do
+            if not es.done then
+                BP_PLACER.Update(es, frame, resources)
+            end
+        end
     end
 
     if frame % 30 == 0 then
@@ -576,5 +665,41 @@ function widget:GameFrame(frame)
                 if clear then BP_PLACER.HandleEnemyClear(gs) end
             end
         end
+        for _, es in ipairs(eGridStates) do
+            if not es.done then
+                local units = Spring.GetUnitsInCylinder(es.anchorX, es.anchorZ, BP_PLACER.ENEMY_CLEAR_RADIUS)
+                local clear = true
+                if units then
+                    for _, uid in ipairs(units) do
+                        if Spring.GetUnitAllyTeam(uid) ~= myAlly then clear = false; break end
+                    end
+                end
+                if clear then BP_PLACER.HandleEnemyClear(es) end
+            end
+        end
+
+        -- Update energy rolling averages (sampled every 30 frames ≈ 1s).
+        local okE, eCur, eStorage, ePull, eIncome = pcall(Spring.GetTeamResources, myTeamID, "energy")
+        if okE then
+            local alpha = 0.1  -- EMA weight; ~10-sample window = ~10s
+            e_avg_demand = e_avg_demand * (1 - alpha) + (ePull    or 0) * alpha
+            e_avg_prod   = e_avg_prod   * (1 - alpha) + (eIncome  or 0) * alpha
+
+            -- Track continuous energy stall (demand > production).
+            if (ePull or 0) > (eIncome or 0) * 1.05 then
+                energyStallFrames = energyStallFrames + 30
+            else
+                energyStallFrames = 0
+            end
+
+            -- After stalling for 30s with no egrid already pending, raise target.
+            if energyStallFrames >= 900 and #pendingEGrids == 0 then
+                target_e_grid = target_e_grid + 1
+                energyStallFrames = 0
+                Spring.Echo("[WE] Energy stall 30s -> target_e_grid=" .. target_e_grid)
+            end
+        end
+
+        TryQueueEGrid()
     end
 end
