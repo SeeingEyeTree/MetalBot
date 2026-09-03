@@ -1,7 +1,7 @@
 -- lab_controller.lua  ─  Factory queue manager with scout support
--- Queues scouts from air labs first to ensure map vision, then queues combat
--- units from all idle labs.
--- Compatible with macro_controller.lua: only acts when GetFactoryCommands is empty.
+-- Labs with a defined LAB_QUEUES entry use a proportional build order that
+-- loops forever. All other labs fall back to scout-first then generic combat
+-- unit selection. BLACKLIST units are never built by any lab.
 
 local widget = widget
 local Spring = Spring
@@ -14,12 +14,14 @@ local spGetFactoryCommands = Spring.GetFactoryCommands
 local spGetUnitCommands    = Spring.GetUnitCommands
 local spGetTeamResources   = Spring.GetTeamResources
 
-local SCOUT_TARGET = 2   -- keep at least this many scouts alive
+local DEBUG = false  -- set true to enable verbose logging
+
+local SCOUT_TARGET = 2
 
 function widget:GetInfo()
     return {
         name    = "Lab Controller",
-        desc    = "Queues scouts and combat units from idle labs (macro_controller compatible)",
+        desc    = "Queue-based lab manager with blacklist and per-lab build orders",
         author  = "",
         date    = "2026",
         license = "GNU GPL, v3 or later",
@@ -28,17 +30,90 @@ function widget:GetInfo()
     }
 end
 
+-- ── Configuration ─────────────────────────────────────────────────────────────
+
+-- Units that should never be built by any lab.
+local BLACKLIST = {
+    cortitan = true,
+    corsala  = true,
+    corarrow = true,
+    corvroc  = true,
+    cortrem  = true,
+    corstorm = true,
+    corsok   = true,
+    corkarg  = true,
+}
+
+-- Hard-coded build queues keyed by lab UnitDef name.
+-- Each entry: { name = "unitDefName", count = N }
+-- Units are interleaved proportionally to their counts and loop forever.
+-- Labs not listed here fall back to generic scout/combat logic.
+local LAB_QUEUES = {
+    corvp = {        -- Vehicle Plant (T1)
+        { name = "corraid",  count = 15 },
+        { name = "corgator", count = 10 },
+        { name = "corlevlr", count =  5 },
+        { name = "cormist",  count =  2 },
+    },
+    coralab = {      -- Advanced Bot Lab (T2)
+        { name = "cormort",  count = 10 },
+        { name = "corsumo",  count =  2 },
+        { name = "coraak",   count =  1 },
+    },
+}
+
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local myTeamID   = nil
-local labs       = {}   -- [labID] = labDefID
-local scoutCount = 0    -- alive friendly scouts
-local myScouts   = {}   -- [unitID] = true, scouts we counted
+local myTeamID     = nil
+local labs         = {}   -- [labID] = labDefID
+local scoutCount   = 0
+local myScouts     = {}   -- [unitID] = true
+local labQueueData = {}   -- [labID] = { sequence={defID,...}, idx=1 }
+
+-- ── Queue generation ──────────────────────────────────────────────────────────
+
+-- Weighted round-robin: produces a flat defID sequence that distributes units
+-- proportionally to their counts. The sequence can be cycled with a modulo index.
+local function GenerateFlatQueue(spec, labDefID)
+    local total = 0
+    for _, entry in ipairs(spec) do total = total + entry.count end
+    if total == 0 then return {} end
+
+    local resolved = {}
+    for _, entry in ipairs(spec) do
+        local ud    = UnitDefNames and UnitDefNames[entry.name]
+        local defID = ud and ud.id
+        if defID then
+            resolved[#resolved + 1] = { defID = defID, count = entry.count }
+        else
+            Spring.Echo("[LabCtrl] WARNING: unknown unit '" .. entry.name
+                .. "' in queue for lab "
+                .. (UnitDefs[labDefID] and UnitDefs[labDefID].name or tostring(labDefID)))
+        end
+    end
+    if #resolved == 0 then return {} end
+
+    total = 0
+    for _, r in ipairs(resolved) do total = total + r.count end
+
+    local accum    = {}
+    local sequence = {}
+    for i = 1, #resolved do accum[i] = 0 end
+
+    for slot = 1, total do
+        local bestIdx, bestVal = 1, -math.huge
+        for i, r in ipairs(resolved) do
+            accum[i] = accum[i] + r.count
+            if accum[i] > bestVal then bestVal = accum[i]; bestIdx = i end
+        end
+        accum[bestIdx] = accum[bestIdx] - total
+        sequence[slot] = resolved[bestIdx].defID
+    end
+    return sequence
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
--- Matches bot.lua's IsScoutDef: modCategory, category string, name keywords,
--- or fast unarmed unit.
 local function IsScoutDef(d)
     if not d then return false end
     local mc = d.modCategories
@@ -64,13 +139,14 @@ local buildCache = {}   -- [labDefID] = { scouts={defID,...}, mobile={defID,...}
 
 local function GetBuildCache(labDefID)
     if buildCache[labDefID] then return buildCache[labDefID] end
-    local d = UnitDefs[labDefID]
+    local d     = UnitDefs[labDefID]
     local cache = { scouts = {}, mobile = {} }
     if d and d.buildOptions then
         for _, optID in ipairs(d.buildOptions) do
             local od = UnitDefs[optID]
             if od and od.speed and od.speed > 0
-               and not od.isBuilder and not od.isFactory then
+               and not od.isBuilder and not od.isFactory
+               and not BLACKLIST[od.name] then
                 if IsScoutDef(od) then
                     cache.scouts[#cache.scouts + 1] = optID
                 elseif od.weapons and #od.weapons > 0 then
@@ -92,7 +168,15 @@ local function QueueEmpty(labID)
     return not cmds or #cmds == 0
 end
 
--- Cost-weighted random pick; falls back to cheapest if nothing is affordable.
+local function CheapestScout(scouts)
+    local best, bestCost = nil, math.huge
+    for _, optID in ipairs(scouts) do
+        local cost = (UnitDefs[optID] and UnitDefs[optID].metalCost) or 0
+        if cost < bestCost then bestCost = cost; best = optID end
+    end
+    return best
+end
+
 local function PickUnit(options, metalCur)
     local CAP = 500
     local totalWeight, affordable = 0, {}
@@ -120,31 +204,34 @@ local function PickUnit(options, metalCur)
     return affordable[#affordable]
 end
 
-local function CheapestScout(scouts)
-    local best, bestCost = nil, math.huge
-    for _, optID in ipairs(scouts) do
-        local cost = (UnitDefs[optID] and UnitDefs[optID].metalCost) or 0
-        if cost < bestCost then bestCost = cost; best = optID end
-    end
-    return best
-end
-
 -- ── Widget callbacks ──────────────────────────────────────────────────────────
 
 function widget:Initialize()
     myTeamID = spGetMyTeamID()
-    Spring.Echo("[LabCtrl] Initialized team=" .. tostring(myTeamID))
+    if DEBUG then Spring.Echo("[LabCtrl] Initialized team=" .. tostring(myTeamID)) end
 end
 
 function widget:UnitFinished(unitID, unitDefID, teamID)
     if teamID ~= myTeamID then return end
     local d = UnitDefs[unitDefID]
     if not d then return end
+
     if d.isFactory then
         labs[unitID] = unitDefID
-        Spring.Echo("[LabCtrl] Lab registered id=" .. unitID .. " def=" .. (d.name or "?"))
+        local labName = d.name or "?"
+        if DEBUG then Spring.Echo("[LabCtrl] Lab registered id=" .. unitID .. " def=" .. labName) end
+
+        local spec = LAB_QUEUES[labName]
+        if spec then
+            local seq = GenerateFlatQueue(spec, unitDefID)
+            if #seq > 0 then
+                labQueueData[unitID] = { sequence = seq, idx = 1 }
+                if DEBUG then Spring.Echo("[LabCtrl] Using defined queue (" .. #seq .. " slots) for " .. labName) end
+            end
+        end
         return
     end
+
     if IsScoutDef(d) and not myScouts[unitID] then
         myScouts[unitID] = true
         scoutCount = scoutCount + 1
@@ -152,7 +239,8 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
 end
 
 function widget:UnitDestroyed(unitID)
-    labs[unitID] = nil
+    labs[unitID]        = nil
+    labQueueData[unitID] = nil
     if myScouts[unitID] then
         myScouts[unitID] = nil
         scoutCount = math.max(0, scoutCount - 1)
@@ -180,30 +268,35 @@ function widget:GameFrame(frame)
 
     for labID, labDefID in pairs(labs) do
         if spGetUnitDefID(labID) and QueueEmpty(labID) then
-            local cache = GetBuildCache(labDefID)
+            local qdata  = labQueueData[labID]
             local choice = nil
 
-            -- Prioritise scouts when below target and this lab can make them.
-            if needScout and #cache.scouts > 0 then
-                choice = CheapestScout(cache.scouts)
-            end
+            if qdata then
+                -- Advance through the pre-built proportional sequence, looping forever.
+                choice   = qdata.sequence[qdata.idx]
+                qdata.idx = (qdata.idx % #qdata.sequence) + 1
+            else
+                -- Generic fallback: scouts first, then cost-weighted combat pick.
+                local cache = GetBuildCache(labDefID)
 
-            -- Otherwise queue a combat unit.
-            if not choice and #cache.mobile > 0 then
-                choice = PickUnit(cache.mobile, metalCur)
-            end
-
-            -- Fallback: any scout if no mobile units exist (air lab only has scouts).
-            if not choice and #cache.scouts > 0 then
-                choice = CheapestScout(cache.scouts)
+                if needScout and #cache.scouts > 0 then
+                    choice = CheapestScout(cache.scouts)
+                end
+                if not choice and #cache.mobile > 0 then
+                    choice = PickUnit(cache.mobile, metalCur)
+                end
+                if not choice and #cache.scouts > 0 then
+                    choice = CheapestScout(cache.scouts)
+                end
             end
 
             if choice then
                 spGiveOrderToUnit(labID, -choice, {}, {})
-                Spring.Echo("[LabCtrl] Queued "
-                    .. (UnitDefs[choice] and UnitDefs[choice].name or "?")
-                    .. " in lab " .. labID
-                    .. (needScout and " (scout)" or ""))
+                if DEBUG then
+                    Spring.Echo("[LabCtrl] Queued "
+                        .. (UnitDefs[choice] and UnitDefs[choice].name or "?")
+                        .. " in lab " .. labID)
+                end
             end
         end
     end

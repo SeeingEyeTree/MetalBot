@@ -16,6 +16,8 @@
 
 local M = {}
 
+local DEBUG = false  -- set true to enable verbose logging
+
 -- ── Constants (public so callers can reference them) ──────────────────────────
 
 M.ENEMY_ALERT_RADIUS = 800    -- build LLT when enemy within this radius
@@ -303,6 +305,9 @@ function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
         totalNanos         = totalNanos,
         nanoThresholdFired = false,
         onNanoThreshold    = nil,   -- fires when ≥7/12 of nanos are built
+        builtCount         = 0,     -- running count of queue items marked built
+        mostlyDone         = false, -- true once builtCount/total >= 0.7
+        onMostlyDone       = nil,   -- fires once when mostlyDone flips
     }
 end
 
@@ -320,6 +325,13 @@ function M.OnUnitFinished(state, unitID, unitDefID, x, z)
                 M.registry[#M.registry + 1] = {n = item.n, wx = item.wx, wz = item.wz}
                 if state.currentTask == item then
                     state.currentTask = nil
+                end
+                state.builtCount = state.builtCount + 1
+                if not state.mostlyDone and state.onMostlyDone then
+                    if state.builtCount >= math.floor(#state.queue * 0.7) then
+                        state.mostlyDone = true
+                        pcall(state.onMostlyDone, state)
+                    end
                 end
                 break
             end
@@ -384,7 +396,7 @@ function M.Update(state, frame, resources)
     if state.currentTask and not state.currentTask.built then
         local t = state.currentTask
         t.retries = t.retries + 1
-        if t.retries >= 1 then
+        if DEBUG and t.retries >= 1 then
             Spring.Echo(string.format("[BP] STUCK builder=%d %s at (%.0f, %.0f) retry#%d",
                 builderID, t.n or "?", t.wx, t.wz, t.retries))
             local nearby = {}

@@ -37,6 +37,9 @@ local MEX_GRID_BP    = nil
 local EMPTY_GRID_BP  = nil
 local VECH_BOT_T2_BP = nil
 
+-- ── Debug ─────────────────────────────────────────────────────────────────────
+local DEBUG = false  -- set true to enable verbose logging
+
 -- ── State ─────────────────────────────────────────────────────────────────────
 local myTeamID    = nil
 local commanderID = nil
@@ -66,7 +69,7 @@ local gridStates      = {}    -- active mex_grid placer states
 local completedAnchors    = {}   -- {anchorX,anchorZ} list for FindAllValidPlacements
 local completedAnchorKeys = {}   -- "ax,az" set for dedup (prevents double-add)
 local assignedAnchors     = {}   -- "ax,az" keys for all assigned grids (prevents double-assign)
-local pendingPlacements   = {}   -- {blueprint,anchorX,anchorZ,rotation,stateList,onComplete} for special blueprints (energy grids etc.)
+local pendingPlacements   = {}   -- {blueprint,stateList,onComplete} special blueprints that claim the next available mex expansion slot
 local pendingMexPlacements = {}  -- internal: {anchorX,anchorZ,rotation} mex grid positions waiting for an air con
 local freeAirCons         = {}   -- air con IDs that have exited the lab but need assignment
 local airConsQueued       = false
@@ -77,9 +80,7 @@ local currentFrame        = 0
 -- Energy grid state
 local ENERGY_T1_GRID_BP   = nil
 local eGridStates         = {}   -- active energy grid placer states
-local eGridAssignedKeys   = {}   -- anchor keys already assigned (prevents duplicates)
 local completedEGridCount = 0
-local eGridsPlaced        = 0    -- total energy grid anchors generated (for position step)
 local firstTwoMexDone     = false
 local target_e_grid       = 1
 local energyStallFrames   = 0    -- consecutive frames energy demand > production
@@ -201,38 +202,49 @@ local function GroundBotFilter(defID)
     return ud ~= nil and ud.isBuilder and not ud.canFly and not ud.isFactory
 end
 
--- ── Grid expansion (forward-declared so TryAssign's closure can reference TryExpand) ──
+-- ── Grid expansion (forward-declared so TryAssign's closures can reference them) ──
 local TryExpand
+local TryQueueEGrid
 
 local function TryAssign()
-    while #freeAirCons > 0 do
+    while #freeAirCons > 0 and #pendingMexPlacements > 0 do
         local conID = freeAirCons[1]
         if not spGetUnitDefID(conID) then
-            -- Dead con, discard it.
             table.remove(freeAirCons, 1)
-        elseif #pendingPlacements > 0 then
-            -- Special blueprint (energy grid etc.) takes priority over mex.
-            table.remove(freeAirCons, 1)
-            local p = table.remove(pendingPlacements, 1)
-            local state = BP_PLACER.New(p.blueprint, conID, p.anchorX, p.anchorZ, p.rotation)
-            if p.onComplete then state.onComplete = p.onComplete end
-            p.stateList[#p.stateList + 1] = state
-        elseif #pendingMexPlacements > 0 then
-            -- Default: place the next mex grid.
+        else
             table.remove(freeAirCons, 1)
             local p = table.remove(pendingMexPlacements, 1)
-            local state = BP_PLACER.New(MEX_GRID_BP, conID, p.anchorX, p.anchorZ, p.rotation)
-            state.onNanoThreshold = function(s)
-                AddCompletedAnchor(s.anchorX, s.anchorZ)
-                TryExpand()
+            if #pendingPlacements > 0 then
+                -- A special blueprint (energy grid etc.) claims this expansion slot.
+                local sp = table.remove(pendingPlacements, 1)
+                local state = BP_PLACER.New(sp.blueprint, conID, p.anchorX, p.anchorZ, p.rotation)
+                if sp.onComplete then state.onComplete = sp.onComplete end
+                if sp.stateList == eGridStates then
+                    state.onNanoThreshold = function(s)
+                        AddCompletedAnchor(s.anchorX, s.anchorZ)
+                        TryExpand()
+                    end
+                    state.onMostlyDone = function(s)
+                        s.mostlyDone = true
+                        AddCompletedAnchor(s.anchorX, s.anchorZ)
+                        TryExpand()
+                        TryQueueEGrid()
+                    end
+                end
+                sp.stateList[#sp.stateList + 1] = state
+            else
+                -- Default: place a mex grid.
+                local state = BP_PLACER.New(MEX_GRID_BP, conID, p.anchorX, p.anchorZ, p.rotation)
+                state.onNanoThreshold = function(s)
+                    AddCompletedAnchor(s.anchorX, s.anchorZ)
+                    TryExpand()
+                end
+                state.onComplete = function(s)
+                    AddCompletedAnchor(s.anchorX, s.anchorZ)
+                    TryExpand()
+                end
+                gridStates[#gridStates + 1] = state
             end
-            state.onComplete = function(s)
-                AddCompletedAnchor(s.anchorX, s.anchorZ)
-                TryExpand()
-            end
-            gridStates[#gridStates + 1] = state
-        else
-            break  -- no work available
         end
     end
 end
@@ -257,66 +269,41 @@ end
 
 -- ── Energy grid placement ─────────────────────────────────────────────────────
 
--- energy_grid_t1 is 480×480 (30 cells × 16 units = GRID_SPACING).
--- First grid always goes north of base (the slot that was previously the north mex).
--- Subsequent grids go east of bot_starter where mex expansion is bounded out.
-local function NextEGridPos()
-    if eGridsPlaced == 0 then
-        return baseX, baseZ - GRID_SPACING
-    end
-    local n   = eGridsPlaced - 1   -- 0-based index into the east column
-    local col = math.floor(n / 3)
-    local row = n % 3
-    local rowOffsets = {0, -GRID_SPACING, GRID_SPACING}
-    local ax = baseX + (2 + col) * GRID_SPACING
-    local az = baseZ + rowOffsets[row + 1]
-    return ax, az
-end
-
--- Decide whether to queue one more energy grid.
--- Protection against queue flooding: only queue when no egrid is pending and
--- active count is below target; skip entirely when energy is being floated.
-local function TryQueueEGrid()
+-- Adds one energy grid entry to pendingPlacements so TryAssign will claim the
+-- next available mex expansion slot for it instead of placing a mex grid.
+-- No position or rotation is specified here — TryAssign inherits both from
+-- whatever FindAllValidPlacements slot gets consumed.
+TryQueueEGrid = function()
     if not firstTwoMexDone then return end
-    if not airLabID or not spGetUnitDefID(airLabID) then return end
     if not ENERGY_T1_GRID_BP then return end
 
-    -- Count how many energy grids are currently pending in the unified queue.
+    -- Count grids still meaningfully building (not mostly done, not fully done).
+    local active = 0
+    for _, es in ipairs(eGridStates) do
+        if not es.done and not es.mostlyDone then active = active + 1 end
+    end
+    -- Count energy grids already pending but not yet assigned to a builder.
     local pendingECount = 0
     for _, p in ipairs(pendingPlacements) do
         if p.blueprint == ENERGY_T1_GRID_BP then pendingECount = pendingECount + 1 end
     end
-    if pendingECount > 0 then return end  -- one in flight is enough
+    -- Natural flood protection: active + pending already covers demand.
+    if active + pendingECount >= target_e_grid then return end
 
     -- Don't build more when energy storage is >70% full (energy being floated).
     local okE, eCur, eStorage = pcall(Spring.GetTeamResources, myTeamID, "energy")
     local e_stor = (okE and eStorage and eStorage > 0) and (eCur / eStorage) or 0
     if e_stor > 0.7 then return end
 
-    local active = #eGridStates + pendingECount
-    if active < target_e_grid then
-        local ax, az = NextEGridPos()
-        local key = AnchorKey(ax, az)
-        if not eGridAssignedKeys[key] then
-            eGridAssignedKeys[key] = true
-            eGridsPlaced = eGridsPlaced + 1
-            pendingPlacements[#pendingPlacements + 1] = {
-                blueprint  = ENERGY_T1_GRID_BP,
-                anchorX    = ax,
-                anchorZ    = az,
-                rotation   = 0,
-                stateList  = eGridStates,
-                onComplete = function()
-                    completedEGridCount = completedEGridCount + 1
-                    Spring.Echo("[MC] Energy grid done, total=" .. completedEGridCount)
-                end,
-            }
-            Spring.Echo("[MC] Queuing energy grid #" .. eGridsPlaced .. " at " .. math.floor(ax) .. "," .. math.floor(az))
-            local airDefID = FindAirConDefID(spGetUnitDefID(airLabID))
-            if airDefID then spGiveOrderToUnit(airLabID, -airDefID, {0}, {}) end
-            TryAssign()
-        end
-    end
+    pendingPlacements[#pendingPlacements + 1] = {
+        blueprint  = ENERGY_T1_GRID_BP,
+        stateList  = eGridStates,
+        onComplete = function()
+            completedEGridCount = completedEGridCount + 1
+            if DEBUG then Spring.Echo("[MC] Energy grid done, total=" .. completedEGridCount) end
+        end,
+    }
+    if DEBUG then Spring.Echo("[MC] Energy grid queued, active=" .. active .. " pending=" .. (pendingECount + 1)) end
 end
 
 -- ── Commander → com_starter (direct queue, same as test_com_starter.lua) ─────
@@ -336,16 +323,21 @@ local function QueueComBlueprint(anchorX, anchorZ)
             count = count + 1
         end
     end
-    Spring.Echo("[WE] QueueComBlueprint: queued " .. count .. " orders at "
-        .. math.floor(anchorX) .. "," .. math.floor(anchorZ))
+    if DEBUG then
+        Spring.Echo("[WE] QueueComBlueprint: queued " .. count .. " orders at "
+            .. math.floor(anchorX) .. "," .. math.floor(anchorZ))
+    end
 end
 
 local function StartComBlueprint()
     local cx, _, cz = spGetUnitPosition(commanderID)
-    if not cx then Spring.Echo("[WE] StartComBlueprint: no position"); return end
+    if not cx then
+        if DEBUG then Spring.Echo("[WE] StartComBlueprint: no position") end
+        return
+    end
     baseX = math.floor(cx / 16 + 0.5) * 16
     baseZ = math.floor(cz / 16 + 0.5) * 16
-    Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ)
+    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ) end
 
     -- Block the commander cell so TryExpand never places a mex_grid here.
     -- Not added to completedAnchors: the mex_grid system seeds itself from
@@ -359,7 +351,7 @@ end
 -- ── Con bot 1 → perimeter nanos ───────────────────────────────────────────────
 
 local function AssignConBot1()
-    Spring.Echo("[WE] AssignConBot1")
+    if DEBUG then Spring.Echo("[WE] AssignConBot1") end
     emptyGridState = BP_PLACER.New(EMPTY_GRID_BP, conBot1ID, baseX, baseZ, 0)
     conBot1Assigned = true
 end
@@ -367,7 +359,7 @@ end
 -- ── Con bot 2 → bot_starter (east of com) ────────────────────────────────────
 
 local function AssignConBot2()
-    Spring.Echo("[WE] AssignConBot2")
+    if DEBUG then Spring.Echo("[WE] AssignConBot2") end
     local bsX = baseX + GRID_SPACING
     local bsZ = baseZ
     -- bot_starter is east of com; dx = new_x - existing_x = +GRID_SPACING.
@@ -389,7 +381,7 @@ end
 -- ── Con bots 3 & 4 → VechT1_and_BotT2 north and south of bot_starter ────────
 
 local function AssignConBot3()
-    Spring.Echo("[WE] AssignConBot3 (VechT1_and_BotT2 north of bot_starter)")
+    if DEBUG then Spring.Echo("[WE] AssignConBot3 (VechT1_and_BotT2 north of bot_starter)") end
     local bsX = baseX + GRID_SPACING
     local bsZ = baseZ - GRID_SPACING   -- north
     local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
@@ -400,7 +392,7 @@ local function AssignConBot3()
 end
 
 local function AssignConBot4()
-    Spring.Echo("[WE] AssignConBot4 (VechT1_and_BotT2 south of bot_starter)")
+    if DEBUG then Spring.Echo("[WE] AssignConBot4 (VechT1_and_BotT2 south of bot_starter)") end
     local bsX = baseX + GRID_SPACING
     local bsZ = baseZ + GRID_SPACING   -- south
     local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
@@ -413,18 +405,15 @@ end
 -- ── Air lab → initial 2 mex_grids + 1 energy grid ────────────────────────────
 
 local function StartAirExpansion()
-    Spring.Echo("[MC] StartAirExpansion airConsQueued=" .. tostring(airConsQueued) .. " baseX=" .. tostring(baseX))
+    if DEBUG then Spring.Echo("[MC] StartAirExpansion airConsQueued=" .. tostring(airConsQueued) .. " baseX=" .. tostring(baseX)) end
     if airConsQueued then return end
     airConsQueued = true
     firstTwoMexDone = true  -- enable energy grid logic
 
-    -- Block the north slot so mex expansion never places a grid there;
-    -- the first energy grid will occupy that position instead.
-    assignedAnchors[AnchorKey(baseX, baseZ - GRID_SPACING)] = true
-
     local initials = {
         {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
         {ax = baseX,                az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
+        {ax = baseX,                az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
     }
     for _, init in ipairs(initials) do
         local key = AnchorKey(init.ax, init.az)
@@ -439,14 +428,15 @@ local function StartAirExpansion()
         end
     end
 
-    -- Queue one air con per mex placement.
+    -- Queue one air con per initial mex slot (3 slots: west, south, north).
     local airDefID = FindAirConDefID(spGetUnitDefID(airLabID))
     if airDefID then
         spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
         spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
+        spGiveOrderToUnit(airLabID, -airDefID, {0}, {})
     end
 
-    -- Queue the first energy grid immediately.
+    -- Queue the first energy grid; it will claim whichever slot is first assigned.
     TryQueueEGrid()
 
     -- Queue 2 more con bots for VechT1_and_BotT2 north and south of bot_starter.
@@ -463,7 +453,7 @@ end
 -- ── Widget callbacks ──────────────────────────────────────────────────────────
 
 function widget:Initialize()
-    Spring.Echo("[WE] Initialize")
+    if DEBUG then Spring.Echo("[WE] Initialize") end
     local ok1, r1 = pcall(VFS.Include, "LuaUI/Widgets/blueprint_placer.lua")
     local ok2, r2 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/com_starter.lua")
     local ok3, r3 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/bot_starter.lua")
@@ -486,7 +476,7 @@ function widget:Initialize()
     VECH_BOT_T2_BP    = r6
     ENERGY_T1_GRID_BP = r7
     GRID_SPACING = BP_PLACER.GRID_SPACING
-    Spring.Echo("[WE] Loaded OK. GRID_SPACING=" .. tostring(GRID_SPACING))
+    if DEBUG then Spring.Echo("[WE] Loaded OK. GRID_SPACING=" .. tostring(GRID_SPACING)) end
 
     myTeamID = spGetMyTeamID()
     local units = Spring.GetTeamUnits(myTeamID) or {}
@@ -497,7 +487,7 @@ function widget:Initialize()
         end
     end
     if commanderID then
-        Spring.Echo("[WE] Commander found in Initialize id=" .. commanderID)
+        if DEBUG then Spring.Echo("[WE] Commander found in Initialize id=" .. commanderID) end
         StartComBlueprint()
     end
 end
@@ -507,7 +497,7 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
 
     local dName = UnitDefs[unitDefID] and UnitDefs[unitDefID].name or "?"
-    Spring.Echo("[WE] UnitCreated id=" .. unitID .. " def=" .. dName .. " builder=" .. tostring(builderID))
+    if DEBUG then Spring.Echo("[WE] UnitCreated id=" .. unitID .. " def=" .. dName .. " builder=" .. tostring(builderID)) end
 
     if not baseX then return end
 
@@ -517,13 +507,13 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     -- Detect labs.
     if d.isFactory then
         local isAir = IsAirFactory(unitDefID)
-        Spring.Echo("[WE]   factory isAir=" .. tostring(isAir))
+        if DEBUG then Spring.Echo("[WE]   factory isAir=" .. tostring(isAir)) end
         if isAir and not airLabID then
             airLabID = unitID
-            Spring.Echo("[WE]   -> airLabID=" .. unitID)
+            if DEBUG then Spring.Echo("[WE]   -> airLabID=" .. unitID) end
         elseif not isAir and not botLabID then
             botLabID = unitID
-            Spring.Echo("[WE]   -> botLabID=" .. unitID)
+            if DEBUG then Spring.Echo("[WE]   -> botLabID=" .. unitID) end
         end
         if builderID and builderID ~= commanderID then labBuilders[unitID] = builderID end
         return
@@ -540,19 +530,19 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if builderID == botLabID and d.isBuilder and not d.canFly and not d.isFactory then
         spGiveOrderToUnit(unitID, CMD_STOP, {}, {})   -- clear factory guard order
         if not conBot1ID then
-            Spring.Echo("[WE] ConBot1 detected id=" .. unitID)
+            if DEBUG then Spring.Echo("[WE] ConBot1 detected id=" .. unitID) end
             conBot1ID = unitID
             AssignConBot1()
         elseif not conBot2ID then
-            Spring.Echo("[WE] ConBot2 detected id=" .. unitID)
+            if DEBUG then Spring.Echo("[WE] ConBot2 detected id=" .. unitID) end
             conBot2ID = unitID
             AssignConBot2()
         elseif not conBot3ID then
-            Spring.Echo("[WE] ConBot3 detected id=" .. unitID)
+            if DEBUG then Spring.Echo("[WE] ConBot3 detected id=" .. unitID) end
             conBot3ID = unitID
             if baseX then AssignConBot3() end
         elseif not conBot4ID then
-            Spring.Echo("[WE] ConBot4 detected id=" .. unitID)
+            if DEBUG then Spring.Echo("[WE] ConBot4 detected id=" .. unitID) end
             conBot4ID = unitID
             if baseX then AssignConBot4() end
         end
@@ -562,7 +552,7 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     -- Air constructors from air lab get pooled for grid assignment.
     if builderID == airLabID and d.isBuilder and d.canFly and not d.isFactory then
         spGiveOrderToUnit(unitID, CMD_STOP, {}, {})   -- clear factory guard order
-        Spring.Echo("[WE] AirCon detected id=" .. unitID .. " freeAirCons#=" .. (#freeAirCons+1))
+        if DEBUG then Spring.Echo("[WE] AirCon detected id=" .. unitID .. " freeAirCons#=" .. (#freeAirCons+1)) end
         freeAirCons[#freeAirCons + 1] = unitID
         TryAssign()
     end
@@ -572,11 +562,11 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if teamID ~= myTeamID then return end
 
     local dName = UnitDefs[unitDefID] and UnitDefs[unitDefID].name or "?"
-    Spring.Echo("[WE] UnitFinished id=" .. unitID .. " def=" .. dName)
+    if DEBUG then Spring.Echo("[WE] UnitFinished id=" .. unitID .. " def=" .. dName) end
 
     -- Commander detection (mirrors test_com_starter pattern).
     if IsCommander(unitDefID) and not commanderID then
-        Spring.Echo("[WE] Commander detected in UnitFinished id=" .. unitID)
+        if DEBUG then Spring.Echo("[WE] Commander detected in UnitFinished id=" .. unitID) end
         commanderID = unitID
         StartComBlueprint()
     end
@@ -592,9 +582,9 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
 
     -- Bot lab done → queue 2 con bots.
     if unitID == botLabID and not conBotsQueued then
-        Spring.Echo("[WE] BotLab finished -> queueing 2 con bots")
+        if DEBUG then Spring.Echo("[WE] BotLab finished -> queueing 2 con bots") end
         local defID = FindConBotDefID(unitDefID)
-        Spring.Echo("[WE]   conBotDefID=" .. tostring(defID))
+        if DEBUG then Spring.Echo("[WE]   conBotDefID=" .. tostring(defID)) end
         if defID then
             spGiveOrderToUnit(botLabID, -defID, {0}, {})
             spGiveOrderToUnit(botLabID, -defID, {0}, {})
@@ -605,7 +595,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
 
     -- Air lab done → seed initial mex_grids.
     if unitID == airLabID then
-        Spring.Echo("[WE] AirLab finished -> StartAirExpansion")
+        if DEBUG then Spring.Echo("[WE] AirLab finished -> StartAirExpansion") end
         StartAirExpansion()
         -- fall through to also notify placer states below
     end
@@ -680,6 +670,12 @@ function widget:GameFrame(frame)
                 BP_PLACER.Update(es, frame, resources)
             end
         end
+        -- Prune fully-done energy grid states so the list doesn't grow unbounded.
+        local i = 1
+        while i <= #eGridStates do
+            if eGridStates[i].done then table.remove(eGridStates, i)
+            else i = i + 1 end
+        end
     end
 
     if frame % 30 == 0 then
@@ -731,7 +727,7 @@ function widget:GameFrame(frame)
             if energyStallFrames >= 900 and pendingECount == 0 then
                 target_e_grid = target_e_grid + 1
                 energyStallFrames = 0
-                Spring.Echo("[MC] Energy stall 30s -> target_e_grid=" .. target_e_grid)
+                if DEBUG then Spring.Echo("[MC] Energy stall 30s -> target_e_grid=" .. target_e_grid) end
             end
         end
 
