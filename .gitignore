@@ -1,2 +1,4 @@
 # Claude Code
 .claude/
+server-hosting/
+__pycache__/

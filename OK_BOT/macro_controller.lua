@@ -639,6 +639,11 @@ function widget:GameFrame(frame)
         QueueComBlueprint(baseX, baseZ)
         comBlueprintPending = false
         comBlueprintIssued  = true
+        if DEBUG then
+            local cmds = spGetUnitCommands(commanderID, -1)
+            Spring.Echo("[WE] Post-queue cmdCount=" .. tostring(cmds and #cmds or "nil")
+                .. " comID=" .. tostring(commanderID))
+        end
     end
 
     -- Retry in early game if orders were silently dropped (commander idle but should have work).
