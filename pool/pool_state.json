@@ -1,0 +1,16 @@
+{
+  "max_pool_size": 10,
+  "bots": {
+    "baseline_001": {
+      "elo": 1200.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "matches_played": 0,
+      "created_at": "2026-09-15T00:00:00Z",
+      "parent_id": null,
+      "notes": "Original OK_BOT — Cortex faction, Full Metal Plate 1.7"
+    }
+  },
+  "match_history": []
+}

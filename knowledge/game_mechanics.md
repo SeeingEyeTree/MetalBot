@@ -1,0 +1,228 @@
+# Beyond All Reason — Game Mechanics Reference
+
+This document exists so that an agent working on MetalBot understands *why* the code does what it does, not just *what* it does. It was compiled by interviewing Tree (the project owner) directly, plus his written notes (`Bar notes.pdf`). Treat it as ground truth over any prior assumptions about RTS games in general — BAR (and the Spring engine it runs on) has specific mechanics that don't match other RTS games.
+
+**Scope note:** this bot currently targets one specific map — a flat, symmetric, full metal-plate map, 1v1 only, Cortex faction. Several sections below describe map-specific simplifications (no terrain, no naval, uniform mex value) that would not hold on a different map. Where that matters, it's called out.
+
+---
+
+## 1. Resources
+
+There are exactly two *resources*: **Metal (M)** and **Energy (E)**. Build Power (BP) is not a resource — it's an attribute some units/buildings have (see §2).
+
+- **Metal** comes from metal extractors (mexes) built on metal spots, plus reclaim (see §1.3).
+- **Energy** comes from wind turbines and fusion reactors (on this map — solar exists too but is not the plan here). The target map has constant wind speed 25, so wind is reliably the most metal-efficient energy source; fusion has good BP-for-cost and energy-for-cost but is more expensive up front.
+- You can convert energy → metal via metal makers, but it's less efficient than just building more mexes. Not a priority.
+
+### 1.1 How spending actually works
+
+Every unit/building has a **metal cost**, an **energy cost**, and a **build time**. The rate something is built at is `available BP × (cost / build_time)` per resource, capped by however much BP is actually assigned to it. Concretely, a unit with 100 build time, 100 metal cost, 1000 energy cost, being built with 10 BP, consumes metal at 10/s and energy at 100/s and finishes in 10 seconds. This means **BP determines the *rate* resources are consumed at**, not just build speed in the abstract — resource consumption and construction progress are the same thing.
+
+### 1.2 Stalling
+
+"Stalling" means you have more BP demanding a resource than you have income of that resource. When this happens:
+
+- All active build jobs' resource draw is capped by combined income (plus whatever is in storage).
+- **High-priority** jobs get first claim on whatever resource is available; only the leftover is spread evenly across all normal/low-priority jobs.
+- Metal stalls and energy stalls behave identically — it's just "not enough of resource X for all the BP currently trying to spend it."
+- Being in a *permanent, controlled* stall is actually the ideal state: it means every unit of resource produced is being used the instant it's produced, which is the most efficient possible use of eco. The problem is only *uncontrolled* stalling, where important things (units, key buildings) are starved because something less important got there first. That's what the priority system exists to prevent — see §7.
+
+### 1.3 Storage
+
+- Metal/energy beyond your current storage cap is **wasted** — it does not queue or overflow anywhere.
+- Most economy buildings contribute a small amount of storage; dedicated storage buildings raise the cap more.
+- Storage is a controlled buffer, not a goal — having some lets you spend in bursts (e.g. absorbing a large reclaim windfall), but resources sitting in storage aren't helping you win *right now* the way spent resources are.
+
+### 1.4 Reclaim, resurrection, and healing
+
+These matter a lot economically, more than a beginner would guess:
+
+- A dead unit leaves a wreck worth roughly **~70% of its original metal cost**. Reclaiming wrecks near the front line can generate a large, sudden metal windfall.
+- The hard part isn't getting the metal, it's **having enough BP and useful jobs to spend it on** immediately (see storage note above) — a big reclaim spike is only valuable if you can turn it into units/buildings right away.
+- **Resurrecting** a dead unit is slower than reclaiming (it has to be rezzed, then healed), but it skips reinforcement travel time entirely, since the unit reappears near the front instead of walking there from the base. This is a meaningful advantage on a large map.
+- **Healing** a damaged (not dead) unit costs *only time*, no resources. Always worth doing when possible.
+- **Graverobbers** (reclaim/heal/rez unit) are considered a required unit type for a "fully functional" bot — not optional.
+- There are no trees on this map, so tree-reclaim isn't a factor here (would matter on other maps).
+
+### 1.5 The commander
+
+- Produces roughly **2 M/s and 30 E/s**, and has about **300 BP** — this is what bootstraps the entire economy at game start.
+- Only meaningfully important in the **opening** (first few minutes): building the first labs/nanos and getting initial mex/energy going.
+- After the opening, the commander contributes little — the rest of the economy dwarfs it.
+- The commander does **not** fight, does **not** get involved in tech progression (T2 labs come from cons, not the commander), and its only "combat" tools are D-gun and self-destruct, neither of which are part of the current plan.
+- Losing the commander is **instant game loss** (see §8), so keeping it safe (cloak + stay near a jammer) matters far more than using it for anything active once the opening is done.
+
+---
+
+## 2. Build Power & Construction
+
+### 2.1 What BP is
+
+BP is an attribute of certain units/buildings ("builders"). It determines how fast they can push metal/energy into a construction job (see §1.1's formula). BP is not consumed or spent itself — spending it just means directing it at a job.
+
+- **Nanos** (nanoturrets): stationary, but the best BP-per-cost ratio. Cannot move themselves, but can be picked up and airlifted by an air transport to a new location (literally moving the building, not a separate "mobile nano" unit type).
+- **Mobile constructors ("cons")**: worse BP-per-cost ratio, but can walk to wherever they're needed. T1 mobile con BP is roughly in the 60–95 range.
+- Because a bot has effectively unlimited APM, using air transports to relocate nanos as their local jobs finish is a real, viable strategy — more efficient than only ever building new nanos or relying purely on mobile cons.
+
+### 2.2 Assist stacking
+
+Multiple builders (any mix of nanos, cons, or a factory's own BP) assisting the **same job** simply **sum their BP linearly**. Two 50-BP nanos on one job = 100 BP on that job. There's no cap or diminishing returns on the number of assisters.
+
+There is **no functional difference** between a builder that "owns" a job (placed it) versus one "assisting" it, once the job is placed — BP is BP. The one place ownership matters is **blueprint placement rules**: a T1 con cannot place a T2 building, and a T2 con cannot place a T1 building. Each builder type has its own placeable set. Once *any* legal builder has placed something, any other builder can assist it regardless of tier.
+
+### 2.3 Cost-effectiveness reference (Cortex, ballpark)
+
+| Unit | Metal | Energy | BP | Total cost (M + E×70) | BP per cost |
+|---|---:|---:|---:|---:|---:|
+| Nano turret (conturet) | 230 | 3200 | 200 | 276 | 0.725 |
+| Con turret + 0.3× air transport | 252.2 | 3635 | 200 | 304 | 0.658 |
+| Cor bot (mobile kbot con) | 120 | 1750 | 85 | 145 | 0.586 |
+| Cor vec (mobile vehicle con) | 145 | 2100 | 95 | 175 | 0.543 |
+| Cor air (mobile air con) | 115 | 2200 | 65 | 146 | 0.445 |
+
+"Total cost" here uses the simplified conversion **metal + energy×70** to make M/E comparable in one number. The "+0.3× air transport" row approximates the real cost of a nano once you account for likely needing to relocate it at some point. Nanos are clearly the most BP-efficient, at the cost of needing transport logistics to reposition. Exact numbers for any unit can be pulled from the local Beyond-All-Reason-project repo (`C:\Users\malco\OneDrive\Documents\GitHub\Beyond-All-Reason-project\units`) if more precision is ever needed.
+
+### 2.4 The mex-grid / blueprint system
+
+To avoid needing full "what to build, who builds it, where exactly" decisions for every single mex, the bot uses a **pre-planned grid layout**: a square grid, currently 30×30 (240×240 elmos), that can be built by any air con from a shared pool into any open grid slot. This raises the abstraction level — the bot mostly just decides "build the next grid" at a high level rather than micromanaging individual buildings. Smaller (15×15) or larger (60×60) grids can be substituted using the same overall pattern. It's an intentional simplification, not a perfect model of optimal building placement.
+
+**Nano relocation logic**: since nanos are stationary, the bot needs to decide when a nano's local grid has no more work (e.g. a T1 mex grid is fully built and has no planned T2 upgrade) and should be airlifted elsewhere. A reasonable heuristic: track idle time per nano, and/or flag a grid as "done, no future upgrades" once finished, to trigger relocation.
+
+### 2.5 Factories and their own BP
+
+Factories have their own internal BP for producing units, but need external BP support (assisting cons/nanos) to be effective. A single factory has a practical ceiling on how much assist BP it can usefully absorb:
+
+- Units have to physically walk out of the factory before the next one starts; if only one factory is in range, some of that support BP goes idle waiting.
+- BP also has a **ramp-up cost** when switching tasks — it doesn't jump straight to 100%, though this ramp is fast. This mostly matters for very cheap/low-BP-cost units and can be treated as a minor effect for now.
+- **Rule of thumb**: don't provide more support BP to a lab than it would take to build its main unit type in ~2.5 seconds. E.g. if a lab's main unit costs 12,000 BP-equivalent, ~24 nanos worth of support is a reasonable target. This is approximate — a lab that builds multiple unit types with different BP costs is harder to size precisely, and it's generally safer to lean toward *more* BP than less.
+
+### 2.6 Build range and line of sight
+
+**Line of sight does not matter for building.** A builder can place or assist construction anywhere within its build range, including in fog of war. (Elevation-based sight-blocking exists in the engine but is irrelevant on this map, since it's flat.)
+
+---
+
+## 3. Unit Cap
+
+The game enforces a per-player unit cap (a CPU/performance safeguard, default ~2000, likely to be raised to ~5000 for this project). **Everything counts toward it** — mexes, wind turbines, army units, nanos, all of it. At the cap, labs stop starting new units and builders can't place new blueprints. Not expected to be a major issue in practice, but worth the bot being aware it exists.
+
+There is, as far as known, **no separate build-queue length limit**.
+
+---
+
+## 4. Tech Progression
+
+- **T1 → T2 → T3**, all tiers are in scope for this project (not just T1/T2).
+- Progression: the commander builds a T1 lab. T1 cons (produced from that lab, or built by the commander) can build more T1 buildings, **and** can build a T2 lab of the *same type* (a T1 bot lab → T2 bot lab, a T1 air lab → T2 air lab, etc.).
+- A T2 con (from a T2 lab) can build a **T3 lab**. Any T2 con of any lab-type can do this — it's not restricted to matching types the way T1→T2 is.
+- The commander is **not involved** in unlocking T2 or beyond — that's entirely a T1-con job.
+- A T2 lab simply unlocks the ability to produce T2 units and T2 cons; it doesn't otherwise change the model.
+
+---
+
+## 5. Faction & Lab Types
+
+- The bot is currently **Cortex-only** ("cor" unit prefixes: corvec, corbot, corair, etc.) for simplicity. New logic should be written with half an eye toward cross-faction compatibility (the two factions largely have units filling equivalent roles), but faction-agnosticism is **not a current priority**.
+- Relevant lab types on this map: **bot lab (kbot)**, **vehicle lab**, and **air lab**.
+- **Never build a hover lab.** Naval and amphibious labs are irrelevant on this map (no water).
+- Air is considered genuinely valuable here, not just a side option — the map is large, so fast units matter a lot. Notable air units: **Shuriken** (strong anti-raid / light-AA-countered unit), **T2 gunships** (very strong if left uncontested), and **air transports** for both troop movement and nano relocation (§2.4).
+
+---
+
+## 6. Map & Positioning
+
+The bot's current target map:
+
+- **Symmetric**, spawns anywhere along a strip on each side. Supports arbitrary team counts/sizes in general, but **this project only targets 1v1**.
+- **"Full metal plate"**: mexes can be built anywhere, and every mex spot is worth exactly the same regardless of location — there is no "richer" or "poorer" territory.
+- **Perfectly flat**: no elevation, no chokepoints, no ramps, no geometric features of any kind. Terrain-based tactics (high ground, bottlenecks) are not a factor on this map.
+- **No fixed front line.** Since there's no geography to anchor on, the front line is wherever the two armies happen to currently be — purely dynamic, shifting as either side pushes or retreats.
+
+### 6.1 Proxy bases
+
+A proxy base is a forward concentration of **BP and labs** (to produce units/defenses closer to the fighting), sitting somewhat behind the front line — **not** a forward economic expansion. Building mexes/eco at a proxy base is a mistake: it's more exposed, and more importantly it means BP there is producing economy instead of units, which defeats the purpose of having pushed BP forward in the first place. If a proxy base is lost and there isn't much BP elsewhere, the bot may not be able to field enough army to defend even with unlimited resources — so proxy bases need real defenses around them.
+
+### 6.2 Scouting
+
+Since the map layout itself is static and known in advance, scouting isn't about discovering terrain — it's purely about **finding the enemy and tracking their army/production state**, mainly via fast air scouts. Radar coverage matters for map awareness in general, though the bot's exact ability to exploit radar/scouting info well is still an open question in practice.
+
+---
+
+## 7. Army Composition & Roles
+
+Ideal role breakdown for army composition (not all currently implemented, but the target shape):
+
+| Role | Purpose |
+|---|---|
+| **Raiders** | Fast units probing for weakly-defended points; harass economy, force a response. Not meant to punch through a real defense. |
+| **Main army** | The core force, generally always trying to engage/fight rather than sit idle. |
+| **Draw-fire / spam ("Grunt")** | Cheap, disposable units mixed directly into the main army so they soak hits that would otherwise land on more valuable units. `Grunt` is the specific unit for this role currently. |
+| **AA** | Necessary baseline defense against air — see §7.3. |
+| **Utility (mobile radar / mobile jammer / anti-nuke)** | Cheap, fragile, high-value-when-alive support units. Once T2 is available, worth having as a standing role. |
+| **Combat engineers** | Mobile cons that build defenses/BP closer to the front. Travel a bit **behind** the main army/front line (they're fragile and shouldn't be building or healing directly in the line of fire). |
+| **Rez bots (Graverobbers)** | Battlefield reclaim/heal/resurrect — see §1.4. Considered mandatory for a complete bot. |
+| **Anti-raid** | Fast units held back specifically to intercept raids before they reach the base — Shuriken called out as a good fit for a while. |
+
+Artillery is explicitly **not favored** on this flat, cover-less map — could theoretically work with good play, but isn't part of the intended composition.
+
+### 7.1 Raid response
+
+Raids are generally visible with plenty of warning time, since a raiding force has to travel a real distance to reach anything. The correct response is to **send local/reserve reinforcements to intercept**, not to pull units from the main army — pulled units are slower than the raiders and will lose ground for nothing, since they can't catch a faster unit that's already retreating anyway. Redirecting BP to build defenses in the raider's path is also a good response. **Do not chase a faster, retreating raiding unit** — it cannot be caught.
+
+### 7.2 Micro priorities
+
+Micro is explicitly **not the current priority** — correct unit composition and positioning gets most of the value on their own. The one micro behavior considered a hard requirement: **retreat low-HP units that are part of the main army** to heal. Raid units, by contrast, should **not** retreat — they're expendable/committed once sent.
+
+### 7.3 AA posture
+
+Needs a standing **baseline** at all times (getting caught with zero AA against a bomber run is just an instant loss), scaling up **reactively** once the enemy is seen investing in air. The right baseline/reactive balance is something to tune empirically through actual test games rather than derive analytically.
+
+### 7.4 Combat model notes
+
+- No damage types or armor classes exist in this game — combat is fundamentally HP vs. DPS, range, and speed.
+- **Flanking damage** is real: a unit hit from multiple directions in quick succession takes multiplied damage (roughly up to ~2×, exact values unconfirmed). Not a current priority to model explicitly, but worth knowing it exists.
+- Terrain does not affect combat on this map (see §6).
+
+---
+
+## 8. Advanced / Optional Tactics (not current priorities)
+
+These are noted for completeness — interesting, but explicitly **not** things the first working version of the bot needs to reason about. Revisit later if there's bandwidth.
+
+- **Skuttles**: ~755 M / 27k E, can kill ~5k metal worth of units if they land a hit well-microed. Explode on death (bigger explosion if self-destructed rather than killed), damaging everything nearby. Countered by range + radar; a radar jammer (ground-based or carried by an air transport) can mask the skuttle's radar signature, at which point only active counter-intrusion detection would catch it. Only worth attempting with a solid understanding of how the underlying systems interact.
+- **Spy bots**: invisible unless an enemy unit is nearby; self-destruct applies EMP to **all** units around them, friend or foe. Die normally if killed outright (no special death effect).
+
+---
+
+## 9. Endgame & Win Conditions
+
+- Bots **do not resign**. The only way a game ends is killing the enemy commander (or hitting the test harness's `--duration` time limit).
+- If the bot has effectively already won (dominant economically/militarily) but the enemy commander isn't near the fighting, the bot can get **stuck in a won game** indefinitely unless it actively hunts the commander down.
+- Intended behavior once "we've won" is detected: **scout the map, then send bombers to kill the commander.**
+- **Open problem:** there is currently no implemented heuristic for *detecting* "we've won" (e.g. enemy has had no visible production/units for some time). This needs design work.
+
+---
+
+## 10. Known Bot Issues (context for anyone working on this codebase)
+
+- **Early scaling is the main known weakness.** In test games, even with zero enemy interaction in the first 3–5 minutes, the bot ends up noticeably behind in economy relative to good play. Two known contributing factors: energy grids currently aren't being built correctly, and the general opening isn't scaling as aggressively as it should be.
+- **Priority system is only partially implemented.** The intended design (§1.2): when there's a stall, nanos/builders working on jobs that would relieve that specific stall (e.g. wind/fusion jobs during an energy stall) should be bumped to high priority. Interrupts currently exist but don't actually elevate priority the way they should — this is a known gap.
+- **Defense interrupt is crude.** Current behavior: when enemy units are detected near a grid, the bot builds defenses there; once the enemy leaves, it reclaims those defenses to continue normal construction. Described by Tree as "not well thought out" — a candidate for improvement, not a finished system.
+- **"Non-commander units built" (the current headline metric in `bot_testing.py`) is not actually a good measure of bot quality.** Better signals to track: metal wasted over the storage cap, time spent stalled, and eventually actual win/loss via commander kill. The intent is to keep **adding** more tracked metrics over time from replays rather than relying on one number — more visibility into what's actually happening in a game is always valuable when deciding whether a change helped.
+
+---
+
+## Glossary
+
+- **Elmo**: the base engine distance unit (Spring engine). Grid cells in this project are 240×240 elmos (a 30×30 grid).
+- **BP**: Build Power — the rate-of-construction attribute of builders/factories.
+- **Mex**: metal extractor, the building that produces metal from a metal spot.
+- **Nano / nanoturret**: stationary builder, best BP-per-cost, must be airlifted to relocate.
+- **Con / constructor**: mobile builder (bot/vehicle/air variants), worse BP-per-cost but can walk.
+- **Stall**: BP demand for a resource exceeds current income of that resource.
+- **Reclaim**: recovering metal value from a wreck (or a live unit/feature, though not relevant on this map).
+- **Rez / resurrect**: reviving a dead unit from its wreck (via a Graverobber-type unit), skipping travel time to the front.
+- **Grid / mex grid / blueprint grid**: the pre-planned 30×30-elmo layout pattern used to simplify expansion decisions.
+- **Proxy base**: a forward concentration of BP/labs near the front line, deliberately without eco.
+- **kbot**: a "K-Bot" — the legged/bot-type unit chassis, as opposed to vehicle (wheeled/tracked) or air units.
+- **D-gun**: the commander's special short-range high-damage weapon (not currently used in this bot's plan).

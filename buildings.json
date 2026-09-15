@@ -119,7 +119,7 @@
     },
     {
       "id": "c436efe1-b886-47e0-826a-bc7488710f1f",
-      "displayName": "Corestor",
+      "displayName": "E Storage",
       "unitDef": "corestor",
       "width": 4,
       "height": 4,
@@ -128,8 +128,8 @@
     },
     {
       "id": "9da5b1a7-7a44-40a6-ad3c-407e490e173a",
-      "displayName": "Corfusison",
-      "unitDef": "tbd",
+      "displayName": "Fusion",
+      "unitDef": "corfus",
       "width": 5,
       "height": 5,
       "category": "e",
@@ -137,7 +137,7 @@
     },
     {
       "id": "d5da75f4-8257-4058-9090-80ddbfd93b6b",
-      "displayName": "afus",
+      "displayName": "Adv Fusion",
       "unitDef": "corafus",
       "width": 6,
       "height": 6,
@@ -155,12 +155,291 @@
     },
     {
       "id": "87a76b97-30cf-4fe1-bef3-aa33b26a68f3",
-      "displayName": "mexT2",
+      "displayName": "Mex T2",
       "unitDef": "cormoho",
       "width": 4,
       "height": 4,
       "category": "metal",
       "color": "#c4cfc9"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000001",
+      "displayName": "Solar",
+      "unitDef": "corsolar",
+      "width": 5,
+      "height": 5,
+      "category": "e",
+      "color": "#b8a800"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000002",
+      "displayName": "Adv Solar",
+      "unitDef": "coradvsol",
+      "width": 4,
+      "height": 4,
+      "category": "e",
+      "color": "#d4bf00"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000003",
+      "displayName": "Geothermal",
+      "unitDef": "corgeo",
+      "width": 5,
+      "height": 5,
+      "category": "e",
+      "color": "#e07b00"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000004",
+      "displayName": "Adv Geothermal",
+      "unitDef": "corageo",
+      "width": 5,
+      "height": 5,
+      "category": "e",
+      "color": "#f09010"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000005",
+      "displayName": "Metal Maker",
+      "unitDef": "cormakr",
+      "width": 3,
+      "height": 3,
+      "category": "metal",
+      "color": "#8fa89e"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000006",
+      "displayName": "Adv Metal Maker",
+      "unitDef": "cormmkr",
+      "width": 4,
+      "height": 4,
+      "category": "metal",
+      "color": "#adc2b8"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000007",
+      "displayName": "M Storage",
+      "unitDef": "cormstor",
+      "width": 4,
+      "height": 4,
+      "category": "storage",
+      "color": "#e0e060"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000010",
+      "displayName": "LLT",
+      "unitDef": "corllt",
+      "width": 2,
+      "height": 2,
+      "category": "defense",
+      "color": "#9b1111"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000011",
+      "displayName": "Heavy LLT",
+      "unitDef": "corhllt",
+      "width": 2,
+      "height": 2,
+      "category": "defense",
+      "color": "#b51515"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000012",
+      "displayName": "Laser Tower",
+      "unitDef": "corhlt",
+      "width": 2,
+      "height": 2,
+      "category": "defense",
+      "color": "#c01c1c"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000013",
+      "displayName": "MAW",
+      "unitDef": "cormaw",
+      "width": 2,
+      "height": 2,
+      "category": "defense",
+      "color": "#a52020"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000014",
+      "displayName": "Flakker",
+      "unitDef": "corflak",
+      "width": 3,
+      "height": 3,
+      "category": "defense",
+      "color": "#7a3a00"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000015",
+      "displayName": "SAM",
+      "unitDef": "cormadsam",
+      "width": 3,
+      "height": 3,
+      "category": "defense",
+      "color": "#7a4400"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000016",
+      "displayName": "Viper",
+      "unitDef": "corvipe",
+      "width": 3,
+      "height": 3,
+      "category": "defense",
+      "color": "#8b1a1a"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000017",
+      "displayName": "Punisher",
+      "unitDef": "corpun",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#cc1010"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000018",
+      "displayName": "Toaster",
+      "unitDef": "cortoast",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#c83000"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000019",
+      "displayName": "Screamer",
+      "unitDef": "corscreamer",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#883300"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000021",
+      "displayName": "Flak Missile",
+      "unitDef": "corfmd",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#7a2a00"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000022",
+      "displayName": "Juno",
+      "unitDef": "corjuno",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#993300"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000025",
+      "displayName": "Anti-Nuke",
+      "unitDef": "cormexp",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#005599"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000026",
+      "displayName": "armed mex",
+      "unitDef": "corexp",
+      "width": 4,
+      "height": 4,
+      "category": "defense",
+      "color": "#003377"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000027",
+      "displayName": "Nuke Silo",
+      "unitDef": "corsilo",
+      "width": 7,
+      "height": 7,
+      "category": "defense",
+      "color": "#002255"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000029",
+      "displayName": "Behemoth",
+      "unitDef": "corbhmth",
+      "width": 5,
+      "height": 5,
+      "category": "defense",
+      "color": "#6b1100"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000030",
+      "displayName": "Buzzsaw",
+      "unitDef": "corbuzz",
+      "width": 8,
+      "height": 8,
+      "category": "defense",
+      "color": "#550000"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000041",
+      "displayName": "Gantry",
+      "unitDef": "corgant",
+      "width": 12,
+      "height": 12,
+      "category": "lab",
+      "color": "#d44400"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000050",
+      "displayName": "Radar",
+      "unitDef": "corrad",
+      "width": 2,
+      "height": 2,
+      "category": "util",
+      "color": "#336699"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000051",
+      "displayName": "Adv Radar",
+      "unitDef": "corarad",
+      "width": 2,
+      "height": 2,
+      "category": "util",
+      "color": "#4477bb"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000053",
+      "displayName": "Jammer",
+      "unitDef": "corjamt",
+      "width": 2,
+      "height": 2,
+      "category": "util",
+      "color": "#224466"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000058",
+      "displayName": "Wall",
+      "unitDef": "corfort",
+      "width": 2,
+      "height": 2,
+      "category": "util",
+      "color": "#666677"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000061",
+      "displayName": "Mine T1",
+      "unitDef": "cormine1",
+      "width": 1,
+      "height": 1,
+      "category": "util",
+      "color": "#444433"
+    },
+    {
+      "id": "1a001001-0001-0001-0001-000000000062",
+      "displayName": "Mine T2",
+      "unitDef": "cormine2",
+      "width": 1,
+      "height": 1,
+      "category": "util",
+      "color": "#555544"
     }
   ]
 }

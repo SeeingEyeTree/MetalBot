@@ -1,0 +1,15 @@
+{
+  "name": "metalbot-replay-tools",
+  "version": "1.0.0",
+  "description": "Node dependency for replay_analysis.py (BAR replay telemetry extraction).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "sdfz-demo-parser": "^5.15.1"
+  }
+}
