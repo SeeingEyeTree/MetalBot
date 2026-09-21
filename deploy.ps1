@@ -29,8 +29,12 @@ $files = @(
     "blueprints\general\4AirT2.lua",
     "blueprints\general\fussion_grid_60x60.lua",
     "blueprints\general\mex_grid_t2.lua",
+    "blueprints\general\prod_grid_vp.lua",
+    "blueprints\general\build_order_blueprint.lua",
     "lab_controller.lua",
-    "unit_controller.lua"
+    "unit_controller.lua",
+    "bar_framework\resource_utils.lua",
+    "bar_framework\unit_query.lua"
 )
 
 foreach ($f in $files) {

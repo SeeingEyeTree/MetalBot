@@ -100,6 +100,23 @@ Factories have their own internal BP for producing units, but need external BP s
 
 **Line of sight does not matter for building.** A builder can place or assist construction anywhere within its build range, including in fog of war. (Elevation-based sight-blocking exists in the engine but is irrelevant on this map, since it's flat.)
 
+### 2.7 Issuing build orders from a widget
+
+All three verified in headless test runs on 2026-09-20, each after it had already cost a
+diagnostic match to find:
+
+- **Build orders take the building's CENTRE**, and `UnitDef.xsize` / `zsize` count 8-elmo
+  half-cells, so footprint elmos = `xsize * 8` (`corwin` xsize=6 = 48 elmos = 3 cells;
+  `corlab` xsize=12 = 96 elmos). An odd-footprint building's centre therefore sits at
+  `8 mod 16`, not on the 16-grid — placing it on the grid makes the engine snap it.
+- **While a builder walks to the site, the engine pushes a MOVE (`CMD.MOVE` = 10) command
+  in FRONT of the build order.** So `Spring.GetUnitCommands(uid, 1)` returns the move, not
+  the build. Checking only `cmds[1]` reads as "the order was dropped" for the entire walk —
+  scan the first few commands instead.
+- **An abandoned nanoframe decays and dies**, taking the metal already spent on it with it.
+  Anything that makes a builder walk away from a partly-built frame (a skip, a re-claim, a
+  replaced order) must leave something else able to finish it, or that metal is simply lost.
+
 ---
 
 ## 3. Unit Cap
@@ -211,6 +228,24 @@ These are noted for completeness — interesting, but explicitly **not** things 
 - **"Non-commander units built" (the current headline metric in `bot_testing.py`) is not actually a good measure of bot quality.** Better signals to track: metal wasted over the storage cap, time spent stalled, and eventually actual win/loss via commander kill. The intent is to keep **adding** more tracked metrics over time from replays rather than relying on one number — more visibility into what's actually happening in a game is always valuable when deciding whether a change helped.
 
 ---
+
+## 11. Replay-Derived Evidence
+
+This section gets updated as replays are analyzed with `replay_analysis.py` (see repo root; results accumulate in `knowledge/replay_history.jsonl`). Unlike the rest of this document, these are measured facts from actual games, not descriptions of mechanics.
+
+### 2026-09-03: IamTree (bot, Cortex) vs. ajBunker (human, Armada) — bot lost
+
+Source: `2026-09-03_03-11-26-935_Full Metal Plate 1.7_2026.07.04.sdfz`. Extracted from the replay's own recorded team-statistics history (sampled every 15s), not a re-simulation.
+
+**The eco gap opens immediately, well before any combat, and keeps widening.** Both sides' metal income rates were within 20% of each other for the first ~90 seconds. From roughly t=100s onward, the bot's metal-income growth rate falls steadily behind the human's — by t=450s (7:30), with **zero combat having happened yet**, the human had produced 29,718 cumulative metal to the bot's 13,726 (2.16×), and the human's instantaneous metal income rate was already ~2.5× the bot's. This directly confirms the "early scaling" problem noted in §10 — it isn't a one-time hiccup, it's a continuous divergence starting almost from the opening.
+
+**The bot substantially over-invests in energy relative to metal, consistently, all game.** The bot's metal:energy production ratio stayed in the 0.055–0.073 range for the entire game; the human's stayed in 0.085–0.097 — the human consistently produced proportionally *more* metal per unit of energy at every single checkpoint. Correspondingly, the bot wasted (energyExcess) 10–28% of its energy production between roughly t=180s and t=450s (peaking at 28% around t=225s / 3:45), while the human's waste stayed under ~6% for the same stretch. This is concrete, quantified support for the "bot doesn't build energy grids correctly" note in §10 — the fix isn't about energy production being too low, it's that the bot is building more energy than its metal/mex expansion and BP can ever use, at the direct expense of mex expansion.
+
+**First combat contact was at t=465s (7:45)**, at which point the bot already had less than half the human's cumulative economy — the battle's outcome was arguably already decided by the eco gap. The decisive engagement happened in a ~30-second window from t≈495s to t≈525s: the bot's cumulative units-lost jumped from 18 to 188 in that single window (170 units lost in 30 seconds), while the human's kills jumped from 3 to 122. By game end the bot had dealt 10,868 damage while receiving 84,136 (a 0.13 dealt:received ratio); the human dealt 68,520 while receiving 29,612 (2.31 ratio). Final kill counts: bot killed 14 units total, lost 216; human killed 129, lost 41.
+
+**The bot never recovered after that engagement.** Its metal income rate collapsed to near-zero (2–9 M/s, down from a peak of ~103 M/s) for the rest of the game, while the human's stayed above 200 M/s and kept climbing. Units-produced and damage numbers for the bot are essentially flat from t=540s to the end. This suggests the loss wasn't just "lost a fight" — the bot's economy itself got crippled in the same engagement (consistent with §6.1's warning about not concentrating BP/eco somewhere exposed), and there's no visible recovery/regroup behavior afterward. Worth checking directly: was BP/mex overly concentrated near wherever this fight happened, and is there any bot logic at all for rebuilding economy after a bad engagement rather than just continuing to feed units into a losing position?
+
+**Takeaway for prioritization:** the data points at the opening/early-macro allocation logic (specifically the metal-vs-energy build balance in `macro_controller.lua`) as the highest-leverage fix, ahead of combat micro or unit composition — the game was arguably already lost on economy alone by the time the armies met, independent of how the fight itself was fought.
 
 ## Glossary
 

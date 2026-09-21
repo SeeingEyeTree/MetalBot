@@ -43,72 +43,85 @@ import matplotlib.patches as mpatches
 # Game constants
 # ---------------------------------------------------------------------------
 
-SIM_END    = 360.0   # seconds (6 minutes)
-BEAM_WIDTH = 2000
+SIM_END       = 360.0              # seconds (6 minutes)
+BEAM_WIDTH    = 2000
+CON_TARGET    = 2                  # con bots the bot actually builds before reclaiming the lab
+CON_GAP       = 60.0               # seconds the 2nd con must trail the 1st (lab BP is serial in-game)
+NANO_COVERAGE = math.pi * (384 ** 2)  # ≈ 463,246 elmos²  (8-wind-radius build range)
 
 # name -> {metal, energy, bp, dm, de, dbp,
 #          dmetal_cap, denergy_cap,
 #          req_lab, gives_lab, gives_con, removes_lab, metal_refund,
 #          req_veh_lab, gives_veh_lab, gives_incisor}
+# Building footprints in elmos² (w × h × 16²).  Mobile units = 0.  Reclaims = negative.
+_U = 16 * 16  # elmos² per unit²
 ACTIONS: dict[str, dict] = {
     'mex':        dict(metal=50,  energy=500,  bp=1870, dm=2.37, de=-3.0, dbp=0,
                        dmetal_cap=50,  denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       area=4*4*_U),     # cormex  4×4
     'wind':       dict(metal=43,  energy=175,  bp=1680, dm=0.0,  de=25.0, dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       area=3*3*_U),     # corwin  3×3
     'e_store':    dict(metal=175, energy=1800, bp=4260, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=6000,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       area=4*4*_U),     # corestor 4×4
     'bot_lab':    dict(metal=470, energy=1050, bp=5000, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=True,  gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       area=6*6*_U),     # corlab  6×6
     'con_bot':    dict(metal=120, energy=1750, bp=3550, dm=0.0,  de=0.0,  dbp=85,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=True,  gives_lab=False, gives_con=True,
                        removes_lab=False, metal_refund=0,
                        req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
-                       factory_bp=150),
-    'nano':       dict(metal=230, energy=3200, bp=5300, dm=0.0,  de=0.0,  dbp=200,
+                       factory_bp=150, area=0),   # mobile unit
+    'nano':       dict(metal=230, energy=3200, bp=5300, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       gives_nano=True, area=3*3*_U),  # cornanotc 3×3; BP tracked via nano_count
     'reclaim_lab':dict(metal=0,   energy=0,    bp=5000, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=True,  gives_lab=False, gives_con=False,
                        removes_lab=True,  metal_refund=470,
-                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=False, gives_incisor=False,
+                       area=-(6*6*_U)),  # removes corlab
     'veh_lab':    dict(metal=570, energy=1550, bp=5650, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
-                       req_veh_lab=False, gives_veh_lab=True,  gives_incisor=False),
+                       req_veh_lab=False, gives_veh_lab=True,  gives_incisor=False,
+                       area=6*6*_U),     # corvp   6×6
     'cv':         dict(metal=145, energy=2100, bp=4160, dm=0.0,  de=0.0,  dbp=95,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
                        req_veh_lab=True,  gives_veh_lab=False, gives_incisor=False,
-                       gives_cv=True,  factory_bp=150),
+                       gives_cv=True,  factory_bp=150, area=0),  # mobile unit
     'reclaim_vp': dict(metal=0,   energy=0,    bp=5650, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=570,
-                       req_veh_lab=True,  gives_veh_lab=False, gives_incisor=False),
+                       req_veh_lab=True,  gives_veh_lab=False, gives_incisor=False,
+                       area=-(6*6*_U)),  # removes corvp
     'incisor':    dict(metal=120, energy=1100, bp=2300, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=0,
                        req_veh_lab=True,  gives_veh_lab=False, gives_incisor=True,
-                       factory_bp=150),
+                       factory_bp=150, area=0),  # mobile unit
 }
 
 ACTION_LABELS = {
@@ -153,15 +166,31 @@ class GameState:
     energy:        float = 1000.0
     metal_rate:    float = 2.0
     energy_rate:   float = 30.0
-    build_power:   float = 300.0
+    build_power:   float = 300.0    # base BP (commander + con_bots + CVs; NOT nanos)
     metal_cap:     float = 1000.0
     energy_cap:    float = 1000.0
     has_bot_lab:   bool  = False
+    wasted_energy: float = 0.0      # income thrown away at the storage cap
+    wasted_metal:  float = 0.0
     has_con_bot:   bool  = False
+    con_count:     int   = 0        # con bots completed so far
+    first_con_end: float = -1.0     # completion time of con bot #1 (-1 = none yet)
     has_veh_lab:   bool  = False
     has_cv:        bool  = False
     incisor_count: int   = 0
+    nano_count:    int   = 0        # nanos built so far
+    built_area:    float = 0.0      # cumulative building footprint in elmos²
     history:       list  = field(default_factory=list)
+
+    @property
+    def effective_bp(self) -> float:
+        """Base BP + active nano BP.  A nano stops contributing once the total
+        building footprint fills its coverage zone (π × 384² ≈ 463,246 elmos²).
+        full_nanos = how many nanos have reached their area limit;
+        active_nanos = the remainder that still have coverage to spare."""
+        full_nanos   = int(self.built_area / NANO_COVERAGE)
+        active_nanos = max(0, self.nano_count - full_nanos)
+        return self.build_power + active_nanos * 200
 
     # ------------------------------------------------------------------
     def valid_actions(self, mode: str = 'max_rate') -> list[str]:
@@ -169,8 +198,16 @@ class GameState:
         if not self.has_bot_lab:
             acts.append('bot_lab')
         if self.has_bot_lab:
-            acts.append('con_bot')
-            acts.append('reclaim_lab')
+            # The lab builds cons serially: con #2 cannot start until CON_GAP
+            # seconds after con #1 finished, and we never build more than
+            # CON_TARGET of them.
+            if self.con_count == 0 or (
+                self.con_count < CON_TARGET and self.time >= self.first_con_end + CON_GAP
+            ):
+                acts.append('con_bot')
+            # The lab is only worth reclaiming once it has produced every con.
+            if self.con_count >= CON_TARGET:
+                acts.append('reclaim_lab')
         if self.has_con_bot or self.has_cv:
             acts.append('nano')
         if mode in ('max_units', 'balanced'):
@@ -224,7 +261,7 @@ class GameState:
                 return None
             t_e = (e_cost - eff_e) / s.energy_rate
 
-        t_bp = a['bp'] / (s.build_power + a.get('factory_bp', 0))
+        t_bp = a['bp'] / (s.effective_bp + a.get('factory_bp', 0))
         build_time = max(t_bp, t_m, t_e)
 
         start_t = s.time
@@ -245,43 +282,71 @@ class GameState:
         s.metal_cap   += a['dmetal_cap']
         s.energy_cap  += a['denergy_cap']
 
-        if a['gives_lab']:              s.has_bot_lab   = True
-        if a['gives_con']:              s.has_con_bot   = True
-        if a['removes_lab']:            s.has_bot_lab   = False
-        if a['gives_veh_lab']:          s.has_veh_lab   = True
-        if a.get('gives_cv', False):    s.has_cv        = True
-        if a.get('removes_veh_lab', False): s.has_veh_lab = False
-        if a['gives_incisor']:          s.incisor_count += 1
+        if a['gives_lab']:                 s.has_bot_lab   = True
+        if a['gives_con']:
+            s.has_con_bot = True
+            s.con_count  += 1
+            if s.con_count == 1:
+                s.first_con_end = end_t
+        if a['removes_lab']:               s.has_bot_lab   = False
+        if a['gives_veh_lab']:             s.has_veh_lab   = True
+        if a.get('gives_cv',   False):     s.has_cv        = True
+        if a.get('removes_veh_lab', False):s.has_veh_lab   = False
+        if a['gives_incisor']:             s.incisor_count += 1
+        if a.get('gives_nano', False):     s.nano_count    += 1
 
-        # Cap remaining storage at the (possibly updated) caps
-        s.metal  = min(max(0.0, new_m) + a['metal_refund'], s.metal_cap)
-        s.energy = min(max(0.0, new_e), s.energy_cap)
+        # Update cumulative building footprint (reclaims have negative area)
+        s.built_area = max(0.0, s.built_area + a.get('area', 0.0))
+
+        # Cap remaining storage at the (possibly updated) caps.  Anything above the
+        # cap is destroyed -- that is the "floating" this build order tries to avoid.
+        pre_m = max(0.0, new_m) + a['metal_refund']
+        pre_e = max(0.0, new_e)
+        s.wasted_metal  += max(0.0, pre_m - s.metal_cap)
+        s.wasted_energy += max(0.0, pre_e - s.energy_cap)
+        s.metal  = min(pre_m, s.metal_cap)
+        s.energy = min(pre_e, s.energy_cap)
 
         s.history.append({
             'action':               name,
-            'start_time':           round(start_t,       2),
-            'end_time':             round(end_t,         2),
-            'metal_rate_after':     round(s.metal_rate,  3),
-            'energy_rate_after':    round(s.energy_rate, 3),
-            'build_power_after':    round(s.build_power, 1),
-            'metal_cap_after':      round(s.metal_cap,   0),
-            'energy_cap_after':     round(s.energy_cap,  0),
+            'start_time':           round(start_t,         2),
+            'end_time':             round(end_t,           2),
+            'metal_rate_after':     round(s.metal_rate,    3),
+            'energy_rate_after':    round(s.energy_rate,   3),
+            'build_power_after':    round(s.effective_bp,  1),
+            'metal_cap_after':      round(s.metal_cap,     0),
+            'energy_cap_after':     round(s.energy_cap,    0),
             'incisor_count_after':  s.incisor_count,
+            'nano_count_after':     s.nano_count,
+            'built_area_after':     round(s.built_area,    0),
         })
 
         return s
 
     # ------------------------------------------------------------------
-    def score_max_rate(self, end_time: float) -> float:
+    def score_max_rate(self, end_time: float, em_ratio: float = 0.0) -> float:
         """
         Projected metal rate: current m/s plus an optimistic estimate of
         future m/s from mexes that fit in the remaining time at current BP.
         Rewards high BP (infrastructure) so those paths aren't pruned early.
         Higher is better.
+
+        em_ratio > 0 applies the same time-scaled ratio penalty as score_balanced,
+        nudging the optimizer toward the target energy:metal ratio without forcing
+        army production.
         """
         remaining = max(0.0, end_time - self.time)
-        mex_time  = 1870.0 / self.build_power
-        return self.metal_rate + (remaining / mex_time) * 2.37
+        mex_time  = 1870.0 / self.effective_bp
+        score = self.metal_rate + (remaining / mex_time) * 2.37
+
+        if em_ratio > 0:
+            time_fraction = min(1.0, self.time / max(end_time, 1.0))
+            current_ratio = self.energy_rate / max(self.metal_rate, 0.001)
+            if current_ratio < em_ratio:
+                deficit = (em_ratio - current_ratio) / em_ratio
+                score  *= max(0.05, 1.0 - deficit * (time_fraction ** 2))
+
+        return score
 
     # ------------------------------------------------------------------
     def score_time_to_target(self, target_rate: float) -> float:
@@ -293,7 +358,7 @@ class GameState:
         if self.metal_rate >= target_rate:
             return 0.0
         mexes_needed = (target_rate - self.metal_rate) / 2.37
-        mex_time     = 1870.0 / self.build_power
+        mex_time     = 1870.0 / self.effective_bp
         return -(self.time + mexes_needed * mex_time)
 
     # ------------------------------------------------------------------
@@ -316,19 +381,19 @@ class GameState:
             eff_e = min(self.energy, self.energy_cap)
             t_m = max(0.0, 570  - eff_m) / m_rate
             t_e = max(0.0, 1550 - eff_e) / e_rate
-            t_bp = 5650.0 / self.build_power
+            t_bp = 5650.0 / self.effective_bp
             remaining = max(0.0, remaining - max(t_bp, t_m, t_e))
 
         # Factory BP (150) always contributes to incisor build time when VP exists
         factory_bp = 150 if self.has_veh_lab else 0
-        spam_rate = max(2300.0/(self.build_power + factory_bp), 120.0/m_rate, 1100.0/e_rate)
+        spam_rate = max(2300.0/(self.effective_bp + factory_bp), 120.0/m_rate, 1100.0/e_rate)
         spam_score = remaining / spam_rate
 
         # If veh_lab is ready but nano not unlocked, consider cv+nano investment
         if self.has_veh_lab and not (self.has_con_bot or self.has_cv):
             # CV uses factory BP too
-            cv_time     = max(4160.0 / (self.build_power + 150), 2100.0 / e_rate)
-            bp_after_cv = self.build_power + 95
+            cv_time     = max(4160.0 / (self.effective_bp + 150), 2100.0 / e_rate)
+            bp_after_cv = self.effective_bp + 95
             nano_time   = max(5300.0 / bp_after_cv,              3200.0 / e_rate)
             infra_time  = cv_time + nano_time
             if remaining > infra_time:
@@ -368,16 +433,16 @@ class GameState:
             eff_e = min(self.energy, self.energy_cap)
             t_m   = max(0.0, 570  - eff_m) / m_rate
             t_e   = max(0.0, 1550 - eff_e) / e_rate
-            t_bp  = 5650.0 / self.build_power
+            t_bp  = 5650.0 / self.effective_bp
             adj_remaining = max(0.0, remaining - max(t_bp, t_m, t_e))
 
         factory_bp = 150 if self.has_veh_lab else 0
-        spam_rate  = max(2300.0/(self.build_power + factory_bp), 120.0/m_rate, 1100.0/e_rate)
+        spam_rate  = max(2300.0/(self.effective_bp + factory_bp), 120.0/m_rate, 1100.0/e_rate)
         proj_incisors = self.incisor_count + adj_remaining / spam_rate
 
         if self.has_veh_lab and not (self.has_con_bot or self.has_cv):
-            cv_time      = max(4160.0 / (self.build_power + 150), 2100.0 / e_rate)
-            bp_after_cv  = self.build_power + 95
+            cv_time      = max(4160.0 / (self.effective_bp + 150), 2100.0 / e_rate)
+            bp_after_cv  = self.effective_bp + 95
             nano_time    = max(5300.0 / bp_after_cv, 3200.0 / e_rate)
             infra_time   = cv_time + nano_time
             if adj_remaining > infra_time:
@@ -387,7 +452,7 @@ class GameState:
                                     self.incisor_count + (adj_remaining - infra_time) / infra_rate)
 
         # --- Projected metal rate (mirrors score_max_rate logic) ---
-        mex_time  = 1870.0 / self.build_power
+        mex_time  = 1870.0 / self.effective_bp
         proj_rate = self.metal_rate + (remaining / mex_time) * 2.37
 
         # --- Army fraction (caps at 1.0 to avoid over-building army) ---
@@ -471,7 +536,7 @@ def beam_search(
             break
 
         if mode == 'max_rate':
-            candidates.sort(key=lambda s: s.score_max_rate(end_time), reverse=True)
+            candidates.sort(key=lambda s: s.score_max_rate(end_time, em_ratio), reverse=True)
         elif mode == 'max_units':
             candidates.sort(key=lambda s: s.score_max_units(end_time), reverse=True)
         elif mode == 'balanced':
@@ -562,7 +627,14 @@ def print_result(state: GameState,
     print('=' * 88)
     print(f"  Final metal rate  : {state.metal_rate:.3f} m/s")
     print(f"  Final energy rate : {state.energy_rate:.2f} e/s")
-    print(f"  Final build power : {state.build_power:.0f} bp")
+    print(f"  Final build power : {state.effective_bp:.0f} bp  (base {state.build_power:.0f} + nanos {state.nano_count * 200:.0f})")
+    if state.nano_count > 0:
+        capacity = state.nano_count * NANO_COVERAGE
+        full_nanos   = int(state.built_area / NANO_COVERAGE)
+        active_nanos = max(0, state.nano_count - full_nanos)
+        pct = state.built_area / capacity * 100
+        print(f"  Nano area used    : {state.built_area:,.0f} / {capacity:,.0f} elmos²  ({pct:.1f}%)  "
+              f"-- {active_nanos}/{state.nano_count} nanos active")
     print(f"  Metal stored      : {state.metal:.1f} / {state.metal_cap:.0f} m")
     print(f"  Energy stored     : {state.energy:.1f} / {state.energy_cap:.0f} e")
     if mode in ('max_units', 'balanced'):
@@ -571,6 +643,8 @@ def print_result(state: GameState,
         actual_ratio = state.energy_rate / max(state.metal_rate, 0.001)
         print(f"  E:M ratio         : {actual_ratio:.1f}  (target: {em_ratio:.1f})")
     print(f"  Final time        : {state.time:.1f} s")
+    print(f"  Energy floated    : {state.wasted_energy:,.0f} e  "
+          f"(metal floated: {state.wasted_metal:,.0f} m)")
     print('=' * 88)
     print()
 
@@ -773,10 +847,10 @@ if __name__ == '__main__':
         '--army-target', type=int, default=35,
         help='Minimum Incisor count for balanced mode (default: 35)')
     parser.add_argument(
-        '--em-ratio', type=float, default=10.0,
-        help='Target energy:metal rate ratio for balanced mode (default: 10.0). '
-             'Penalty is 0 at t=0 and grows quadratically to full strength at end-time. '
-             'Set to 0 to disable.')
+        '--em-ratio', type=float, default=0.0,
+        help='Target energy:metal rate ratio (default: 0 = disabled). '
+             'Works with max_rate and balanced modes. '
+             'Penalty is 0 at t=0 and grows quadratically to full strength at end-time.')
     parser.add_argument(
         '--beam-width', type=int, default=BEAM_WIDTH,
         help=f'Beam width for search (default: {BEAM_WIDTH})')
@@ -801,5 +875,5 @@ if __name__ == '__main__':
     )
     print_result(best, mode=args.mode, target_rate=args.target,
                  end_time=args.end_time, em_ratio=args.em_ratio)
-    visualize_result(best, mode=args.mode, target_rate=args.target, end_time=args.end_time)
     save_result(best, mode=args.mode, target_rate=args.target, end_time=args.end_time)
+    visualize_result(best, mode=args.mode, target_rate=args.target, end_time=args.end_time)
