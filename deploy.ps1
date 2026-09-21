@@ -35,6 +35,7 @@ $files = @(
     "blueprints\general\upgrade.lua",
     "lab_controller.lua",
     "unit_controller.lua",
+    "bar_framework\nano_broker.lua",
     "bar_framework\resource_utils.lua",
     "bar_framework\unit_query.lua"
 )

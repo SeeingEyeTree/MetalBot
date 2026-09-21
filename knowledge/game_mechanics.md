@@ -124,6 +124,15 @@ diagnostic match to find:
 - **A factory's auto-guard order on a new unit arrives AFTER `UnitFinished`.** A single
   `CMD_STOP` in that callback is overwritten, and the unit sits assisting the factory
   forever, permanently "busy". Stop it again on a short delay and/or in `UnitFromFactory`.
+- **Lua 5.1 allows a function at most 60 UPVALUES**, and every file-level local a
+  function mentions is one of them. A widget that crosses the line does not error at
+  runtime — it silently fails to load, with only a line in `infolog.txt`:
+  `Failed to load: x.lua (...: function at line N has more than 60 upvalues)`. A big
+  `GameFrame` that touches most of the file's state hits this eventually; the fix is to
+  split it into per-concern functions, since each one then gets its own budget. (The
+  separate 200-*locals*-per-chunk limit is a different ceiling and is rarely the one hit
+  first.) Note `luac`/Lua 5.4+ allow 255 upvalues, so a syntax check on a newer Lua will
+  NOT catch this.
 - **The engine only writes a replay's footer on a clean shutdown.** A match killed by a
   wall-clock deadline leaves a 0-byte `.sdfz` that no parser can read, and
   `replay_analysis.py` reports `Duration: 0s`. End matches by a *game frame* trigger (both

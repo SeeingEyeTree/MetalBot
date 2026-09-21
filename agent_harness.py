@@ -392,7 +392,7 @@ def _append_strategy_log(entry: dict):
 # ── Main task runner ──────────────────────────────────────────────────────────
 
 def run_task(task_type: TaskType, component: str, baseline_id: str,
-             match_result_json: str = "", duration: int = 300,
+             match_result_json: str = "", duration: int = 400,
              verbose: bool = True) -> dict:
     """
     Full pipeline:
@@ -485,8 +485,8 @@ def main():
                    help="Lua file to modify, e.g. lab_controller.lua")
     p.add_argument("--baseline",    default="baseline_001",
                    help="Pool bot ID to base the candidate on (default: baseline_001)")
-    p.add_argument("--duration",    type=int, default=300,
-                   help="Match duration in real seconds (default: 300)")
+    p.add_argument("--duration",    type=int, default=400,
+                   help="Match duration in real seconds (default: 400)")
     p.add_argument("--result-file", default="",
                    help="Path to a match result JSON for post_match_analysis tasks")
     p.add_argument("--admit",       action="store_true",

@@ -1,11 +1,25 @@
 -- macro_controller.lua  ─  mex-grid scaling bot for Beyond All Reason
 -- Commander builds com_starter; bot lab makes 2 con bots (nanos + bot_starter);
 -- air lab expands mex_grids outward using blueprint_placer (one air con per grid).
--- COR only. The base "spine" (lab -> bot_starter -> VechT1/BotT2) always builds
--- toward +X in blueprint-local space; mirrorX flips that to -X when the commander
--- spawns on the east half of the map, so the spine never builds into the map edge.
--- Expansion is blocked on the far side of the bot_starter column (whichever side
--- that is once mirrored).
+-- COR only. Expansion blocked east of the bot_starter column.
+--
+-- CANDIDATE 20260915_221208 (macro_controller, improve_component, baseline_001):
+-- In the stock com_starter.lua layout, the air lab ("corap") is entry #27 of 46
+-- in the commander's single serial shift-queue -- it only builds solo with its
+-- own ~300 BP, so the air lab (and therefore the entire automated mex-grid
+-- expansion system in this file, which only starts once the air lab exists via
+-- StartAirExpansion) doesn't even begin construction until ~26 other items have
+-- finished. This is the likely root cause of game_mechanics.md §10 / lessons #1's
+-- "opening doesn't scale as aggressively as it should" -- the bot's real
+-- eco-expansion engine (parallel air cons via blueprint_placer) sits idle for
+-- minutes waiting behind a long queue of hand-placed mexes/winds that the
+-- expansion engine would build in parallel anyway once it starts.
+-- Fix: reorder the commander's build queue (without touching the shared
+-- blueprint file, so baseline_001 is unaffected) to build the air lab
+-- immediately after the bot lab, instead of leaving it in its original late
+-- position. See BuildOrderedComLayout() below. The build_order_sim.py "balanced"
+-- optimizer independently supports getting infrastructure (labs) that unlock
+-- parallel BP online early rather than serially exhausting a flat mex/wind list.
 
 local widget = widget
 local Spring = Spring
@@ -50,8 +64,6 @@ local myTeamID    = nil
 local commanderID = nil
 local baseX, baseZ = nil, nil
 local GRID_SPACING = nil   -- assigned from BP_PLACER after Initialize
-local mirrorX       = false  -- true when commander spawns on east half of map;
-                              -- flips the base spine (lab column) to build -X instead of +X
 
 local botLabID    = nil
 local airLabID    = nil
@@ -108,20 +120,6 @@ end
 
 local function GiveBuild(unitID, defID, x, y, z, facing, shift)
     spGiveOrderToUnit(unitID, -defID, {x, y, z, facing}, shift and {} or {})
-end
-
--- Sign-flips an X-axis offset/spacing when the base is mirrored (east spawn).
-local function DirX(v)
-    return mirrorX and -v or v
-end
-
--- Mirroring across the north-south axis swaps east/west facings (1<->3 in this
--- codebase's convention: 0=south,1=west,2=north,3=east) and leaves south/north as-is.
-local function MirrorFacing(f)
-    if not mirrorX then return f end
-    if f == 1 then return 3
-    elseif f == 3 then return 1
-    else return f end
 end
 
 local function IsCommander(uDefID)
@@ -276,13 +274,8 @@ end
 
 TryExpand = function()
     local results = BP_PLACER.FindAllValidPlacements(MEX_GRID_BP, completedAnchors)
-    local spineBoundX = baseX + DirX(GRID_SPACING)
     for _, result in ipairs(results) do
-        -- Block expansion past the spine (bot_starter) column, whichever side that's on.
-        local pastSpine
-        if mirrorX then pastSpine = result.anchorX < spineBoundX
-        else             pastSpine = result.anchorX > spineBoundX end
-        if not pastSpine then
+        if result.anchorX <= baseX + GRID_SPACING then
             local key = AnchorKey(result.anchorX, result.anchorZ)
             if not assignedAnchors[key] then
                 assignedAnchors[key] = true
@@ -338,17 +331,46 @@ end
 
 -- ── Commander → com_starter (direct queue, same as test_com_starter.lua) ─────
 
+-- Reorders a copy of COM_STARTER.layout so the air lab ("corap") is built
+-- immediately after the bot lab ("corlab"), instead of wherever it happens to
+-- sit in the raw blueprint data. The air lab unlocks air cons, which drive the
+-- entire automated mex-grid expansion system (StartAirExpansion/TryExpand) --
+-- delaying it behind a long tail of hand-placed mexes/winds means that
+-- expansion engine sits completely idle for minutes. Cached after first call.
+local orderedComLayout = nil
+
+local function BuildOrderedComLayout()
+    if orderedComLayout then return orderedComLayout end
+    local src = COM_STARTER.layout
+    local labIdx, airIdx = nil, nil
+    for i, u in ipairs(src) do
+        if not labIdx and u.n == "corlab" then labIdx = i end
+        if not airIdx and u.n == "corap"  then airIdx  = i end
+    end
+    if not labIdx or not airIdx or airIdx <= labIdx + 1 then
+        orderedComLayout = src
+        return orderedComLayout
+    end
+    local out = {}
+    for i, u in ipairs(src) do
+        if i ~= airIdx then out[#out + 1] = u end
+    end
+    table.insert(out, labIdx + 1, src[airIdx])
+    orderedComLayout = out
+    return orderedComLayout
+end
+
 local function QueueComBlueprint(anchorX, anchorZ)
     local first = true
     local count = 0
-    for _, u in ipairs(COM_STARTER.layout) do
+    for _, u in ipairs(BuildOrderedComLayout()) do
         local ud = UnitDefNames and UnitDefNames[u.n]
         if ud then
-            local wx = anchorX + DirX(u.x)
+            local wx = anchorX + u.x
             local wz = anchorZ + u.z
             local wy = spGetGroundHeight(wx, wz) or 0
             local opts = first and {} or {"shift"}
-            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, MirrorFacing(u.f)}, opts)
+            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, u.f}, opts)
             first = false
             count = count + 1
         end
@@ -367,11 +389,7 @@ local function StartComBlueprint()
     end
     baseX = math.floor(cx / 16 + 0.5) * 16
     baseZ = math.floor(cz / 16 + 0.5) * 16
-
-    local mapCenterX = (Game and Game.mapSizeX or 8192) * 0.5
-    mirrorX = baseX > mapCenterX
-    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ
-        .. " mirrorX=" .. tostring(mirrorX)) end
+    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ) end
 
     -- Block the commander cell so TryExpand never places a mex_grid here.
     -- Not added to completedAnchors: the mex_grid system seeds itself from
@@ -394,11 +412,10 @@ end
 
 local function AssignConBot2()
     if DEBUG then Spring.Echo("[WE] AssignConBot2") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ
-    -- bot_starter sits on the spine side of com (mirrored when spawning east).
-    local rot = FindCorrlRotation(BOT_STARTER, spineDX, 0)
+    -- bot_starter is east of com; dx = new_x - existing_x = +GRID_SPACING.
+    local rot = FindCorrlRotation(BOT_STARTER, GRID_SPACING, 0)
 
     -- Mark assigned so TryExpand doesn't place a mex_grid on top of bot_starter.
     local key = AnchorKey(bsX, bsZ)
@@ -417,10 +434,9 @@ end
 
 local function AssignConBot3()
     if DEBUG then Spring.Echo("[WE] AssignConBot3 (VechT1_and_BotT2 north of bot_starter)") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ - GRID_SPACING   -- north
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot3ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -429,10 +445,9 @@ end
 
 local function AssignConBot4()
     if DEBUG then Spring.Echo("[WE] AssignConBot4 (VechT1_and_BotT2 south of bot_starter)") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ + GRID_SPACING   -- south
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot4ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -447,12 +462,10 @@ local function StartAirExpansion()
     airConsQueued = true
     firstTwoMexDone = true  -- enable energy grid logic
 
-    -- Opposite side from the spine (bot_starter column) — west normally, east when mirrored.
-    local oppositeDX = -DirX(GRID_SPACING)
     local initials = {
-        {ax = baseX + oppositeDX, az = baseZ,                dx = oppositeDX,    dz = 0},            -- opposite side
-        {ax = baseX,              az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
-        {ax = baseX,              az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
+        {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
+        {ax = baseX,                az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
+        {ax = baseX,                az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
     }
     for _, init in ipairs(initials) do
         local key = AnchorKey(init.ax, init.az)
@@ -673,6 +686,11 @@ function widget:GameFrame(frame)
         QueueComBlueprint(baseX, baseZ)
         comBlueprintPending = false
         comBlueprintIssued  = true
+        if DEBUG then
+            local cmds = spGetUnitCommands(commanderID, -1)
+            Spring.Echo("[WE] Post-queue cmdCount=" .. tostring(cmds and #cmds or "nil")
+                .. " comID=" .. tostring(commanderID))
+        end
     end
 
     -- Retry in early game if orders were silently dropped (commander idle but should have work).

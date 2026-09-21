@@ -35,9 +35,10 @@ local spGetGroundHeight = Spring.GetGroundHeight
 local spGetUnitCommands = Spring.GetUnitCommands
 local spGetTeamUnits    = Spring.GetTeamUnits
 
-local CMD_GUARD  = (CMD and CMD.GUARD)  or 25
-local CMD_REPAIR = (CMD and CMD.REPAIR) or 40
-local CMD_STOP   = 0
+local CMD_GUARD   = (CMD and CMD.GUARD)   or 25
+local CMD_REPAIR  = (CMD and CMD.REPAIR)  or 40
+local CMD_RECLAIM = (CMD and CMD.RECLAIM) or 90
+local CMD_STOP    = 0
 
 -- Con bot #2 trails #1 by this much; mirrors CON_GAP in build_order_sim.py.
 local CON_GAP_FRAMES  = 60 * 30
@@ -78,6 +79,47 @@ local UPGRADE_CONS_PER_LAB = 2     -- T2 air cons each advanced air lab builds
 -- with a normal grid for metal: while stalling, retrofit builders are stopped.
 local RETROFIT_STALL_FRAC  = 0.15  -- stalling below this share of metal storage
 local RETROFIT_RESUME_FRAC = 0.30  -- resume once comfortably above it
+
+-- Wind consolidation.  A wind is 25 e/s for one unit slot; four of them in a 2x2
+-- block can be replaced by ONE fusion (850 e/s) or one T2 mex (4x a T1 mex), so
+-- once the unit cap is the binding constraint the swap is worth ~34x the energy
+-- per slot.  Grid wind rows sit 48 elmos apart both inside a grid (216, 168, ...)
+-- and ACROSS a grid boundary (216 vs 480-216 = 264), so the whole base is one
+-- continuous 48-elmo lattice: the blocks are found centrally here rather than by
+-- any one grid, which is what makes the ones straddling two grids anybody's job.
+-- Headroom at which the cap counts as "tight".  Must be relative as well as
+-- absolute: the DEFAULT cap is 2000, so a flat 2000 would read as tight from the
+-- first frame of every game, and even 1000 is half of it.  Games here may be run
+-- at 5000.
+local CONSOLIDATE_SLACK  = 1000  -- absolute headroom...
+local CAP_SLACK_FRAC     = 0.20  -- ...but never more than this share of the cap
+local WIND_LATTICE       = 48    -- elmos between adjacent winds
+local CONSOLIDATE_SCAN   = 300   -- frames between scans; one scan finds EVERY block,
+                                 -- so jobs start every tick from the cached list
+local CONSOLIDATE_MAX    = 60    -- blocks tracked at once, to bound the scan's cost
+
+-- Wind reclaim is a plain nano task, not something idle builders drift into: one
+-- air con is a few hundred build power against a base full of nanos, and an idle
+-- nano near a half-reclaimed wind will happily REPAIR it back up, which is why
+-- the old version crawled.  Every nano that can reach a condemned wind is put on
+-- it, so none is left to fight over it.
+local RECLAIM_TRIGGER_FRAC = 0.20  -- start when unit-cap headroom drops to this share
+local RECLAIM_BUDGET_FRAC  = 0.02  -- winds condemned at once, as a share of the cap:
+                                   -- enough to free real space, small enough that the
+                                   -- energy loss is not a cliff
+local RECLAIM_EVERY        = 90    -- frames between passes
+
+-- Spend pressure.  Metal sitting in the bank is build power that was not used,
+-- and the interrupts only react once a resource is nearly out -- so the bank
+-- hovers at whatever the interrupt thresholds imply.  Rather than react to the
+-- bank, watch PULL against INCOME: pull is what the builders are asking for, so
+-- income above pull means we are under-spending and will bank, seconds before it
+-- shows up in storage.  The response is to open more frames at once by handing
+-- them to the nanos sooner.
+local SPEND_FAST     = 0.15   -- handoff when under-spending: place more, finish less
+local SPEND_SLOW     = 0.60   -- handoff when short: finish what is already started
+local BANK_HIGH      = 0.25   -- stored metal share that counts as banking
+local BANK_LOW       = 0.08   -- ...and as running dry
 local START_FRAME     = 15    -- orders issued at frame 0 are dropped by the engine
 
 -- Nano build power is split between two jobs: assisting a factory (its output is
@@ -86,6 +128,7 @@ local START_FRAME     = 15    -- orders issued at frame 0 are dropped by the eng
 -- army the bot makes.
 local ARMY_SHARE      = 0.30   -- target share of nano build power spent on army
 local ARMY_CAP_SLACK  = 1000   -- unit headroom below this -> everything to army
+                               -- (also clamped by CAP_SLACK_FRAC, see CapSlack)
 local NANO_REBALANCE  = 30     -- frames between rebalances
 local NANO_MOVES_MAX  = 4      -- nanos reassigned per rebalance, to avoid thrash
 
@@ -106,6 +149,7 @@ local DEBUG = false
 -- ── Loaded in Initialize ──────────────────────────────────────────────────────
 local BP_PLACER   = nil
 local BUILD_ORDER = nil
+local NANO        = nil   -- nano_broker: single owner of every nano order
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 local myTeamID    = nil
@@ -117,6 +161,8 @@ local currentFrame = 0
 local distState     = nil
 local startPending  = false   -- anchor known, waiting for START_FRAME
 local conBot1ID     = nil
+local conBots       = {}      -- every con bot the build order produced
+local conBotsSentOut = false
 local conCount      = 0       -- con bots finished
 local pendingCons   = {}      -- unitID -> true while still inside the lab
 local pendingStops  = {}      -- {unitID, fireFrame}: deferred CMD_STOP orders
@@ -146,12 +192,19 @@ local assignedAnchors = {}    -- "x,z" -> true, every cell ever claimed
 local completedAnchors = {}   -- {anchorX, anchorZ} list for FindAllValidPlacements
 local completedKeys   = {}
 local gridRotation    = {}    -- "x,z" -> rotation the grid was placed with
+local allGridAnchors  = {}    -- every grid ever assigned: {anchorX, anchorZ, key}
 local UPGRADE_BP      = nil
 local upgradeStates   = {}    -- retrofit placer states
 local upgradedKeys    = {}    -- grids already assigned a retrofit
 local gridFinished    = {}    -- grids whose own build order is COMPLETE
 local freeT2Cons      = {}    -- T2 air cons waiting for a grid to upgrade
 local retrofitPaused  = false
+local consolidateOn   = false   -- unit cap is tight: stop building wind, start eating it
+local consolidateJobs = {}      -- placer states replacing a 2x2 wind block
+local consolidatedKeys = {}     -- "x,z" block centres already claimed
+local windBlocks      = {}      -- found-but-unconverted blocks: {cx,cz,key,winds}
+local windDefID       = nil
+local reclaimingWinds = {}      -- windID -> true while nanos are eating it
 
 -- ── Nano army/eco split ──────────────────────────────────────────────────────
 local factories   = {}    -- unitID -> true, every finished factory we own
@@ -420,13 +473,19 @@ local function TryAssignGrids()
         if spGetUnitDefID(conID) then
             spGiveOrderToUnit(conID, CMD_STOP, {}, {})
             local g  = table.remove(pendingGrids, 1)
-            gridRotation[AnchorKey(g.anchorX, g.anchorZ)] = g.rotation
+            local gkey = AnchorKey(g.anchorX, g.anchorZ)
+            gridRotation[gkey] = g.rotation
+            allGridAnchors[#allGridAnchors + 1] =
+                {anchorX = g.anchorX, anchorZ = g.anchorZ, key = gkey}
             local st = BP_PLACER.New(MEX_GRID_BP, conID, g.anchorX, g.anchorZ,
                                      g.rotation, BP_PLACER.GRID_INTERRUPTS)
             -- The grid's own factory is the last thing built, unless metal is piling
             -- up unspent -- that is what the "float" interrupt is for.
             st.deferFactories  = true
             st.handoffProgress = GRID_HANDOFF
+            if consolidateOn and windDefID then
+                st.skipDefIDs = {[windDefID] = true}
+            end
             st.onNanoThreshold = function(gs)
                 AddCompletedAnchor(gs.anchorX, gs.anchorZ)
                 TryExpand()
@@ -468,6 +527,9 @@ end
 
 TryExpand = function()
     if not MEX_GRID_BP or #completedAnchors == 0 then return end
+    -- Once the cap is the constraint, more grid is the wrong thing to spend it on:
+    -- the remaining headroom has to stay free for army.
+    if consolidateOn then return end
     for _, r in ipairs(BP_PLACER.FindAllValidPlacements(MEX_GRID_BP, completedAnchors)) do
         local key = AnchorKey(r.anchorX, r.anchorZ)
         if not assignedAnchors[key] then
@@ -505,6 +567,200 @@ local function StartGridExpansion()
     end
     if DEBUG then Spring.Echo("[MC] grid expansion started, " .. #pendingGrids .. " cells") end
     TryAssignGrids()
+end
+
+-- Once the air lab is up the build order is finished with the con bots, and a
+-- ground con inside a finished grid is just a unit that cannot get out again.
+-- Send them somewhere useful and far away: radar gives 2100 elmos of vision each,
+-- and it gets them clear of the grids for good.
+local function DispatchConBots()
+    if conBotsSentOut then return end
+    conBotsSentOut = true
+    local rad = UnitDefNames["corrad"]
+    if not rad then return end
+    local mapX = (Game and Game.mapSizeX) or 8192
+    local mapZ = (Game and Game.mapSizeZ) or 8192
+    local sent = 0
+    for i, cid in ipairs(conBots) do
+        if spGetUnitDefID(cid) then
+            BP_PLACER.RemoveBuilder(distState, cid)
+            local placed = false
+            for r = 1600, 3200, 400 do
+                for a = 0, 7 do
+                    local ang = (a + i * 0.5) * math.pi / 4
+                    local x = baseX + r * math.cos(ang)
+                    local z = baseZ + r * math.sin(ang)
+                    if x > 256 and z > 256 and x < mapX - 256 and z < mapZ - 256 then
+                        local sx, sz = BP_PLACER.SnapToBuildGrid(rad.id, x, z)
+                        local sy = spGetGroundHeight(sx, sz) or 0
+                        local ok = Spring.TestBuildOrder(rad.id, sx, sy, sz, 0)
+                        if ok and ok ~= 0 then
+                            spGiveOrderToUnit(cid, -rad.id, {sx, sy, sz, 0}, {})
+                            placed, sent = true, sent + 1
+                            break
+                        end
+                    end
+                end
+                if placed then break end
+            end
+        end
+    end
+    if sent > 0 then
+        Spring.Echo(string.format("[MC] %d con bot(s) sent out to build radar", sent))
+    end
+end
+
+-- ── Spend pressure ───────────────────────────────────────────────────────────
+
+-- Under-spending means too few frames are open at once.  Handing a frame to the
+-- nanos sooner frees its builder to place the next one, so the whole base has
+-- more places to put metal; when metal is short the opposite is wanted.
+local function UpdateSpendPressure(resources)
+    local mFrac = resources.metalStorage > 0
+                  and (resources.metal / resources.metalStorage) or 0
+    local underSpending = resources.metalIncome > resources.metalPull * 1.05
+
+    local handoff = GRID_HANDOFF
+    if mFrac < BANK_LOW and not underSpending then
+        handoff = SPEND_SLOW
+    elseif underSpending or mFrac > BANK_HIGH then
+        handoff = SPEND_FAST
+    end
+
+    for _, st in ipairs(gridStates)      do st.handoffProgress = handoff end
+    for _, st in ipairs(upgradeStates)   do st.handoffProgress = handoff end
+    for _, st in ipairs(consolidateJobs) do st.handoffProgress = handoff end
+end
+
+-- ── Wind consolidation (unit-cap relief) ─────────────────────────────────────
+
+-- Find EVERY unclaimed 2x2 block of finished winds in one pass and cache them.
+-- Winds sit on a global 48-elmo lattice, so a block is just a wind plus its
+-- neighbours at +WIND_LATTICE in x, z and both.  One scan feeding a list beats
+-- rescanning per job: the scan walks every unit we own, so it is the expensive
+-- part, while handing blocks out afterwards is free.
+local function ScanWindBlocks()
+    if not windDefID then return end
+    windBlocks = {}
+    local at = {}
+    for _, uid in ipairs(spGetTeamUnits(myTeamID) or {}) do
+        if spGetUnitDefID(uid) == windDefID and not Spring.GetUnitIsBeingBuilt(uid) then
+            local x, _, z = spGetUnitPosition(uid)
+            if x then
+                at[math.floor(x + 0.5) .. "," .. math.floor(z + 0.5)] = uid
+            end
+        end
+    end
+    local taken = {}
+    for key, uid in pairs(at) do
+        if #windBlocks >= CONSOLIDATE_MAX then break end
+        local sx, sz = key:match("(-?%d+),(-?%d+)")
+        local x, z = tonumber(sx), tonumber(sz)
+        local k2 = (x + WIND_LATTICE) .. "," .. z
+        local k3 = x .. "," .. (z + WIND_LATTICE)
+        local k4 = (x + WIND_LATTICE) .. "," .. (z + WIND_LATTICE)
+        if at[k2] and at[k3] and at[k4]
+           and not (taken[key] or taken[k2] or taken[k3] or taken[k4]) then
+            local cx, cz = x + WIND_LATTICE / 2, z + WIND_LATTICE / 2
+            local ckey = math.floor(cx) .. "," .. math.floor(cz)
+            if not consolidatedKeys[ckey] then
+                taken[key], taken[k2], taken[k3], taken[k4] = true, true, true, true
+                windBlocks[#windBlocks + 1] = {
+                    cx = cx, cz = cz, key = ckey,
+                    winds = {uid, at[k2], at[k3], at[k4]},
+                }
+            end
+        end
+    end
+end
+
+-- Condemn a rationed number of winds and put every nano that can reach each one
+-- onto reclaiming it.  Rationing matters: reclaiming the lot at once would drop a
+-- large slice of energy income in one go.
+local function UpdateWindReclaim()
+    if not windDefID then
+        windDefID = UnitDefNames["corwin"] and UnitDefNames["corwin"].id
+        if not windDefID then return end
+    end
+    local maxU = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID)
+    local cnt  = Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
+    if not (maxU and cnt) then return end
+    if (maxU - cnt) > maxU * RECLAIM_TRIGGER_FRAC then return end
+
+    local active = 0
+    for wid in pairs(reclaimingWinds) do
+        if spGetUnitDefID(wid) then active = active + 1 else reclaimingWinds[wid] = nil end
+    end
+    local budget = math.max(1, math.floor(maxU * RECLAIM_BUDGET_FRAC))
+    if active >= budget then return end
+
+    local ordered = 0
+    for _, uid in ipairs(spGetTeamUnits(myTeamID) or {}) do
+        if active >= budget then break end
+        if spGetUnitDefID(uid) == windDefID and not reclaimingWinds[uid]
+           and not Spring.GetUnitIsBeingBuilt(uid) then
+            local x, _, z = spGetUnitPosition(uid)
+            if x then
+                local nanos = BP_PLACER.NanosInRange(x, z)
+                local used = 0
+                -- Every nano that can reach it: partly build power, but mainly so
+                -- none is left idle nearby to repair what we are removing.  This is
+                -- the highest priority there is, so it displaces assist and balance
+                -- work without the callers needing to know about each other.
+                for _, nid in ipairs(nanos) do
+                    if NANO.Reclaim(NANO.PRIO.WIND_RECLAIM, nid, uid) then
+                        used = used + 1
+                    end
+                end
+                if used > 0 then
+                    reclaimingWinds[uid] = true
+                    active  = active + 1
+                    ordered = ordered + 1
+                end
+            end
+        end
+    end
+    if DEBUG and ordered > 0 then
+        Spring.Echo(string.format("[MC] wind reclaim: %d condemned (%d active, budget %d)",
+            ordered, active, budget))
+    end
+end
+
+-- Replace the block with whichever resource is scarcer right now.
+local function ConsolidationUnit(resources)
+    local mFrac = resources.metalStorage  > 0 and (resources.metal  / resources.metalStorage)  or 1
+    local eFrac = resources.energyStorage > 0 and (resources.energy / resources.energyStorage) or 1
+    if eFrac <= mFrac then return "corfus" end
+    return "cormoho"
+end
+
+local function StartConsolidation(conID, resources)
+    local block = nil
+    while #windBlocks > 0 do
+        local b = table.remove(windBlocks, 1)
+        if not consolidatedKeys[b.key] then block = b; break end
+    end
+    if not block then return false end
+    local cx, cz, ckey = block.cx, block.cz, block.key
+    local name = ConsolidationUnit(resources)
+    local ud = UnitDefNames[name]
+    if not ud or not BP_PLACER.CanBuild(spGetUnitDefID(conID), ud.id) then return false end
+
+    consolidatedKeys[ckey] = true
+    spGiveOrderToUnit(conID, CMD_STOP, {}, {})
+    -- A one-item blueprint.  clearBlockers does the rest: the new building overlaps
+    -- all four winds, so the placer reclaims them (with any nanos in range) and
+    -- then builds in the space they leave.
+    local bp = {layout = {{n = name, x = 0, z = 0, f = 0}}}
+    local st = BP_PLACER.New(bp, conID, cx, cz, 0, {})
+    st.clearBlockers = true
+    -- ONLY wind.  Anything else in the footprint (a nano, or the fusion we just
+    -- placed) must never be reclaimed to make room.
+    st.clearOnlyDefIDs = {[windDefID] = true}
+    consolidateJobs[#consolidateJobs + 1] = st
+    Spring.Echo(string.format("[MC] consolidating 4 winds at (%d, %d) into %s",
+        cx, cz, name))
+    return true
 end
 
 -- ── Retrofit (T2 upgrade of a finished grid) ─────────────────────────────────
@@ -547,6 +803,13 @@ TryAssignUpgrades = function()
                                      gridRotation[bestKey] or 0,
                                      BP_PLACER.GRID_INTERRUPTS)
             st.clearBlockers   = true    -- reclaim the mex/winds the fusions need
+            -- A retrofit clears exactly what the upgrade layout sits on top of:
+            -- the T1 mex it replaces and the corner winds the fusion needs.
+            st.clearOnlyDefIDs = {}
+            for _, n in ipairs({"corwin", "cormex"}) do
+                local ud = UnitDefNames[n]
+                if ud then st.clearOnlyDefIDs[ud.id] = true end
+            end
             st.handoffProgress = GRID_HANDOFF
             -- Hand the con straight to the next grid instead of retiring it.
             st.onComplete = function(us)
@@ -597,6 +860,13 @@ end
 
 -- ── Nano army/eco balance ────────────────────────────────────────────────────
 
+-- Effective headroom threshold for this game's unit cap.
+local function CapSlack(absolute)
+    local maxU = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID)
+    if not maxU or maxU <= 0 then return absolute end
+    return math.min(absolute, math.floor(maxU * CAP_SLACK_FRAC))
+end
+
 local function IsNanoTurret(defID)
     local d = defID and UnitDefs[defID]
     if not d then return false end
@@ -610,7 +880,8 @@ local function NanoTarget(uid)
     if t then return t end
     local cmds = spGetUnitCommands(uid, 1)
     local c = cmds and cmds[1]
-    if c and (c.id == CMD_REPAIR or c.id == CMD_GUARD) and c.params then
+    if c and (c.id == CMD_REPAIR or c.id == CMD_GUARD or c.id == CMD_RECLAIM)
+       and c.params then
         return c.params[1]
     end
     return nil
@@ -658,7 +929,7 @@ local function UpdateNanoBalance(frame)
     local target = ARMY_SHARE
     local maxUnits = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID)
     local count    = Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
-    if maxUnits and count and (maxUnits - count) <= ARMY_CAP_SLACK then
+    if maxUnits and count and (maxUnits - count) <= CapSlack(ARMY_CAP_SLACK) then
         target = 1.0
     end
 
@@ -671,14 +942,21 @@ local function UpdateNanoBalance(frame)
             local bp = NanoBuildSpeed(dID)
             local cls = SpendClass(NanoTarget(uid))
             if cls == "army" then spentArmy = spentArmy + bp
-            elseif cls == "eco" then spentEco = spentEco + bp end
+            elseif cls == "eco" then spentEco = spentEco + bp
+            end
 
             if armyNanos[uid] and spGetUnitDefID(armyNanos[uid]) then
                 armyBP = armyBP + bp
             else
                 armyNanos[uid] = nil
                 ecoBP = ecoBP + bp
-                ecoPool[#ecoPool + 1] = {uid = uid, defID = dID, bp = bp}
+                -- Counted as eco, but only offered up for reassignment if the
+                -- broker would actually hand it over.  No special case needed: the
+                -- balancer is the lowest priority there is, so anything on reclaim
+                -- or assist work simply is not available.
+                if not NANO.IsBusy(uid, NANO.PRIO.BALANCE) then
+                    ecoPool[#ecoPool + 1] = {uid = uid, defID = dID, bp = bp}
+                end
             end
         end
     end
@@ -700,8 +978,7 @@ local function UpdateNanoBalance(frame)
         for _, n in ipairs(ecoPool) do
             if moves >= NANO_MOVES_MAX or not improves(armyBP + n.bp) then break end
             local fid = FactoryInReach(n.uid, n.defID)
-            if fid then
-                spGiveOrderToUnit(n.uid, CMD_GUARD, {fid}, {})
+            if fid and NANO.Guard(NANO.PRIO.BALANCE, n.uid, fid) then
                 armyNanos[n.uid] = fid
                 armyBP = armyBP + n.bp
                 moves  = moves + 1
@@ -716,7 +993,7 @@ local function UpdateNanoBalance(frame)
                 if not improves(armyBP - bp) then break end
                 -- Released nanos fall back to assisting whatever is being built
                 -- nearby, which is eco work.
-                spGiveOrderToUnit(uid, CMD_STOP, {}, {})
+                NANO.Release(uid)
                 armyNanos[uid] = nil
                 armyBP = armyBP - bp
                 moves  = moves + 1
@@ -754,6 +1031,7 @@ function widget:Initialize()
     else Spring.Echo("[MC] no upgrade blueprint (" .. tostring(r4) .. "); retrofits disabled") end
     BP_PLACER    = r1
     BUILD_ORDER  = r2
+    NANO         = r1.NANO
     MEX_GRID_BP  = r3
     GRID_SPACING = BP_PLACER.GRID_SPACING
 
@@ -841,6 +1119,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     -- Air lab finished -> the grid system takes over from here.
     if unitID == airLabID then
         StartGridExpansion()
+        DispatchConBots()
     end
 
     -- Air cons roll out.  The factory gives them a guard order on itself as they
@@ -862,6 +1141,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if pendingCons[unitID] then
         pendingCons[unitID] = nil
         conCount = conCount + 1
+        conBots[#conBots + 1] = unitID
         if not conBot1ID then
             conBot1ID = unitID
             con2Frame = currentFrame + CON_GAP_FRAMES
@@ -882,6 +1162,11 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     for _, us in ipairs(upgradeStates) do
         if not us.done then
             BP_PLACER.OnUnitFinished(us, unitID, unitDefID, x, z)
+        end
+    end
+    for _, cs in ipairs(consolidateJobs) do
+        if not cs.done then
+            BP_PLACER.OnUnitFinished(cs, unitID, unitDefID, x, z)
         end
     end
 end
@@ -914,49 +1199,41 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
     if unitID == comGuardTarget then comGuardTarget = nil end
 end
 
-function widget:GameFrame(frame)
-    currentFrame = frame
-    if not myTeamID or not BP_PLACER then return end
+-- ── GameFrame, split up ──────────────────────────────────────────────────────
+-- Lua 5.1 allows a function at most 60 UPVALUES -- every file-level local it
+-- mentions is one.  GameFrame grew past that and the widget silently failed to
+-- load ("function at line N has more than 60 upvalues").  Each block below is a
+-- separate function so the references are spread across several budgets.
 
-    if startPending and frame >= START_FRAME then BeginBuildOrder() end
-    if not distState then return end
-
-    -- Con bot #2, one CON_GAP after con #1 finished.
-    if not con2Queued and con2Frame and frame >= con2Frame then
-        if botLabID and spGetUnitDefID(botLabID) and conDefID then
-            spGiveOrderToUnit(botLabID, -conDefID, {0}, {})
-            con2Queued = true
-            if DEBUG then Spring.Echo("[MC] con #2 queued at frame " .. frame) end
-        elseif not botLabID then
-            con2Queued = true   -- lab gone; nothing to queue from
-        end
+local function MaybeQueueCon2(frame)
+    if con2Queued or not con2Frame or frame < con2Frame then return end
+    if botLabID and spGetUnitDefID(botLabID) and conDefID then
+        spGiveOrderToUnit(botLabID, -conDefID, {0}, {})
+        con2Queued = true
+        if DEBUG then Spring.Echo("[MC] con #2 queued at frame " .. frame) end
+    elseif not botLabID then
+        con2Queued = true   -- lab gone; nothing to queue from
     end
+end
 
-    local si = 1
-    while si <= #pendingStops do
-        local ps = pendingStops[si]
+local function FirePendingStops(frame)
+    local i = 1
+    while i <= #pendingStops do
+        local ps = pendingStops[i]
         if frame >= ps.fireFrame then
             if spGetUnitDefID(ps.unitID) then
                 spGiveOrderToUnit(ps.unitID, CMD_STOP, {}, {})
             end
-            table.remove(pendingStops, si)
+            table.remove(pendingStops, i)
         else
-            si = si + 1
+            i = i + 1
         end
     end
+end
 
-    if frame % 10 ~= 0 then return end
-
-    local _, m,  ms,  _, mi = pcall(Spring.GetTeamResources, myTeamID, "metal")
-    local _, em, ems        = pcall(Spring.GetTeamResources, myTeamID, "energy")
-    local resources = {
-        metal  = m  or 0, metalStorage  = ms  or 1000,
-        energy = em or 0, energyStorage = ems or 1000,
-        metalIncome = mi or 0,
-    }
-
-    -- Hand-off trigger: metal banked above BANK_FRAC of storage for BANK_HOLD frames,
-    -- but only once the economy is real (see the guards above).
+local function UpdateHandoff(frame, resources)
+    -- Trigger: metal banked above BANK_FRAC of storage for BANK_HOLD frames, but
+    -- only once the economy is real (income rules out the stocked start).
     if not handoffStarted and resources.metalStorage > 0
        and resources.metalIncome >= HANDOFF_MIN_INCOME then
         if (resources.metal / resources.metalStorage) >= BANK_FRAC then
@@ -967,47 +1244,89 @@ function widget:GameFrame(frame)
         end
     end
 
-    -- Watchdog: the lab is queued but nothing has begun building it.  Silence here
-    -- used to mean a def no builder could place; say so rather than stalling mutely.
+    -- Watchdog: queued but nothing has begun building it.
     if airLabItem and not airLabID and airLabFrame and (frame - airLabFrame) > 900 then
         local st = airLabItem.status
         if st == "skipped" or st == "pending" then
             -- The spot was taken (usually by the build order itself).  Try again
-            -- somewhere else: without this lab there is no army and no expansion,
-            -- so giving up once is giving up for the whole game.
+            -- elsewhere: without this lab there is no army and no expansion, so
+            -- giving up once is giving up for the whole game.
             airLabRetries = (airLabRetries or 0) + 1
             Spring.Echo(string.format(
                 "[MC] hand-off retry %d: %s not started (status=%s), picking a new spot",
                 airLabRetries, tostring(airLabItem.n), tostring(st)))
             airLabItem.status = "skipped"
-            airLabItem.built  = true          -- take the dead entry out of the queue
+            airLabItem.built  = true
             airLabItem = nil
             if airLabRetries <= 5 then
-                handoffStarted = false        -- StartHandoff runs again next tick
-                bankFrames     = BANK_HOLD    -- and fires immediately
+                handoffStarted = false     -- StartHandoff runs again next tick
+                bankFrames     = BANK_HOLD -- and fires immediately
             elseif not airLabWarned then
                 airLabWarned = true
                 Spring.Echo("[MC] hand-off GAVE UP after 5 attempts")
             end
         end
     end
+end
 
-    -- Drive every grid, and prune the finished ones.
-    local gi = 1
-    while gi <= #gridStates do
-        local gs = gridStates[gi]
-        if gs.done then table.remove(gridStates, gi)
+local function UpdateGrids(frame, resources)
+    local i = 1
+    while i <= #gridStates do
+        local gs = gridStates[i]
+        if gs.done then
+            -- Reuse the con: for a new grid, or as a demolition crew once the cap
+            -- is tight.  It used to simply vanish from the pool here.
+            if gs.builderID and spGetUnitDefID(gs.builderID) then
+                freeAirCons[#freeAirCons + 1] = gs.builderID
+            end
+            table.remove(gridStates, i)
         else
             BP_PLACER.Update(gs, frame, resources)
-            gi = gi + 1
+            i = i + 1
         end
     end
     if #freeAirCons > 0 and #pendingGrids > 0 then TryAssignGrids() end
+end
 
+local function CheckCapPressure()
+    if consolidateOn then
+        if windDefID then
+            for _, gs in ipairs(gridStates) do
+                gs.skipDefIDs = gs.skipDefIDs or {}
+                gs.skipDefIDs[windDefID] = true
+            end
+        end
+        return
+    end
+    local maxU = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID)
+    local cnt  = Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
+    if not (maxU and cnt) or (maxU - cnt) > CapSlack(CONSOLIDATE_SLACK) then return end
+
+    consolidateOn = true
+    windDefID = UnitDefNames["corwin"] and UnitDefNames["corwin"].id
+    -- Every grid becomes retrofit-eligible right now, finished or not.  From here
+    -- they stop building wind, so their remaining T1 eco is all they will ever
+    -- have -- and a T1->T2 mex upgrade costs no unit cap, so there is nothing to
+    -- gain by waiting for a completion that can no longer happen.
+    local marked = 0
+    for _, g in ipairs(allGridAnchors) do
+        if not gridFinished[g.key] then
+            gridFinished[g.key] = true
+            AddCompletedAnchor(g.anchorX, g.anchorZ)
+            marked = marked + 1
+        end
+    end
+    Spring.Echo(string.format(
+        "[MC] unit cap tight: grids stop building wind, consolidation on, "
+        .. "%d more grids marked for retrofit", marked))
+    TryAssignUpgrades()
+end
+
+local function UpdateRetrofits(frame, resources)
     -- Retrofits yield to everything else when metal is short: a T2 mex earns less
-    -- per metal spent than a T1 one, so a retrofit competing with a normal grid
-    -- during a stall is strictly bad. Stop the builders rather than just pausing,
-    -- or they sit holding a half-issued order.
+    -- per metal than a T1, so competing with a normal grid during a stall is
+    -- strictly bad.  Stop the builders rather than pausing, or they sit holding a
+    -- half-issued order.
     local mFrac = resources.metalStorage > 0
                   and (resources.metal / resources.metalStorage) or 1
     if not retrofitPaused and mFrac < RETROFIT_STALL_FRAC then
@@ -1025,24 +1344,97 @@ function widget:GameFrame(frame)
     end
 
     if not retrofitPaused then
-        local ui = 1
-        while ui <= #upgradeStates do
-            local us = upgradeStates[ui]
-            if us.done then table.remove(upgradeStates, ui)
+        local i = 1
+        while i <= #upgradeStates do
+            local us = upgradeStates[i]
+            if us.done then table.remove(upgradeStates, i)
             else
                 BP_PLACER.Update(us, frame, resources)
-                ui = ui + 1
+                i = i + 1
             end
         end
     end
-    if #freeT2Cons > 0 then TryAssignUpgrades() end
+    local reserve = consolidateOn and 1 or 0
+    if #freeT2Cons > reserve then TryAssignUpgrades() end
+end
 
-    if frame % NANO_REBALANCE == 0 then UpdateNanoBalance(frame) end
+local function UpdateConsolidation(frame, resources)
+    if consolidateOn then
+        if frame % CONSOLIDATE_SCAN == 0 or #windBlocks == 0 then
+            ScanWindBlocks()
+        end
+        -- Converting wind beats upgrading another grid at the cap, so every free
+        -- T2 con starts a job immediately rather than one per scan.
+        while #freeT2Cons > 0 and #windBlocks > 0 do
+            local conID = freeT2Cons[1]
+            if not spGetUnitDefID(conID) then
+                table.remove(freeT2Cons, 1)
+            elseif StartConsolidation(conID, resources) then
+                table.remove(freeT2Cons, 1)
+            else
+                break
+            end
+        end
+    end
+
+    local i = 1
+    while i <= #consolidateJobs do
+        local cs = consolidateJobs[i]
+        if cs.done then
+            if cs.builderID and spGetUnitDefID(cs.builderID) then
+                freeT2Cons[#freeT2Cons + 1] = cs.builderID
+            end
+            table.remove(consolidateJobs, i)
+        else
+            BP_PLACER.Update(cs, frame, resources)
+            i = i + 1
+        end
+    end
+end
+
+local function ReadResources()
+    local _, m,  ms,  mp, mi = pcall(Spring.GetTeamResources, myTeamID, "metal")
+    local _, em, ems, _,  ei = pcall(Spring.GetTeamResources, myTeamID, "energy")
+    return {
+        metal  = m  or 0, metalStorage  = ms  or 1000,
+        energy = em or 0, energyStorage = ems or 1000,
+        metalIncome = mi or 0, metalPull = mp or 0,
+        energyIncome = ei or 0,
+    }
+end
+
+function widget:GameFrame(frame)
+    currentFrame = frame
+    if not myTeamID or not BP_PLACER then return end
+
+    if startPending and frame >= START_FRAME then BeginBuildOrder() end
+    if not distState then return end
+
+    MaybeQueueCon2(frame)
+    FirePendingStops(frame)
+
+    if frame % 10 ~= 0 then return end
+
+    local resources = ReadResources()
+
+    -- Retire finished and dead nano assignments first, so freed nanos are
+    -- available to everything that asks for one later in this same tick.
+    NANO.Sweep()
+
+    UpdateHandoff(frame, resources)
+    UpdateGrids(frame, resources)
+    CheckCapPressure()
+    UpdateRetrofits(frame, resources)
+    UpdateConsolidation(frame, resources)
+
+    if frame % RECLAIM_EVERY == 0 then UpdateWindReclaim() end
+    UpdateSpendPressure(resources)
 
     GateLabReclaim(frame)
-    -- Phases first: the commander must be out of the builder pool before
-    -- Update hands it a claim it is about to abandon.
+    -- Phases before the placer runs: the commander must be out of the builder pool
+    -- before Update hands it a claim it is about to abandon.
     UpdateCommanderPhase(frame, resources)
+    if frame % NANO_REBALANCE == 0 then UpdateNanoBalance(frame) end
 
     if not distState.done then
         BP_PLACER.Update(distState, frame, resources)

@@ -21,6 +21,8 @@
 --   -- on UnitCreated:   BP_PLACER.OnUnitCreated(state, unitID, unitDefID, builderID)
 --   -- on UnitDestroyed: BP_PLACER.OnUnitDestroyed(state, unitID)
 
+local NANO = VFS.Include("LuaUI/Widgets/bar_framework/nano_broker.lua")
+
 local M = {}
 
 local DEBUG = false  -- set true to enable verbose logging
@@ -58,8 +60,9 @@ local HANDOFF_PROGRESS   = 0.85  -- leave a frame at this progress if a finished
 local HANDOFF_MIN_NANOS  = 3     -- until this many nanos stand, a builder finishes what
                                  -- it starts: its own build power is still a large share
                                  -- of the total, so walking away from a frame wastes it
-local RECLAIM_STEP_OUT   = 144   -- elmos a builder backs off after reclaiming, so it is
+local RECLAIM_STEP_OUT   = 112   -- elmos a builder backs off after reclaiming, so it is
                                  -- not left standing where the building used to be
+local RECLAIM_STEP_HOLD  = 90    -- frames it is left alone to actually walk clear
 local OPENING_ITEMS      = 20    -- The opening is executed literally: the first N items
                                  -- are built in blueprint order, one at a time, to
                                  -- completion.  No nearest-first reordering (builders
@@ -424,15 +427,38 @@ end
 -- first: the fusions overlap the corner mex and winds, and a T2 mex sits exactly
 -- where the T1 one stands.  Returns a friendly STRUCTURE blocking this item --
 -- never a builder, nano or factory, which are never ours to demolish.
-local function FriendlyBlocker(item)
+-- Is the thing we want to build ALREADY standing here?  Without this check the
+-- placer can treat its own finished building as an obstacle, reclaim it, rebuild
+-- it, and loop forever.
+local function ExistingBuildAt(item)
+    local units = Spring.GetUnitsInCylinder(item.wx, item.wz, 24)
+    if not units then return nil end
+    local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+    for _, uid in ipairs(units) do
+        if Spring.GetUnitDefID(uid) == item.defID
+           and Spring.GetUnitAllyTeam(uid) == myAlly
+           and not Spring.GetUnitIsBeingBuilt(uid) then
+            return uid
+        end
+    end
+    return nil
+end
+
+local function FriendlyBlocker(state, item)
     local ihx, ihz = HalfExtents(item.defID)
     local half = math.max(ihx, ihz)
     local units = Spring.GetUnitsInCylinder(item.wx, item.wz, half + 64)
     if not units then return nil end
     local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
     for _, uid in ipairs(units) do
-        if Spring.GetUnitAllyTeam(uid) == myAlly then
-            local ud = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+        local blockerDefID = Spring.GetUnitDefID(uid)
+        -- Never eat the building we are trying to place, and only ever eat types
+        -- the caller explicitly allows.  A retrofit clears mex and wind; a wind
+        -- consolidation clears wind and nothing else.
+        local allowed = blockerDefID ~= item.defID
+            and (not state.clearOnlyDefIDs or state.clearOnlyDefIDs[blockerDefID])
+        if allowed and Spring.GetUnitAllyTeam(uid) == myAlly then
+            local ud = UnitDefs[blockerDefID or -1]
             if ud and not ud.isBuilder and not ud.isFactory
                and (ud.speed == nil or ud.speed == 0) then
                 local uhx, uhz = HalfExtents(ud.id)
@@ -445,6 +471,20 @@ local function FriendlyBlocker(item)
         end
     end
     return nil
+end
+
+-- An item is "settled" when it will never need building again -- finished OR
+-- deliberately skipped.  Both must count toward the completion thresholds: a grid
+-- that skips its 36 winds (because the unit cap is tight) would otherwise never
+-- reach 70% and never become retrofit-eligible, which is exactly what happened.
+local function NoteItemSettled(state)
+    state.builtCount = state.builtCount + 1
+    if not state.mostlyDone and state.onMostlyDone then
+        if state.builtCount >= math.floor(#state.queue * 0.7) then
+            state.mostlyDone = true
+            pcall(state.onMostlyDone, state)
+        end
+    end
 end
 
 local function AdvanceQueue(state, res, frame)
@@ -491,7 +531,14 @@ local function AdvanceQueue(state, res, frame)
     local deferred, released = nil, nil
     for _, item in ipairs(state.queue) do
         if not item.built and item.act ~= "reclaim" then
-            if item.released then
+            if state.skipDefIDs and state.skipDefIDs[item.defID] then
+                -- This type is no longer wanted (wind, once unit cap is the
+                -- binding constraint).  Retire the entry so the queue can still
+                -- reach `done` instead of stalling on something we refuse to build.
+                item.built  = true
+                item.status = "skipped"
+                NoteItemSettled(state)
+            elseif item.released then
                 -- Handed to the nanos at handoffProgress.  If the frame is gone
                 -- (decayed or killed) it is ours again; otherwise remember it in
                 -- case we run out of new work.
@@ -507,32 +554,41 @@ local function AdvanceQueue(state, res, frame)
             elseif state.deferFactories and item.cls == "factory" then
                 deferred = deferred or item
             elseif SpotIsBlocked(item) then
-                -- Retrofit states clear their own way instead of giving up.
-                local blocker = state.clearBlockers and FriendlyBlocker(item) or nil
-                if blocker then
+                -- Already standing?  Then it is done, not blocked.  Without this the
+                -- placer can mistake its own finished building for an obstacle,
+                -- reclaim it, rebuild it, and loop forever.
+                local standing = state.clearBlockers and ExistingBuildAt(item) or nil
+                local blocker  = (not standing) and state.clearBlockers
+                                 and FriendlyBlocker(state, item) or nil
+                if standing then
+                    item.built   = true
+                    item.status  = "built"
+                    item.frameID = standing
+                elseif blocker then
                     Spring.GiveOrderToUnit(builderID, CMD_RECLAIM, {blocker}, {})
                     local nanos = NanosInRange(item.wx, item.wz, builderID)
                     for i = 1, #nanos do
-                        Spring.GiveOrderToUnit(nanos[i], CMD_RECLAIM, {blocker}, {"shift"})
+                        NANO.Reclaim(NANO.PRIO.CLEAR, nanos[i], blocker)
                     end
                     state.currentTask = item   -- build it once the ground is clear
                     if DEBUG then
-                        Spring.Echo(string.format("[BP] retrofit: reclaiming %s to place %s",
-                            tostring(UnitDefs[Spring.GetUnitDefID(blocker) or -1]
-                                     and UnitDefs[Spring.GetUnitDefID(blocker)].name),
-                            tostring(item.n)))
+                        local bd = UnitDefs[Spring.GetUnitDefID(blocker) or -1]
+                        Spring.Echo(string.format("[BP] clearing %s to place %s",
+                            tostring(bd and bd.name), tostring(item.n)))
                     end
                     return
-                end
-                -- Permanently occupied (this grid overlaps something already built).
-                -- Give up on it after a few looks rather than flying back forever.
-                item.testFails = (item.testFails or 0) + 1
-                if item.testFails >= 3 then
-                    item.built = true
-                    item.status = "skipped"
-                    if DEBUG then
-                        Spring.Echo(string.format("[BP] grid skip %s at (%.0f, %.0f) - blocked",
-                            tostring(item.n), item.wx, item.wz))
+                else
+                    -- Permanently occupied by something we may not touch.  Give up
+                    -- after a few looks rather than flying back forever.
+                    item.testFails = (item.testFails or 0) + 1
+                    if item.testFails >= 3 then
+                        item.built = true
+                        item.status = "skipped"
+                        NoteItemSettled(state)
+                        if DEBUG then
+                            Spring.Echo(string.format("[BP] grid skip %s at (%.0f, %.0f) - blocked",
+                                tostring(item.n), item.wx, item.wz))
+                        end
                     end
                 end
             else
@@ -578,13 +634,7 @@ local function MarkItemBuilt(state, item, unitID)
         state.currentTask = nil
         wasCurrent = true
     end
-    state.builtCount = state.builtCount + 1
-    if not state.mostlyDone and state.onMostlyDone then
-        if state.builtCount >= math.floor(#state.queue * 0.7) then
-            state.mostlyDone = true
-            pcall(state.onMostlyDone, state)
-        end
-    end
+    NoteItemSettled(state)
     return wasCurrent
 end
 
@@ -599,9 +649,14 @@ end
 --                    in range to complete it and the bot is not resource-starved.
 --   deferFactories   true: build factory entries last, unless an interrupt asks
 --                    for one earlier.
+--   skipDefIDs       set of defIDs this state must not build; entries are retired
+--                    as "skipped" so the queue still completes.
 --   clearBlockers    true: when a friendly STRUCTURE stands where an item must go,
 --                    reclaim it (with any nanos in range) and then build.  This is
 --                    what makes a retrofit blueprint work on top of a finished grid.
+--   clearOnlyDefIDs  set of defIDs clearBlockers may reclaim.  Without it any
+--                    friendly structure in the footprint is fair game, which is
+--                    rarely what you want.
 function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
     rotation = rotation or 0
     local queue = BuildQueue(blueprint, anchorX, anchorZ, rotation)
@@ -739,7 +794,7 @@ function M.Update(state, frame, resources)
                     if frameID then
                         local nanos = NanosInRange(cur.wx, cur.wz, builderID)
                         for i = 1, #nanos do
-                            Spring.GiveOrderToUnit(nanos[i], CMD_REPAIR, {frameID}, {"shift"})
+                            NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID)
                         end
                         cur.released = true
                     end
@@ -773,7 +828,7 @@ function M.Update(state, frame, resources)
                 local nanos = NanosInRange(task.wx, task.wz, builderID)
                 if #nanos > 0 then
                     for i = 1, #nanos do
-                        Spring.GiveOrderToUnit(nanos[i], CMD_REPAIR, {frameID}, {"shift"})
+                        NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID)
                     end
                     task.released     = true
                     state.currentTask = nil
@@ -835,7 +890,7 @@ function M.HandleEnemyClear(state)
         if Spring.GetUnitDefID(nanoID) then  -- still alive
             for _, lltID in ipairs(state.lltUnitIDs) do
                 if Spring.GetUnitDefID(lltID) then
-                    Spring.GiveOrderToUnit(nanoID, CMD_RECLAIM, {lltID}, {"shift"})
+                    NANO.Reclaim(NANO.PRIO.CLEAR, nanoID, lltID)
                 end
             end
         end
@@ -1185,7 +1240,7 @@ local function IssueDistTask(state, builderID, item, frame)
             {ox, Spring.GetGroundHeight(ox, oz) or 0, oz}, {"shift"})
         local nanos = NanosInRange(item.wx, item.wz, builderID)
         for i = 1, #nanos do
-            Spring.GiveOrderToUnit(nanos[i], CMD_RECLAIM, {target}, {})
+            NANO.Reclaim(NANO.PRIO.CLEAR, nanos[i], target)
         end
         item.status = "started"
         return
@@ -1242,8 +1297,20 @@ local function ServiceBuilder(state, builderID, frame, res)
 
     if item.act == "reclaim" then
         if not item.targetID or not Spring.GetUnitDefID(item.targetID) then
+            -- Walk clear BEFORE taking the next job.  The move queued behind the
+            -- reclaim order never actually ran: finishing the reclaim freed the
+            -- builder, and the next build order replaced the queued move -- leaving
+            -- it standing in the hole, to be walled in by whatever gets built there.
+            local dx, dz = item.wx - state.anchorX, item.wz - state.anchorZ
+            local len = math.sqrt(dx * dx + dz * dz)
+            if len < 1 then dx, dz, len = 1, 0, 1 end
+            local ox = item.wx + (dx / len) * RECLAIM_STEP_OUT
+            local oz = item.wz + (dz / len) * RECLAIM_STEP_OUT
+            Spring.GiveOrderToUnit(builderID, CMD_MOVE,
+                {ox, Spring.GetGroundHeight(ox, oz) or 0, oz}, {})
+            state.holdUntil[builderID] = frame + RECLAIM_STEP_HOLD
             MarkItemBuilt(state, item)   -- target gone: the reclaim is done
-            return false
+            return true                  -- busy while stepping clear
         end
         return true
     end
@@ -1324,7 +1391,7 @@ local function ServiceBuilder(state, builderID, frame, res)
             local nanos = NanosInRange(item.wx, item.wz, builderID)
             if #nanos > 0 then
                 for i = 1, #nanos do
-                    Spring.GiveOrderToUnit(nanos[i], CMD_REPAIR, {item.frameID}, {"shift"})
+                    NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], item.frameID)
                 end
                 DropClaim(state, item, "released")
                 return false   -- free to place the next item on this same tick
@@ -1404,6 +1471,7 @@ function M.NewDistributed(blueprint, anchorX, anchorZ, rotation, interrupts)
     state.itemByFrame  = {}   -- nanoframe unitID -> item
     state.skippedCount = 0
     state.lastFrame    = 0
+    state.holdUntil    = {}   -- builderID -> frame until which it is left alone
     ComputeBlockers(state.queue)
     return state
 end
@@ -1510,7 +1578,9 @@ function M.UpdateDistributed(state, frame, resources)
 
     for bi = 1, #state.builders do
         local bid = state.builders[bi]
-        if not ServiceBuilder(state, bid, frame, resources) then
+        if (state.holdUntil[bid] or 0) > frame then
+            -- stepping clear of a reclaim; leave it alone
+        elseif not ServiceBuilder(state, bid, frame, resources) then
             local item = FindClaimable(state, bid, frame, resources)
             if item then IssueDistTask(state, bid, item, frame) end
         end
@@ -1582,5 +1652,7 @@ function M.HasClaimable(state, builderID, frame, resources)
     return FindClaimable(state, builderID, frame or state.lastFrame, resources) ~= nil
 end
 
+
+M.NANO = NANO
 
 return M

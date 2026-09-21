@@ -1,11 +1,29 @@
 -- macro_controller.lua  ─  mex-grid scaling bot for Beyond All Reason
 -- Commander builds com_starter; bot lab makes 2 con bots (nanos + bot_starter);
 -- air lab expands mex_grids outward using blueprint_placer (one air con per grid).
--- COR only. The base "spine" (lab -> bot_starter -> VechT1/BotT2) always builds
--- toward +X in blueprint-local space; mirrorX flips that to -X when the commander
--- spawns on the east half of the map, so the spine never builds into the map edge.
--- Expansion is blocked on the far side of the bot_starter column (whichever side
--- that is once mirrored).
+-- COR only. Expansion blocked east of the bot_starter column.
+--
+-- new_algorithm [run 20260916_040755]: previously the only unit-production
+-- capacity the bot ever got was the 2 hard-coded VechT1_and_BotT2 grids
+-- (conBot3/conBot4, placed once, north/south of bot_starter) plus the 2 labs
+-- from com_starter -- nothing scaled with the economy afterward, even though
+-- mex/energy grids keep expanding for the whole game. Added TryQueueProdGrid(),
+-- modeled on the existing TryQueueEGrid() energy-grid scaler: every
+-- PROD_GRID_MEX_INTERVAL mex grids that reach their nano threshold (the same
+-- "good enough, move on" signal TryExpand already reacts to -- waiting for a
+-- full 70+ item mex grid to 100% finish took 20+ game-minutes per grid in test
+-- runs, far too slow to gate scaling on), it claims one mex-expansion slot (via
+-- the same pendingPlacements queue energy grids use) for a new prod_grid_vp
+-- blueprint (blueprints/general/prod_grid_vp.lua -- a new blueprint derived
+-- from VechT1_and_BotT2 with the coralab entry stripped out, so repeated
+-- copies add corvp/nano capacity without spawning a duplicate T2 lab each
+-- time), up to MAX_DYNAMIC_PROD_GRIDS. New factories placed this way need no
+-- special handling elsewhere: lab_controller.lua already registers *any*
+-- isFactory unit in widget:UnitFinished and has a corvp entry in LAB_QUEUES,
+-- so they start producing units automatically once built. (An initial metal-
+-- fill gate on the trigger was removed after testing showed it never passed --
+-- this bot's healthy steady state is a permanent controlled stall per
+-- game_mechanics.md §1.2, not a comfortable metal buffer.)
 
 local widget = widget
 local Spring = Spring
@@ -41,6 +59,7 @@ local BOT_STARTER    = nil
 local MEX_GRID_BP    = nil
 local EMPTY_GRID_BP  = nil
 local VECH_BOT_T2_BP = nil
+local PROD_GRID_BP   = nil   -- dynamic production-grid blueprint (prod_grid_vp)
 
 -- ── Debug ─────────────────────────────────────────────────────────────────────
 local DEBUG = false  -- set true to enable verbose logging
@@ -50,8 +69,6 @@ local myTeamID    = nil
 local commanderID = nil
 local baseX, baseZ = nil, nil
 local GRID_SPACING = nil   -- assigned from BP_PLACER after Initialize
-local mirrorX       = false  -- true when commander spawns on east half of map;
-                              -- flips the base spine (lab column) to build -X instead of +X
 
 local botLabID    = nil
 local airLabID    = nil
@@ -98,6 +115,17 @@ local energyStallFrames   = 0    -- consecutive frames energy demand > productio
 local e_avg_demand        = 0    -- exponential moving average of energy demand
 local e_avg_prod          = 0    -- exponential moving average of energy production
 
+-- Dynamic production-grid scaling (new factories beyond the hard-coded starting set)
+local prodGridStates        = {}   -- active prod_grid_vp placer states
+local completedMexGridCount = 0    -- mex grids fully finished (drives scaling cadence)
+local queuedProdGridCount   = 0    -- how many dynamic prod grids have been queued so far
+local MAX_DYNAMIC_PROD_GRIDS = 4   -- cap so BP/unit-cap can't spiral out of control
+local PROD_GRID_MEX_INTERVAL = 2   -- queue 1 new prod grid per this many completed mex grids
+-- (tuned from an initial 3 after test runs showed mex grids hitting nano
+-- threshold roughly every 90-100 game-seconds once air expansion is underway
+-- -- 3 pushed the first trigger past the length of a typical test match)
+local completedProdGridCount = 0   -- dynamic prod grids fully finished
+
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -108,20 +136,6 @@ end
 
 local function GiveBuild(unitID, defID, x, y, z, facing, shift)
     spGiveOrderToUnit(unitID, -defID, {x, y, z, facing}, shift and {} or {})
-end
-
--- Sign-flips an X-axis offset/spacing when the base is mirrored (east spawn).
-local function DirX(v)
-    return mirrorX and -v or v
-end
-
--- Mirroring across the north-south axis swaps east/west facings (1<->3 in this
--- codebase's convention: 0=south,1=west,2=north,3=east) and leaves south/north as-is.
-local function MirrorFacing(f)
-    if not mirrorX then return f end
-    if f == 1 then return 3
-    elseif f == 3 then return 1
-    else return f end
 end
 
 local function IsCommander(uDefID)
@@ -230,6 +244,7 @@ end
 -- ── Grid expansion (forward-declared so TryAssign's closures can reference them) ──
 local TryExpand
 local TryQueueEGrid
+local TryQueueProdGrid
 
 local function TryAssign()
     while #freeAirCons > 0 and #pendingMexPlacements > 0 do
@@ -263,6 +278,15 @@ local function TryAssign()
                 state.onNanoThreshold = function(s)
                     AddCompletedAnchor(s.anchorX, s.anchorZ)
                     TryExpand()
+                    -- Count toward prod-grid scaling here (not onComplete): a mex grid
+                    -- with its nano threshold met is already the system's own signal
+                    -- that the grid is "good enough" to build on top of -- the same
+                    -- signal TryExpand already reacts to, rather than waiting for every
+                    -- last building in a 70+ item queue to finish, which observed test
+                    -- runs show can take 20+ game-minutes per grid on its own.
+                    completedMexGridCount = completedMexGridCount + 1
+                    if DEBUG then Spring.Echo("[MC] Mex grid reached nano threshold, total=" .. completedMexGridCount) end
+                    TryQueueProdGrid()
                 end
                 state.onComplete = function(s)
                     AddCompletedAnchor(s.anchorX, s.anchorZ)
@@ -276,13 +300,8 @@ end
 
 TryExpand = function()
     local results = BP_PLACER.FindAllValidPlacements(MEX_GRID_BP, completedAnchors)
-    local spineBoundX = baseX + DirX(GRID_SPACING)
     for _, result in ipairs(results) do
-        -- Block expansion past the spine (bot_starter) column, whichever side that's on.
-        local pastSpine
-        if mirrorX then pastSpine = result.anchorX < spineBoundX
-        else             pastSpine = result.anchorX > spineBoundX end
-        if not pastSpine then
+        if result.anchorX <= baseX + GRID_SPACING then
             local key = AnchorKey(result.anchorX, result.anchorZ)
             if not assignedAnchors[key] then
                 assignedAnchors[key] = true
@@ -336,6 +355,54 @@ TryQueueEGrid = function()
     if DEBUG then Spring.Echo("[MC] Energy grid queued, active=" .. active .. " pending=" .. (pendingECount + 1)) end
 end
 
+-- ── Dynamic production-grid placement ─────────────────────────────────────────
+
+-- Adds one prod_grid_vp entry to pendingPlacements so TryAssign will claim the
+-- next available mex expansion slot for it instead of placing a mex grid.
+-- Mirrors TryQueueEGrid's pattern: the 2 hard-coded VechT1_and_BotT2 grids give
+-- the bot its starting production, but nothing previously added more capacity
+-- as the economy grew. This scales production count with mex-grid growth
+-- (a reasonable proxy for available BP/income, since mex income compounds --
+-- see lessons_learned.md) instead of leaving it fixed for the whole game.
+TryQueueProdGrid = function()
+    if not firstTwoMexDone then return end
+    if not PROD_GRID_BP then return end
+    if queuedProdGridCount >= MAX_DYNAMIC_PROD_GRIDS then return end
+    if completedMexGridCount < (queuedProdGridCount + 1) * PROD_GRID_MEX_INTERVAL then return end
+
+    -- One dynamic prod grid in flight (active or pending) at a time.
+    local active = 0
+    for _, ps in ipairs(prodGridStates) do
+        if not ps.done then active = active + 1 end
+    end
+    local pendingCount = 0
+    for _, p in ipairs(pendingPlacements) do
+        if p.blueprint == PROD_GRID_BP then pendingCount = pendingCount + 1 end
+    end
+    if active + pendingCount > 0 then return end
+
+    -- No metal-fill pre-check here: per game_mechanics.md §1.2 this bot's healthy
+    -- steady state is a *permanent controlled stall* (near-empty metal storage),
+    -- so gating on storage fill (as first tried) never passed and the feature
+    -- never fired in test runs. Resource backpressure is already handled per-task
+    -- by blueprint_placer's own metal/energy stall interrupts, same as every
+    -- other grid type (mex/energy/VechT1_and_BotT2) that queues with no such gate.
+
+    queuedProdGridCount = queuedProdGridCount + 1
+    pendingPlacements[#pendingPlacements + 1] = {
+        blueprint  = PROD_GRID_BP,
+        stateList  = prodGridStates,
+        onComplete = function()
+            completedProdGridCount = completedProdGridCount + 1
+            if DEBUG then Spring.Echo("[MC] Dynamic prod grid done, total=" .. completedProdGridCount) end
+        end,
+    }
+    if DEBUG then
+        Spring.Echo("[MC] Dynamic prod grid queued (#" .. queuedProdGridCount
+            .. "/" .. MAX_DYNAMIC_PROD_GRIDS .. "), completedMexGrids=" .. completedMexGridCount)
+    end
+end
+
 -- ── Commander → com_starter (direct queue, same as test_com_starter.lua) ─────
 
 local function QueueComBlueprint(anchorX, anchorZ)
@@ -344,11 +411,11 @@ local function QueueComBlueprint(anchorX, anchorZ)
     for _, u in ipairs(COM_STARTER.layout) do
         local ud = UnitDefNames and UnitDefNames[u.n]
         if ud then
-            local wx = anchorX + DirX(u.x)
+            local wx = anchorX + u.x
             local wz = anchorZ + u.z
             local wy = spGetGroundHeight(wx, wz) or 0
             local opts = first and {} or {"shift"}
-            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, MirrorFacing(u.f)}, opts)
+            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, u.f}, opts)
             first = false
             count = count + 1
         end
@@ -367,11 +434,7 @@ local function StartComBlueprint()
     end
     baseX = math.floor(cx / 16 + 0.5) * 16
     baseZ = math.floor(cz / 16 + 0.5) * 16
-
-    local mapCenterX = (Game and Game.mapSizeX or 8192) * 0.5
-    mirrorX = baseX > mapCenterX
-    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ
-        .. " mirrorX=" .. tostring(mirrorX)) end
+    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ) end
 
     -- Block the commander cell so TryExpand never places a mex_grid here.
     -- Not added to completedAnchors: the mex_grid system seeds itself from
@@ -394,11 +457,10 @@ end
 
 local function AssignConBot2()
     if DEBUG then Spring.Echo("[WE] AssignConBot2") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ
-    -- bot_starter sits on the spine side of com (mirrored when spawning east).
-    local rot = FindCorrlRotation(BOT_STARTER, spineDX, 0)
+    -- bot_starter is east of com; dx = new_x - existing_x = +GRID_SPACING.
+    local rot = FindCorrlRotation(BOT_STARTER, GRID_SPACING, 0)
 
     -- Mark assigned so TryExpand doesn't place a mex_grid on top of bot_starter.
     local key = AnchorKey(bsX, bsZ)
@@ -417,10 +479,9 @@ end
 
 local function AssignConBot3()
     if DEBUG then Spring.Echo("[WE] AssignConBot3 (VechT1_and_BotT2 north of bot_starter)") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ - GRID_SPACING   -- north
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot3ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -429,10 +490,9 @@ end
 
 local function AssignConBot4()
     if DEBUG then Spring.Echo("[WE] AssignConBot4 (VechT1_and_BotT2 south of bot_starter)") end
-    local spineDX = DirX(GRID_SPACING)
-    local bsX = baseX + spineDX
+    local bsX = baseX + GRID_SPACING
     local bsZ = baseZ + GRID_SPACING   -- south
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot4ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -447,12 +507,10 @@ local function StartAirExpansion()
     airConsQueued = true
     firstTwoMexDone = true  -- enable energy grid logic
 
-    -- Opposite side from the spine (bot_starter column) — west normally, east when mirrored.
-    local oppositeDX = -DirX(GRID_SPACING)
     local initials = {
-        {ax = baseX + oppositeDX, az = baseZ,                dx = oppositeDX,    dz = 0},            -- opposite side
-        {ax = baseX,              az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
-        {ax = baseX,              az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
+        {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
+        {ax = baseX,                az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
+        {ax = baseX,                az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
     }
     for _, init in ipairs(initials) do
         local key = AnchorKey(init.ax, init.az)
@@ -500,6 +558,7 @@ function widget:Initialize()
     local ok5, r5 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/empty_grid.lua")
     local ok6, r6 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/VechT1_and_BotT2.lua")
     local ok7, r7 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/energy_grid_t1.lua")
+    local ok8, r8 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/prod_grid_vp.lua")
     if not ok1 then Spring.Echo("[MC] ERROR loading blueprint_placer: "       .. tostring(r1)); return end
     if not ok2 then Spring.Echo("[MC] ERROR loading com_starter: "            .. tostring(r2)); return end
     if not ok3 then Spring.Echo("[MC] ERROR loading bot_starter: "            .. tostring(r3)); return end
@@ -507,6 +566,7 @@ function widget:Initialize()
     if not ok5 then Spring.Echo("[MC] ERROR loading empty_grid: "             .. tostring(r5)); return end
     if not ok6 then Spring.Echo("[MC] ERROR loading VechT1_and_BotT2: "       .. tostring(r6)); return end
     if not ok7 then Spring.Echo("[MC] ERROR loading energy_grid_t1: "         .. tostring(r7)); return end
+    if not ok8 then Spring.Echo("[MC] ERROR loading prod_grid_vp: "           .. tostring(r8)); return end
     BP_PLACER         = r1
     COM_STARTER       = r2
     BOT_STARTER       = r3
@@ -514,6 +574,7 @@ function widget:Initialize()
     EMPTY_GRID_BP     = r5
     VECH_BOT_T2_BP    = r6
     ENERGY_T1_GRID_BP = r7
+    PROD_GRID_BP      = r8
     GRID_SPACING = BP_PLACER.GRID_SPACING
     if DEBUG then Spring.Echo("[WE] Loaded OK. GRID_SPACING=" .. tostring(GRID_SPACING)) end
 
@@ -662,6 +723,11 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             BP_PLACER.OnUnitFinished(es, unitID, unitDefID, x, z)
         end
     end
+    for _, pgs in ipairs(prodGridStates) do
+        if not pgs.done then
+            BP_PLACER.OnUnitFinished(pgs, unitID, unitDefID, x, z)
+        end
+    end
 end
 
 function widget:GameFrame(frame)
@@ -673,6 +739,11 @@ function widget:GameFrame(frame)
         QueueComBlueprint(baseX, baseZ)
         comBlueprintPending = false
         comBlueprintIssued  = true
+        if DEBUG then
+            local cmds = spGetUnitCommands(commanderID, -1)
+            Spring.Echo("[WE] Post-queue cmdCount=" .. tostring(cmds and #cmds or "nil")
+                .. " comID=" .. tostring(commanderID))
+        end
     end
 
     -- Retry in early game if orders were silently dropped (commander idle but should have work).
@@ -727,10 +798,20 @@ function widget:GameFrame(frame)
                 BP_PLACER.Update(es, frame, resources)
             end
         end
-        -- Prune fully-done energy grid states so the list doesn't grow unbounded.
+        for _, pgs in ipairs(prodGridStates) do
+            if not pgs.done then
+                BP_PLACER.Update(pgs, frame, resources)
+            end
+        end
+        -- Prune fully-done energy/prod grid states so the lists don't grow unbounded.
         local i = 1
         while i <= #eGridStates do
             if eGridStates[i].done then table.remove(eGridStates, i)
+            else i = i + 1 end
+        end
+        i = 1
+        while i <= #prodGridStates do
+            if prodGridStates[i].done then table.remove(prodGridStates, i)
             else i = i + 1 end
         end
     end
@@ -761,6 +842,18 @@ function widget:GameFrame(frame)
                 if clear then BP_PLACER.HandleEnemyClear(es) end
             end
         end
+        for _, pgs in ipairs(prodGridStates) do
+            if not pgs.done then
+                local units = Spring.GetUnitsInCylinder(pgs.anchorX, pgs.anchorZ, BP_PLACER.ENEMY_CLEAR_RADIUS)
+                local clear = true
+                if units then
+                    for _, uid in ipairs(units) do
+                        if Spring.GetUnitAllyTeam(uid) ~= myAlly then clear = false; break end
+                    end
+                end
+                if clear then BP_PLACER.HandleEnemyClear(pgs) end
+            end
+        end
 
         -- Update energy rolling averages (sampled every 30 frames ≈ 1s).
         local okE, eCur, eStorage, ePull, eIncome = pcall(Spring.GetTeamResources, myTeamID, "energy")
@@ -789,5 +882,6 @@ function widget:GameFrame(frame)
         end
 
         TryQueueEGrid()
+        TryQueueProdGrid()
     end
 end
