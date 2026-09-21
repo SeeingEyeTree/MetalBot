@@ -147,6 +147,27 @@ local function GetLLTDefID()
     return nil
 end
 
+-- Snap a position to a legal build position for that unit.  Build alignment
+-- depends on footprint parity: an even footprint (mex, 4x4) centres on a multiple
+-- of 16, an odd one (wind, 3x3) centres on a multiple of 16 plus 8.  Getting this
+-- wrong by 8 elmos puts a building half a cell out, which overlaps its neighbour
+-- and leaves a hole in the grid where the placer gives up on a blocked spot.
+-- Spring.Pos2BuildPos is the engine's own answer, so prefer it.
+local function SnapToBuildGrid(defID, wx, wz)
+    if not defID then return wx, wz end
+    local wy = Spring.GetGroundHeight(wx, wz) or 0
+    if Spring.Pos2BuildPos then
+        local sx, _, sz = Spring.Pos2BuildPos(defID, wx, wy, wz)
+        if sx then return sx, sz end
+    end
+    local ud = UnitDefs and UnitDefs[defID]
+    local xo = (ud and (ud.xsize or 0) % 4 == 2) and 8 or 0     -- xsize 6 => 3 cells
+    local zo = (ud and ((ud.zsize or ud.ysize or 0) % 4 == 2)) and 8 or 0
+    return math.floor((wx - xo) / 16 + 0.5) * 16 + xo,
+           math.floor((wz - zo) / 16 + 0.5) * 16 + zo
+end
+M.SnapToBuildGrid = SnapToBuildGrid
+
 -- Build a flat queue from the blueprint layout (rotated to world space).
 -- Preserves blueprint layout order. cls is set for interrupt lookups only.
 local function BuildQueue(blueprint, anchorX, anchorZ, rotation)
@@ -156,11 +177,12 @@ local function BuildQueue(blueprint, anchorX, anchorZ, rotation)
         local rf = (u.f + rotation) % 4
         local ud = UnitDefNames and UnitDefNames[u.n]
         local defID = ud and ud.id
+        local wx, wz = SnapToBuildGrid(defID, anchorX + rx, anchorZ + rz)
         queue[#queue+1] = {
             n       = u.n,
             defID   = defID,
-            wx      = anchorX + rx,
-            wz      = anchorZ + rz,
+            wx      = wx,
+            wz      = wz,
             f       = rf,
             cls     = ClassifyUnit(u.n),
             act     = u.a or "build",   -- "build" | "reclaim"
@@ -362,6 +384,14 @@ M.CountNanosInRange = CountNanosInRange
 -- Pick and issue the builder's next order (interrupt-aware). Shared by the
 -- polled Update() and by OnUnitFinished() so a completed building is
 -- followed up immediately instead of waiting for the next ~10-frame poll.
+-- Half-extent of a unit's footprint in elmos.  UnitDef.xsize counts 8-elmo
+-- half-cells, so a 3x3 building (48 elmos) has xsize 6.
+local function HalfExtents(defID)
+    local ud = defID and UnitDefs and UnitDefs[defID]
+    if not ud then return 0, 0 end
+    return ((ud.xsize or 0) * 8) / 2, ((ud.zsize or ud.ysize or 0) * 8) / 2
+end
+
 -- Build progress of a nanoframe.  Returns nil when the unit no longer exists.
 local function GetProgress(unitID)
     if not unitID or not Spring.GetUnitDefID(unitID) then return nil end
@@ -385,6 +415,33 @@ local function FindFrameAt(item)
         if Spring.GetUnitDefID(uid) == item.defID and Spring.GetUnitIsBeingBuilt(uid) then
             item.frameID = uid
             return uid
+        end
+    end
+    return nil
+end
+
+-- A blueprint laid over an existing one (a T2 retrofit) has to clear the way
+-- first: the fusions overlap the corner mex and winds, and a T2 mex sits exactly
+-- where the T1 one stands.  Returns a friendly STRUCTURE blocking this item --
+-- never a builder, nano or factory, which are never ours to demolish.
+local function FriendlyBlocker(item)
+    local ihx, ihz = HalfExtents(item.defID)
+    local half = math.max(ihx, ihz)
+    local units = Spring.GetUnitsInCylinder(item.wx, item.wz, half + 64)
+    if not units then return nil end
+    local myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+    for _, uid in ipairs(units) do
+        if Spring.GetUnitAllyTeam(uid) == myAlly then
+            local ud = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+            if ud and not ud.isBuilder and not ud.isFactory
+               and (ud.speed == nil or ud.speed == 0) then
+                local uhx, uhz = HalfExtents(ud.id)
+                local ux, _, uz = Spring.GetUnitPosition(uid)
+                if ux and math.abs(ux - item.wx) < ihx + uhx
+                      and math.abs(uz - item.wz) < ihz + uhz then
+                    return uid
+                end
+            end
         end
     end
     return nil
@@ -450,6 +507,23 @@ local function AdvanceQueue(state, res, frame)
             elseif state.deferFactories and item.cls == "factory" then
                 deferred = deferred or item
             elseif SpotIsBlocked(item) then
+                -- Retrofit states clear their own way instead of giving up.
+                local blocker = state.clearBlockers and FriendlyBlocker(item) or nil
+                if blocker then
+                    Spring.GiveOrderToUnit(builderID, CMD_RECLAIM, {blocker}, {})
+                    local nanos = NanosInRange(item.wx, item.wz, builderID)
+                    for i = 1, #nanos do
+                        Spring.GiveOrderToUnit(nanos[i], CMD_RECLAIM, {blocker}, {"shift"})
+                    end
+                    state.currentTask = item   -- build it once the ground is clear
+                    if DEBUG then
+                        Spring.Echo(string.format("[BP] retrofit: reclaiming %s to place %s",
+                            tostring(UnitDefs[Spring.GetUnitDefID(blocker) or -1]
+                                     and UnitDefs[Spring.GetUnitDefID(blocker)].name),
+                            tostring(item.n)))
+                    end
+                    return
+                end
                 -- Permanently occupied (this grid overlaps something already built).
                 -- Give up on it after a few looks rather than flying back forever.
                 item.testFails = (item.testFails or 0) + 1
@@ -525,6 +599,9 @@ end
 --                    in range to complete it and the bot is not resource-starved.
 --   deferFactories   true: build factory entries last, unless an interrupt asks
 --                    for one earlier.
+--   clearBlockers    true: when a friendly STRUCTURE stands where an item must go,
+--                    reclaim it (with any nanos in range) and then build.  This is
+--                    what makes a retrofit blueprint work on top of a finished grid.
 function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
     rotation = rotation or 0
     local queue = BuildQueue(blueprint, anchorX, anchorZ, rotation)
@@ -977,14 +1054,6 @@ local function CanBuild(builderDefID, defID)
     return set[defID] == true
 end
 M.CanBuild = CanBuild
-
--- Half-extent of a unit's footprint in elmos.  UnitDef.xsize counts 8-elmo
--- half-cells, so a 3x3 building (48 elmos) has xsize 6.
-local function HalfExtents(defID)
-    local ud = defID and UnitDefs and UnitDefs[defID]
-    if not ud then return 0, 0 end
-    return ((ud.xsize or 0) * 8) / 2, ((ud.zsize or ud.ysize or 0) * 8) / 2
-end
 
 -- Can this builder place that item from exactly where it stands?  Range is measured
 -- to the building's edge, so a bigger footprint reaches further: a commander
@@ -1465,11 +1534,12 @@ function M.InsertPriorityItem(state, unitName, wx, wz, facing)
     if not state.distributed then return nil end
     local ud = UnitDefNames and UnitDefNames[unitName]
     if not ud then return nil end
+    local sx, sz = SnapToBuildGrid(ud.id, wx, wz)
     local item = {
         n       = unitName,
         defID   = ud.id,
-        wx      = wx,
-        wz      = wz,
+        wx      = sx,
+        wz      = sz,
         f       = facing or 0,
         cls     = ClassifyUnit(unitName),
         act     = "build",

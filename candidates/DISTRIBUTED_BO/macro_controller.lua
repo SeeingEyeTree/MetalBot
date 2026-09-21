@@ -32,9 +32,12 @@ local spGetUnitDefID    = Spring.GetUnitDefID
 local spGiveOrderToUnit = Spring.GiveOrderToUnit
 local spGetMyTeamID     = Spring.GetMyTeamID
 local spGetGroundHeight = Spring.GetGroundHeight
+local spGetUnitCommands = Spring.GetUnitCommands
+local spGetTeamUnits    = Spring.GetTeamUnits
 
-local CMD_GUARD = (CMD and CMD.GUARD) or 25
-local CMD_STOP  = 0
+local CMD_GUARD  = (CMD and CMD.GUARD)  or 25
+local CMD_REPAIR = (CMD and CMD.REPAIR) or 40
+local CMD_STOP   = 0
 
 -- Con bot #2 trails #1 by this much; mirrors CON_GAP in build_order_sim.py.
 local CON_GAP_FRAMES  = 60 * 30
@@ -65,7 +68,26 @@ local AIR_LAB_MIN_NANOS = 2   -- nanos that must cover the air lab's spot
 -- One air con runs a whole grid, so its travel between sites is the bottleneck.
 -- Leave each frame this far along for the grid's nanos to finish, and fly on.
 local GRID_HANDOFF      = 0.30
+
+-- Retrofit: a finished mex grid is upgraded in place to T2 mexes + fusions by a
+-- T2 air con.  The grid's own nanos assist, so build power that would otherwise
+-- idle in a finished grid goes back to work, and T2 mexes raise income per unit
+-- -- which matters once the unit cap, not metal, is the ceiling.
+local UPGRADE_CONS_PER_LAB = 2     -- T2 air cons each advanced air lab builds
+-- T2 mexes are LESS metal-efficient than T1, so a retrofit must never compete
+-- with a normal grid for metal: while stalling, retrofit builders are stopped.
+local RETROFIT_STALL_FRAC  = 0.15  -- stalling below this share of metal storage
+local RETROFIT_RESUME_FRAC = 0.30  -- resume once comfortably above it
 local START_FRAME     = 15    -- orders issued at frame 0 are dropped by the engine
+
+-- Nano build power is split between two jobs: assisting a factory (its output is
+-- units, so that is ARMY spending) and building structures (ECO spending).  Nanos
+-- are the bulk of the build power, so this split is what actually decides how much
+-- army the bot makes.
+local ARMY_SHARE      = 0.30   -- target share of nano build power spent on army
+local ARMY_CAP_SLACK  = 1000   -- unit headroom below this -> everything to army
+local NANO_REBALANCE  = 30     -- frames between rebalances
+local NANO_MOVES_MAX  = 4      -- nanos reassigned per rebalance, to avoid thrash
 
 function widget:GetInfo()
     return {
@@ -112,6 +134,10 @@ local bankFrames      = 0
 local handoffStarted  = false
 local airLabDefID     = nil
 local airLabID        = nil
+local airLabItem      = nil   -- the queue item for the hand-off lab
+local airLabFrame     = nil   -- frame it was queued, for the watchdog below
+local airLabWarned    = false
+local airLabRetries   = 0
 local airConDefID     = nil
 local gridStates      = {}    -- one single-builder placer state per grid
 local freeAirCons     = {}    -- air cons waiting for a grid
@@ -119,6 +145,18 @@ local pendingGrids    = {}    -- {anchorX, anchorZ, rotation} waiting for an air
 local assignedAnchors = {}    -- "x,z" -> true, every cell ever claimed
 local completedAnchors = {}   -- {anchorX, anchorZ} list for FindAllValidPlacements
 local completedKeys   = {}
+local gridRotation    = {}    -- "x,z" -> rotation the grid was placed with
+local UPGRADE_BP      = nil
+local upgradeStates   = {}    -- retrofit placer states
+local upgradedKeys    = {}    -- grids already assigned a retrofit
+local gridFinished    = {}    -- grids whose own build order is COMPLETE
+local freeT2Cons      = {}    -- T2 air cons waiting for a grid to upgrade
+local retrofitPaused  = false
+
+-- ── Nano army/eco split ──────────────────────────────────────────────────────
+local factories   = {}    -- unitID -> true, every finished factory we own
+local armyNanos   = {}    -- unitID -> factoryID it was assigned to assist
+local lastArmyLog = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -150,19 +188,35 @@ end
 
 -- A factory that can build a flying constructor.  Faction-agnostic: ask the unit
 -- defs rather than hard-coding "corap".
-local function FindAirFactoryDefID(builderDefID)
-    local bd = builderDefID and UnitDefs[builderDefID]
-    if not bd or not bd.buildOptions then return nil end
+-- The cheapest air factory that at least one builder we ACTUALLY OWN can place.
+-- Asking only the commander (or falling back to a hard-coded name) can pick a def
+-- none of our builders can build: the placer then never claims it, and the item
+-- sits in the queue forever without a word.
+local function FindAirFactoryDefID()
+    local candidates = {}
+    if commanderID and spGetUnitDefID(commanderID) then
+        candidates[#candidates + 1] = commanderID
+    end
+    for _, b in ipairs((distState and distState.builders) or {}) do
+        candidates[#candidates + 1] = b
+    end
+
     local best, bestCost = nil, math.huge
-    for _, optID in ipairs(bd.buildOptions) do
-        local od = UnitDefs[optID]
-        if od and od.isFactory and od.buildOptions then
-            for _, subID in ipairs(od.buildOptions) do
-                local sd = UnitDefs[subID]
-                if sd and sd.isBuilder and sd.canFly and not sd.isFactory then
-                    local cost = od.metalCost or math.huge
-                    if cost < bestCost then bestCost = cost; best = optID end
-                    break
+    for _, uid in ipairs(candidates) do
+        local bdID = spGetUnitDefID(uid)
+        local bd   = bdID and UnitDefs[bdID]
+        if bd and bd.buildOptions then
+            for _, optID in ipairs(bd.buildOptions) do
+                local od = UnitDefs[optID]
+                if od and od.isFactory and od.buildOptions then
+                    for _, subID in ipairs(od.buildOptions) do
+                        local sd = UnitDefs[subID]
+                        if sd and sd.isBuilder and sd.canFly and not sd.isFactory then
+                            local cost = od.metalCost or math.huge
+                            if cost < bestCost then bestCost = cost; best = optID end
+                            break
+                        end
+                    end
                 end
             end
         end
@@ -182,17 +236,48 @@ end
 
 -- Somewhere for the air lab that the nanos we already own can reach: the point is
 -- for it to go up immediately, not for a con to fly out and build it alone.
+-- Half-extent of a def's footprint in elmos (xsize counts 8-elmo half-cells).
+local function HalfExtent(defID)
+    local ud = defID and UnitDefs[defID]
+    if not ud then return 0 end
+    return math.max((ud.xsize or 0) * 8, (ud.zsize or ud.ysize or 0) * 8) / 2
+end
+
+-- Does this spot collide with anything the build order still intends to place?
+-- The kickstarter is usually still filling in when the hand-off fires, so a spot
+-- that is free right now can be built over minutes later -- which is exactly how
+-- the air lab ended up skipped.
+local function ClashesWithBuildOrder(cx, cz, half)
+    if not (BUILD_ORDER and BUILD_ORDER.layout) then return false end
+    for _, u in ipairs(BUILD_ORDER.layout) do
+        if u.a ~= "reclaim" then
+            local ud = UnitDefNames[u.n]
+            if ud then
+                local h = HalfExtent(ud.id)
+                if math.abs(cx - (baseX + u.x)) < half + h
+                   and math.abs(cz - (baseZ + u.z)) < half + h then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function FindAirLabSpot()
     if not airLabDefID then return nil end
+    local labHalf = HalfExtent(airLabDefID)
     local bestX, bestZ, bestNanos = nil, nil, -1
     for r = 96, 560, 48 do
         for a = 0, 11 do
             local ang = a * math.pi / 6
-            local x = math.floor((baseX + r * math.cos(ang)) / 16 + 0.5) * 16
-            local z = math.floor((baseZ + r * math.sin(ang)) / 16 + 0.5) * 16
+            -- Snap through the placer so the lab lands on a legal build position
+            -- for ITS footprint, not just a multiple of 16.
+            local x, z = BP_PLACER.SnapToBuildGrid(airLabDefID,
+                             baseX + r * math.cos(ang), baseZ + r * math.sin(ang))
             local y = spGetGroundHeight(x, z) or 0
             local ok = Spring.TestBuildOrder(airLabDefID, x, y, z, 0)
-            if ok and ok ~= 0 then
+            if ok and ok ~= 0 and not ClashesWithBuildOrder(x, z, labHalf) then
                 local n = BP_PLACER.CountNanosInRange(x, z)
                 if n > bestNanos then bestX, bestZ, bestNanos = x, z, n end
                 if n >= AIR_LAB_MIN_NANOS then return x, z, n end
@@ -309,7 +394,9 @@ end
 
 -- ── Grid expansion (starts once the air lab is up) ──────────────────────────
 
-local TryExpand   -- forward declaration
+local TryExpand         -- forward declaration
+local TryAssignUpgrades -- ditto: the grid onComplete closure below calls it, and a
+                        -- local declared later would resolve to a nil global there
 
 local function AnchorKey(ax, az) return tostring(ax) .. "," .. tostring(az) end
 
@@ -333,6 +420,7 @@ local function TryAssignGrids()
         if spGetUnitDefID(conID) then
             spGiveOrderToUnit(conID, CMD_STOP, {}, {})
             local g  = table.remove(pendingGrids, 1)
+            gridRotation[AnchorKey(g.anchorX, g.anchorZ)] = g.rotation
             local st = BP_PLACER.New(MEX_GRID_BP, conID, g.anchorX, g.anchorZ,
                                      g.rotation, BP_PLACER.GRID_INTERRUPTS)
             -- The grid's own factory is the last thing built, unless metal is piling
@@ -343,9 +431,31 @@ local function TryAssignGrids()
                 AddCompletedAnchor(gs.anchorX, gs.anchorZ)
                 TryExpand()
             end
+            -- 70% built is enough to start retrofitting: the grid's nanos are up by
+            -- then, and its own con is off finishing the last few outlying items.
+            -- Waiting for `done` meant one grid in a whole game qualified.
+            st.onMostlyDone = function(gs)
+                local key = AnchorKey(gs.anchorX, gs.anchorZ)
+                if not gridFinished[key] then
+                    gridFinished[key] = true
+                    Spring.Echo(string.format(
+                        "[MC] grid (%d, %d) mostly built -- retrofit eligible",
+                        gs.anchorX, gs.anchorZ))
+                    TryAssignUpgrades()
+                end
+            end
             st.onComplete = function(gs)
                 AddCompletedAnchor(gs.anchorX, gs.anchorZ)
+                gridFinished[AnchorKey(gs.anchorX, gs.anchorZ)] = true
+                local skipped = 0
+                for _, it in ipairs(gs.queue) do
+                    if it.status == "skipped" then skipped = skipped + 1 end
+                end
+                Spring.Echo(string.format(
+                    "[MC] grid (%d, %d) finished: %d items, %d skipped -- retrofit eligible",
+                    gs.anchorX, gs.anchorZ, #gs.queue, skipped))
                 TryExpand()
+                TryAssignUpgrades()
             end
             gridStates[#gridStates + 1] = st
             if DEBUG then
@@ -397,16 +507,70 @@ local function StartGridExpansion()
     TryAssignGrids()
 end
 
+-- ── Retrofit (T2 upgrade of a finished grid) ─────────────────────────────────
+
+-- A T2 con is one that can build what the upgrade blueprint asks for.  Asking the
+-- unit defs beats hard-coding "coraca": it is the same question the placer will
+-- ask when it tries to claim an item.
+local function IsT2Con(defID)
+    if not (UPGRADE_BP and UPGRADE_BP.layout and UPGRADE_BP.layout[1]) then return false end
+    local ud = UnitDefNames[UPGRADE_BP.layout[1].n]
+    return ud and BP_PLACER.CanBuild(defID, ud.id) or false
+end
+
+TryAssignUpgrades = function()
+    if not UPGRADE_BP then return end
+    while #freeT2Cons > 0 do
+        local conID = freeT2Cons[1]
+        if not spGetUnitDefID(conID) then
+            table.remove(freeT2Cons, 1)
+        else
+            -- Nearest finished grid that has not been retrofitted yet.
+            local cx, _, cz = spGetUnitPosition(conID)
+            local best, bestD2, bestKey = nil, math.huge, nil
+            for _, a in ipairs(completedAnchors) do
+                local key = AnchorKey(a.anchorX, a.anchorZ)
+                -- Only grids that finished their own blueprint: a grid still
+                -- building would be competing with its own retrofit for metal.
+                if gridFinished[key] and not upgradedKeys[key]
+                   and key ~= AnchorKey(baseX, baseZ) then
+                    local dx, dz = (cx or 0) - a.anchorX, (cz or 0) - a.anchorZ
+                    local d2 = dx * dx + dz * dz
+                    if d2 < bestD2 then best, bestD2, bestKey = a, d2, key end
+                end
+            end
+            if not best then return end          -- nothing ripe; keep the con waiting
+            table.remove(freeT2Cons, 1)
+            upgradedKeys[bestKey] = true
+            spGiveOrderToUnit(conID, CMD_STOP, {}, {})
+            local st = BP_PLACER.New(UPGRADE_BP, conID, best.anchorX, best.anchorZ,
+                                     gridRotation[bestKey] or 0,
+                                     BP_PLACER.GRID_INTERRUPTS)
+            st.clearBlockers   = true    -- reclaim the mex/winds the fusions need
+            st.handoffProgress = GRID_HANDOFF
+            -- Hand the con straight to the next grid instead of retiring it.
+            st.onComplete = function(us)
+                if us.builderID and spGetUnitDefID(us.builderID) then
+                    freeT2Cons[#freeT2Cons + 1] = us.builderID
+                    TryAssignUpgrades()
+                end
+            end
+            upgradeStates[#upgradeStates + 1] = st
+            Spring.Echo(string.format("[MC] retrofit started at (%d, %d) by con %d",
+                best.anchorX, best.anchorZ, conID))
+        end
+    end
+end
+
 -- ── Hand-off ─────────────────────────────────────────────────────────────────
 
 -- Metal is banking: the build order cannot spend what the economy earns any more.
 -- Put an air lab up inside the nanos' reach and let the grid system take over.
 local function StartHandoff()
     handoffStarted = true
-    airLabDefID = FindAirFactoryDefID(spGetUnitDefID(commanderID))
-                  or (UnitDefNames["corap"] and UnitDefNames["corap"].id)
+    airLabDefID = FindAirFactoryDefID()
     if not airLabDefID then
-        Spring.Echo("[MC] no air factory available for hand-off")
+        Spring.Echo("[MC] hand-off: no builder we own can place an air factory")
         return
     end
     local x, z, nanos = FindAirLabSpot()
@@ -416,10 +580,161 @@ local function StartHandoff()
         return
     end
     local name = UnitDefs[airLabDefID] and UnitDefs[airLabDefID].name
-    BP_PLACER.InsertPriorityItem(distState, name, x, z, 0)
+    local item = BP_PLACER.InsertPriorityItem(distState, name, x, z, 0)
+    if not item then
+        Spring.Echo("[MC] hand-off: could not queue " .. tostring(name))
+        handoffStarted = false
+        return
+    end
+    airLabItem  = item
+    airLabFrame = currentFrame
+    -- Not DEBUG-gated: this is the one event that decides whether the bot scales,
+    -- and a silent success is indistinguishable from a silent failure.
+    Spring.Echo(string.format(
+        "[MC] HAND-OFF frame=%d: %s at (%d, %d), %d nanos in range, %d builders",
+        currentFrame, tostring(name), x, z, nanos or 0, #distState.builders))
+end
+
+-- ── Nano army/eco balance ────────────────────────────────────────────────────
+
+local function IsNanoTurret(defID)
+    local d = defID and UnitDefs[defID]
+    if not d then return false end
+    if not (d.isBuilder and not d.isFactory and not d.canFly) then return false end
+    return d.speed == nil or d.speed == 0
+end
+
+-- What this builder is actually pouring build power into right now.
+local function NanoTarget(uid)
+    local t = Spring.GetUnitIsBuilding and Spring.GetUnitIsBuilding(uid)
+    if t then return t end
+    local cmds = spGetUnitCommands(uid, 1)
+    local c = cmds and cmds[1]
+    if c and (c.id == CMD_REPAIR or c.id == CMD_GUARD) and c.params then
+        return c.params[1]
+    end
+    return nil
+end
+
+-- Army spending is anything whose output is a unit: a factory, or a mobile unit
+-- under construction.  Everything else -- mex, wind, nano, fusion -- is eco.
+local function SpendClass(targetID)
+    if not targetID then return nil end
+    local d = UnitDefs[spGetUnitDefID(targetID) or -1]
+    if not d then return nil end
+    if d.isFactory then return "army" end
+    if d.speed and d.speed > 0 then return "army" end
+    return "eco"
+end
+
+local function NanoBuildSpeed(defID)
+    local d = UnitDefs[defID]
+    return (d and d.buildSpeed) or 0
+end
+
+-- The nearest factory this nano can physically reach; nil if none.
+local function FactoryInReach(uid, defID)
+    local reach = (UnitDefs[defID] and UnitDefs[defID].buildDistance) or 380
+    local ux, _, uz = spGetUnitPosition(uid)
+    if not ux then return nil end
+    local best, bestD2 = nil, reach * reach
+    for fid in pairs(factories) do
+        if spGetUnitDefID(fid) then
+            local fx, _, fz = spGetUnitPosition(fid)
+            if fx then
+                local dx, dz = ux - fx, uz - fz
+                local d2 = dx * dx + dz * dz
+                if d2 <= bestD2 then best, bestD2 = fid, d2 end
+            end
+        else
+            factories[fid] = nil
+        end
+    end
+    return best
+end
+
+local function UpdateNanoBalance(frame)
+    -- Headroom: near the unit cap, army is the only thing worth spending on.
+    local target = ARMY_SHARE
+    local maxUnits = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID)
+    local count    = Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
+    if maxUnits and count and (maxUnits - count) <= ARMY_CAP_SLACK then
+        target = 1.0
+    end
+
+    local armyBP, ecoBP = 0, 0
+    local spentArmy, spentEco = 0, 0     -- measured, for reporting
+    local ecoPool = {}                   -- nanos available to switch to army
+    for _, uid in ipairs(spGetTeamUnits(myTeamID) or {}) do
+        local dID = spGetUnitDefID(uid)
+        if IsNanoTurret(dID) and not Spring.GetUnitIsBeingBuilt(uid) then
+            local bp = NanoBuildSpeed(dID)
+            local cls = SpendClass(NanoTarget(uid))
+            if cls == "army" then spentArmy = spentArmy + bp
+            elseif cls == "eco" then spentEco = spentEco + bp end
+
+            if armyNanos[uid] and spGetUnitDefID(armyNanos[uid]) then
+                armyBP = armyBP + bp
+            else
+                armyNanos[uid] = nil
+                ecoBP = ecoBP + bp
+                ecoPool[#ecoPool + 1] = {uid = uid, defID = dID, bp = bp}
+            end
+        end
+    end
+
+    local totalBP = armyBP + ecoBP
+    if totalBP <= 0 then return end
+    local wantBP = target * totalBP
+    local moves  = 0
+
+    -- Build power comes in whole nanos, so the exact target is usually unreachable.
+    -- Move a nano only when doing so gets us CLOSER to the target than staying put:
+    -- comparing shares against a dead band instead made a single nano flip between
+    -- 0% and 100% every tick, since neither value is ever within 5% of 30%.
+    local function improves(newBP)
+        return math.abs(newBP - wantBP) < math.abs(armyBP - wantBP)
+    end
+
+    if armyBP < wantBP then
+        for _, n in ipairs(ecoPool) do
+            if moves >= NANO_MOVES_MAX or not improves(armyBP + n.bp) then break end
+            local fid = FactoryInReach(n.uid, n.defID)
+            if fid then
+                spGiveOrderToUnit(n.uid, CMD_GUARD, {fid}, {})
+                armyNanos[n.uid] = fid
+                armyBP = armyBP + n.bp
+                moves  = moves + 1
+            end
+        end
+    elseif armyBP > wantBP then
+        for uid, fid in pairs(armyNanos) do
+            if moves >= NANO_MOVES_MAX then break end
+            local dID = spGetUnitDefID(uid)
+            if dID then
+                local bp = NanoBuildSpeed(dID)
+                if not improves(armyBP - bp) then break end
+                -- Released nanos fall back to assisting whatever is being built
+                -- nearby, which is eco work.
+                spGiveOrderToUnit(uid, CMD_STOP, {}, {})
+                armyNanos[uid] = nil
+                armyBP = armyBP - bp
+                moves  = moves + 1
+            else
+                armyNanos[uid] = nil
+            end
+        end
+    end
+    local share = armyBP / totalBP
+
     if DEBUG then
-        Spring.Echo(string.format("[MC] HAND-OFF at frame %d: %s at (%d, %d), %d nanos in range",
-            currentFrame, tostring(name), x, z, nanos or 0))
+        local spent = spentArmy + spentEco
+        local msg = string.format("[MC] nano bp: allocated army %.0f%% (target %.0f%%), "
+            .. "actually spending army %.0f%% of %.0f bp, %d factories",
+            share * 100, target * 100,
+            spent > 0 and (spentArmy / spent * 100) or 0, spent, (function()
+                local n = 0; for _ in pairs(factories) do n = n + 1 end; return n end)())
+        if msg ~= lastArmyLog then Spring.Echo(msg); lastArmyLog = msg end
     end
 end
 
@@ -434,6 +749,9 @@ function widget:Initialize()
     local ok3, r3 = pcall(VFS.Include,
         "LuaUI/Widgets/blueprints/general/mex_grid_alab.lua")
     if not ok3 then Spring.Echo("[MC] ERROR loading mex_grid_alab: " .. tostring(r3)); return end
+    local ok4, r4 = pcall(VFS.Include, "LuaUI/Widgets/blueprints/general/upgrade.lua")
+    if ok4 then UPGRADE_BP = r4
+    else Spring.Echo("[MC] no upgrade blueprint (" .. tostring(r4) .. "); retrofits disabled") end
     BP_PLACER    = r1
     BUILD_ORDER  = r2
     MEX_GRID_BP  = r3
@@ -507,6 +825,19 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         if DEBUG then Spring.Echo("[MC] lab finished, con #1 queued") end
     end
 
+    if d and d.isFactory then
+        factories[unitID] = true
+        -- An advanced air lab can make the T2 con that does retrofits.
+        if UPGRADE_BP and unitID ~= airLabID then
+            local t2 = FindAirConDefID(unitDefID)
+            if t2 and IsT2Con(t2) then
+                for _ = 1, UPGRADE_CONS_PER_LAB do
+                    spGiveOrderToUnit(unitID, -t2, {0}, {})
+                end
+            end
+        end
+    end
+
     -- Air lab finished -> the grid system takes over from here.
     if unitID == airLabID then
         StartGridExpansion()
@@ -519,8 +850,13 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if airLabID and d and d.isBuilder and d.canFly and not d.isFactory then
         spGiveOrderToUnit(unitID, CMD_STOP, {}, {})
         pendingStops[#pendingStops + 1] = {unitID = unitID, fireFrame = currentFrame + 30}
-        freeAirCons[#freeAirCons + 1] = unitID
-        TryAssignGrids()
+        if IsT2Con(unitDefID) then
+            freeT2Cons[#freeT2Cons + 1] = unitID
+            TryAssignUpgrades()
+        else
+            freeAirCons[#freeAirCons + 1] = unitID
+            TryAssignGrids()
+        end
     end
 
     if pendingCons[unitID] then
@@ -541,6 +877,11 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     for _, gs in ipairs(gridStates) do
         if not gs.done then
             BP_PLACER.OnUnitFinished(gs, unitID, unitDefID, x, z)
+        end
+    end
+    for _, us in ipairs(upgradeStates) do
+        if not us.done then
+            BP_PLACER.OnUnitFinished(us, unitID, unitDefID, x, z)
         end
     end
 end
@@ -565,6 +906,8 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
     end
     if distState then BP_PLACER.OnUnitDestroyed(distState, unitID) end
     pendingCons[unitID] = nil
+    factories[unitID]   = nil
+    armyNanos[unitID]   = nil
     if unitID == commanderID then commanderID = nil end
     if unitID == conBot1ID   then conBot1ID   = nil end
     if unitID == botLabID    then botLabID    = nil end
@@ -624,6 +967,31 @@ function widget:GameFrame(frame)
         end
     end
 
+    -- Watchdog: the lab is queued but nothing has begun building it.  Silence here
+    -- used to mean a def no builder could place; say so rather than stalling mutely.
+    if airLabItem and not airLabID and airLabFrame and (frame - airLabFrame) > 900 then
+        local st = airLabItem.status
+        if st == "skipped" or st == "pending" then
+            -- The spot was taken (usually by the build order itself).  Try again
+            -- somewhere else: without this lab there is no army and no expansion,
+            -- so giving up once is giving up for the whole game.
+            airLabRetries = (airLabRetries or 0) + 1
+            Spring.Echo(string.format(
+                "[MC] hand-off retry %d: %s not started (status=%s), picking a new spot",
+                airLabRetries, tostring(airLabItem.n), tostring(st)))
+            airLabItem.status = "skipped"
+            airLabItem.built  = true          -- take the dead entry out of the queue
+            airLabItem = nil
+            if airLabRetries <= 5 then
+                handoffStarted = false        -- StartHandoff runs again next tick
+                bankFrames     = BANK_HOLD    -- and fires immediately
+            elseif not airLabWarned then
+                airLabWarned = true
+                Spring.Echo("[MC] hand-off GAVE UP after 5 attempts")
+            end
+        end
+    end
+
     -- Drive every grid, and prune the finished ones.
     local gi = 1
     while gi <= #gridStates do
@@ -635,6 +1003,41 @@ function widget:GameFrame(frame)
         end
     end
     if #freeAirCons > 0 and #pendingGrids > 0 then TryAssignGrids() end
+
+    -- Retrofits yield to everything else when metal is short: a T2 mex earns less
+    -- per metal spent than a T1 one, so a retrofit competing with a normal grid
+    -- during a stall is strictly bad. Stop the builders rather than just pausing,
+    -- or they sit holding a half-issued order.
+    local mFrac = resources.metalStorage > 0
+                  and (resources.metal / resources.metalStorage) or 1
+    if not retrofitPaused and mFrac < RETROFIT_STALL_FRAC then
+        retrofitPaused = true
+        for _, us in ipairs(upgradeStates) do
+            if us.builderID and spGetUnitDefID(us.builderID) then
+                spGiveOrderToUnit(us.builderID, CMD_STOP, {}, {})
+                us.currentTask = nil
+            end
+        end
+        if DEBUG then Spring.Echo("[MC] retrofits paused (metal stall)") end
+    elseif retrofitPaused and mFrac > RETROFIT_RESUME_FRAC then
+        retrofitPaused = false
+        if DEBUG then Spring.Echo("[MC] retrofits resumed") end
+    end
+
+    if not retrofitPaused then
+        local ui = 1
+        while ui <= #upgradeStates do
+            local us = upgradeStates[ui]
+            if us.done then table.remove(upgradeStates, ui)
+            else
+                BP_PLACER.Update(us, frame, resources)
+                ui = ui + 1
+            end
+        end
+    end
+    if #freeT2Cons > 0 then TryAssignUpgrades() end
+
+    if frame % NANO_REBALANCE == 0 then UpdateNanoBalance(frame) end
 
     GateLabReclaim(frame)
     -- Phases first: the commander must be out of the builder pool before

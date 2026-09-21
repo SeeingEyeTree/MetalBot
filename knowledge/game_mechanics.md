@@ -116,6 +116,20 @@ diagnostic match to find:
 - **An abandoned nanoframe decays and dies**, taking the metal already spent on it with it.
   Anything that makes a builder walk away from a partly-built frame (a skip, a re-claim, a
   replaced order) must leave something else able to finish it, or that metal is simply lost.
+- **Build alignment depends on footprint parity.** An even footprint (4x4 mex) centres on a
+  multiple of 16; an odd one (3x3 wind) centres on a multiple of 16 **plus 8**. Snapping
+  everything to a plain multiple of 16 puts odd-footprint buildings half a cell out, which
+  overlaps a neighbour and leaves holes in a grid. `Spring.Pos2BuildPos(defID, x, y, z)` is
+  the engine's own answer and should be preferred to any arithmetic.
+- **A factory's auto-guard order on a new unit arrives AFTER `UnitFinished`.** A single
+  `CMD_STOP` in that callback is overwritten, and the unit sits assisting the factory
+  forever, permanently "busy". Stop it again on a short delay and/or in `UnitFromFactory`.
+- **The engine only writes a replay's footer on a clean shutdown.** A match killed by a
+  wall-clock deadline leaves a 0-byte `.sdfz` that no parser can read, and
+  `replay_analysis.py` reports `Duration: 0s`. End matches by a *game frame* trigger (both
+  sides self-destruct their commander symmetrically) and give the process time to quit.
+  Note `os.clock()` in a widget is CPU time, not wall time, so clock-based deadlines drift
+  per process and are not symmetric.
 
 ---
 

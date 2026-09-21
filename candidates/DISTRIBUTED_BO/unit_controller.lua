@@ -374,7 +374,11 @@ local function UpdateNodes()
 
     local count = 0
     for _ in pairs(combatUnits) do count = count + 1 end
-    local canAdvance = targetX ~= nil and count >= ADVANCE_MIN_UNITS
+    -- Advance toward the default target even before anything has been sighted.
+    -- Requiring targetX (which is only set after seeing MIN_ENEMY_SAMPLE enemies)
+    -- meant that a bot which never scouted never moved at all: no sighting, no
+    -- target, no advance, army parked at home for the whole game.
+    local canAdvance = count >= ADVANCE_MIN_UNITS
 
     -- Update each node independently. World pos is computed from (lateral, adv)
     -- using the current advDir, so a direction change reorients all nodes instantly.

@@ -32,6 +32,7 @@ $files = @(
     "blueprints\general\prod_grid_vp.lua",
     "blueprints\general\build_order_blueprint.lua",
     "blueprints\general\mex_grid_alab.lua",
+    "blueprints\general\upgrade.lua",
     "lab_controller.lua",
     "unit_controller.lua",
     "bar_framework\resource_utils.lua",

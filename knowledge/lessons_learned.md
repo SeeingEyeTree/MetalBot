@@ -58,6 +58,81 @@ still weak (team 0 saturates the ~2000 unit cap); prefer the `draw_score` army-m
   it should roughly halve the mirror-match gap, which is now the cleanest available
   regression metric.
 
+## Scaling: the exponent is fixed at ~1.58 min/doubling (2026-09-21)
+
+`candidates/DISTRIBUTED_BO` now runs kickstarter -> hand-off -> mex grids -> T2 retrofit.
+Measured from replays (`replay_analysis.py` + a log-linear fit on the engine's own 15s
+`TeamStatistics` samples). It beats OK_BOT 4x on army value by frame 25200.
+
+### The doubling time does not move
+
+| configuration | metal doubling | energy doubling | peak m/s |
+|---|---|---|---|
+| max_rate opening (6 min plan) | 1.59 min | 1.50 min | 3721 |
+| em-ratio 8 opening (4.5 min plan) | 1.58 min | 1.50 min | 3575 |
+| + T2 retrofit of finished grids | 1.56 min | 1.57 min | **7276** |
+
+R^2 on the log fit is 0.98-0.99 in every case, over 12+ game-minutes and three doublings.
+**Five quite different configurations all landed on ~1.58 min.** Changing the opening
+plan, rebalancing energy against metal, moving the hand-off a minute earlier and doubling
+income per unit all failed to move it. The exponent is set by how fast a grid reaches its
+nano threshold and seeds the next one — everything else only changes where the curve
+starts or stops.
+
+### Retrofit raises the ceiling, not the exponent
+
+Time to reach each income level is IDENTICAL with and without the T2 retrofit — 1600 m/s
+at 12.25 min, 3200 m/s at 14.25 min in both — and then the retrofit run carries on to
+6400 m/s at 16.25 min where the others simply stop. Peak income per live unit went
+**0.73 -> 1.46 m/s**, exactly double, which is what replacing T1 mexes with T2 should do
+when the unit cap, not metal, is the binding constraint.
+
+Read the milestone table, not the "growth phase" fit: measured to its own peak the
+retrofit run fits 1.65 min/doubling, but that is the last two minutes flattening against
+the new ceiling dragging a log-linear fit, not slower compounding.
+
+### Why this is close to the practical limit
+
+Over the growth phase (2-16 game-min) of the retrofit run:
+
+- metal: 1,122,717 produced, **89.4% spent, 0% floated**
+- energy: 14,445,550 produced, 88.1% spent, 11.0% floated
+
+Per-sample metal utilisation sits between 77% and 130% (over 100% = spending storage down
+faster than it fills). There is no idle metal left to convert into growth, so a faster
+exponent cannot come from spending *more* — only from spending on something with a shorter
+payback, or from removing latency (travel, placement, the gap between a grid finishing and
+the next being seeded).
+
+### Retrofit mechanics that mattered
+
+- **Eligibility must be "mostly done", not "done".** A 73-item grid driven by one air con
+  almost never completes: gating retrofits on `done` meant exactly ONE grid in a whole
+  game qualified. Switching to the placer's `mostlyDone` (70% of the queue) made them run
+  in parallel. The same trap applies to anything keyed on a grid finishing.
+- **Recycle the specialist builder.** A T2 con that finishes a retrofit goes straight back
+  to the pool; without that you get one retrofit per con ever built.
+- **A T2 mex is less metal-efficient than a T1.** Retrofit builders are stopped below 15%
+  metal storage and resume above 30%, so a retrofit never competes with a normal grid for
+  metal during a stall.
+- **Overlay blueprints clear their own ground** (`clearBlockers`): a 5x5 fusion overlaps
+  the corner mex and two winds, and a 4x4 T2 mex sits exactly on the T1 one. The placer
+  reclaims the friendly *structure* in the way (never a builder, nano or factory) and then
+  builds, so no hand-written reclaim entries are needed in the blueprint.
+
+### An army is needed, and it is nearly free
+
+Nano build power is split army/eco by what each nano is pouring into: a factory or a
+mobile unit is army spending, a structure is eco. Target 30% army, 100% when unit-cap
+headroom drops below 1000. Control is `CMD_GUARD` on a factory versus `CMD_STOP` (a
+released nano falls back to auto-assisting nearby construction).
+
+Two traps: build power is quantised in whole nanos, so a share-versus-dead-band controller
+makes a single nano flip between 0% and 100% every tick — move a nano only when doing so
+gets *closer* to the target. And **the unit controller never advances without scouts**: it
+only sets a target after seeing 3+ enemies, so a bot that builds no scout parks its whole
+army at home for the entire game. It now falls back to advancing on `DefaultTarget()`.
+
 ## Early-game macro: the sim-derived opening, executed distributed (2026-09-20)
 
 A "kickstarter" bot (`candidates/DISTRIBUTED_BO`) that runs one ordered, sim-generated

@@ -18,6 +18,19 @@ local DEBUG = false  -- set true to enable verbose logging
 
 local SCOUT_TARGET = 2
 
+-- Army composition, kept deliberately simple.  Internal names, checked against the
+-- BAR unit defs: human names are ambiguous ("Dragon" also matches Dragonslayer,
+-- Dragon's Claw and Archaic Dragon).  Each lab resolves only what IT can build:
+--   corap  (T1 air, the hand-off lab) -> Shuriken
+--   coraap (T2 air, one per mex grid) -> Wasp, and Dragon while metal is floating
+-- What resolved is echoed once per lab, so a miss is visible rather than silent.
+local ARMY_PICKS = {
+    cheap    = {"corbw"},     -- Shuriken
+    main     = {"corape"},    -- Wasp
+    floating = {"corcrwh"},   -- Dragon
+}
+local FLOAT_FRAC = 0.40   -- metal at this share of storage: build the heavy unit
+
 function widget:GetInfo()
     return {
         name    = "Lab Controller",
@@ -135,6 +148,53 @@ local function IsScoutDef(d)
     return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0)
 end
 
+local armyCache = {}    -- [labDefID] = {cheap=defID, main=defID, floating=defID} or false
+local armyFlip  = {}    -- [labID] = alternates cheap/main; kept out of labQueueData,
+                        -- which holds the proportional-queue cursor for other labs
+
+local function MatchesName(od, wanted)
+    local internal = string.lower(od.name or "")
+    local human    = string.lower(od.translatedHumanName or od.humanName or "")
+    for _, w in ipairs(wanted) do
+        w = string.lower(w)
+        if internal == w then return true end
+        -- Fall back to the display name only if the internal name is not an exact
+        -- match, so a rename does not silently disarm this.
+        if human ~= "" and human == w then return true end
+    end
+    return false
+end
+
+-- Resolve ARMY_PICKS against what this lab can actually build.
+local function GetArmyPicks(labDefID)
+    if armyCache[labDefID] ~= nil then return armyCache[labDefID] end
+    local d = UnitDefs[labDefID]
+    local picks, found = {}, false
+    if d and d.buildOptions then
+        for _, optID in ipairs(d.buildOptions) do
+            local od = UnitDefs[optID]
+            if od and od.speed and od.speed > 0 and not od.isBuilder and not od.isFactory then
+                for role, names in pairs(ARMY_PICKS) do
+                    if not picks[role] and MatchesName(od, names) then
+                        picks[role] = optID
+                        found = true
+                    end
+                end
+            end
+        end
+    end
+    if found then
+        local parts = {}
+        for role, defID in pairs(picks) do
+            parts[#parts + 1] = role .. "=" .. (UnitDefs[defID] and UnitDefs[defID].name or "?")
+        end
+        Spring.Echo("[LabCtrl] " .. (d and d.name or "?") .. " army picks: "
+                    .. table.concat(parts, " "))
+    end
+    armyCache[labDefID] = found and picks or false
+    return armyCache[labDefID]
+end
+
 local buildCache = {}   -- [labDefID] = { scouts={defID,...}, mobile={defID,...} }
 
 local function GetBuildCache(labDefID)
@@ -241,6 +301,7 @@ end
 function widget:UnitDestroyed(unitID)
     labs[unitID]        = nil
     labQueueData[unitID] = nil
+    armyFlip[unitID]     = nil
     if myScouts[unitID] then
         myScouts[unitID] = nil
         scoutCount = math.max(0, scoutCount - 1)
@@ -251,10 +312,11 @@ function widget:GameFrame(frame)
     if frame % 60 ~= 0 then return end
     if not myTeamID then return end
 
-    local ok,  metalCur, _, metalPull,  metalIncome  = pcall(spGetTeamResources, myTeamID, "metal")
+    local ok,  metalCur, metalStorage, metalPull, metalIncome = pcall(spGetTeamResources, myTeamID, "metal")
     local okE, _,        _, energyPull, energyIncome = pcall(spGetTeamResources, myTeamID, "energy")
 
     metalCur     = (ok  and type(metalCur)     == "number") and metalCur     or 0
+    metalStorage = (ok  and type(metalStorage) == "number") and metalStorage or 0
     metalPull    = (ok  and type(metalPull)    == "number") and metalPull    or 0
     metalIncome  = (ok  and type(metalIncome)  == "number") and metalIncome  or 0
     energyPull   = (okE and type(energyPull)   == "number") and energyPull   or 0
@@ -271,24 +333,33 @@ function widget:GameFrame(frame)
             local qdata  = labQueueData[labID]
             local choice = nil
 
-            if qdata then
-                -- Advance through the pre-built proportional sequence, looping forever.
-                choice   = qdata.sequence[qdata.idx]
-                qdata.idx = (qdata.idx % #qdata.sequence) + 1
-            else
-                -- Generic fallback: scouts first, then cost-weighted combat pick.
+            local picks = GetArmyPicks(labDefID)
+            if picks then
                 local cache = GetBuildCache(labDefID)
-
+                -- Scouts first, and they matter more than they look: the unit
+                -- controller only advances its line once it has SEEN enemies, so
+                -- with no scout the whole army sits at home indefinitely.
                 if needScout and #cache.scouts > 0 then
                     choice = CheapestScout(cache.scouts)
-                end
-                if not choice and #cache.mobile > 0 then
-                    choice = PickUnit(cache.mobile, metalCur)
-                end
-                if not choice and #cache.scouts > 0 then
-                    choice = CheapestScout(cache.scouts)
+                else
+                    -- Simple composition: alternate cheap and main, and when metal
+                    -- is piling up put it into the heavy unit instead.
+                    local floating = metalStorage > 0
+                                     and (metalCur / metalStorage) >= FLOAT_FRAC
+                    if floating and picks.floating then
+                        choice = picks.floating
+                    else
+                        local flip = armyFlip[labID]
+                        armyFlip[labID] = not flip
+                        choice = (flip and picks.cheap or picks.main)
+                              or picks.main or picks.cheap
+                    end
                 end
             end
+            -- A lab with no army picks builds NOTHING.  The bot lab exists only to
+            -- make the two con bots the build order asks for (the macro orders those
+            -- directly) and is reclaimed straight after; anything else queued into it
+            -- competes with the opening for metal and delays the whole economy.
 
             if choice then
                 spGiveOrderToUnit(labID, -choice, {}, {})
