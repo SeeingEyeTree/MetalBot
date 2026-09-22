@@ -1,0 +1,32 @@
+{
+  "mode": "raid",
+  "end_time": 300,
+  "beam_width": 2000,
+  "em_ratio": 0,
+  "out": "ground_raider_order_result",
+  "raid": {
+    "milestones": [
+      {
+        "unit": "incisor",
+        "count": 4,
+        "by": 200,
+        "required": true
+      },
+      {
+        "unit": "fighter",
+        "count": 2,
+        "by": 290
+      },
+      {
+        "unit": "incisor",
+        "count": 8,
+        "by": 300
+      }
+    ],
+    "max": {
+      "incisor": 10,
+      "fighter": 3
+    },
+    "weight": 4
+  }
+}

@@ -22,6 +22,7 @@
 --   -- on UnitDestroyed: BP_PLACER.OnUnitDestroyed(state, unitID)
 
 local NANO = VFS.Include("LuaUI/Widgets/bar_framework/nano_broker.lua")
+local EG   = VFS.Include("LuaUI/Widgets/bar_framework/escape_guard.lua")
 
 local M = {}
 
@@ -74,7 +75,15 @@ local CLAIM_LOOKAHEAD    = 5     -- items considered when the builder must trave
 local REACH_LOOKAHEAD    = 15    -- ...but look this much further ahead for something
                                  -- already inside build range, which costs no walk at all
 local STALL_FRAMES       = 300   -- frames of zero progress before an item is up for grabs
-local ORDER_GRACE_FRAMES = 30    -- unsynced orders land a frame late; don't judge before this
+-- Measured on a real headless client-vs-host match: the PLAYER-side (non-host) process
+-- can take several seconds for Spring.GetUnitCommands() to reflect an order it just
+-- issued -- 30 frames (1s) was tuned against host-side behaviour, where it lands almost
+-- immediately, and was far too tight for the client side.  A too-short grace period
+-- doesn't mean a slower game; it means the order genuinely landed but was judged
+-- "dropped" before the query caught up, so the builder got re-tasked onto a DIFFERENT
+-- item mid-build, abandoning a real, in-progress structure.  90 frames (3s) per check.
+local ORDER_GRACE_FRAMES = 90    -- unsynced orders can land several seconds late on the
+                                 -- client side; don't judge before this
 local ORDER_MAX_FRAMES   = 900   -- builder wedged on pathing
 local MAX_RETRIES        = 3     -- dropped orders / impossible positions before skipping
 local BLOCKED_DEFER      = 150   -- frames to wait out a blocked position
@@ -82,6 +91,15 @@ local LOW_RES_FRAC       = 0.15  -- below this share of storage, treat the bot a
                                  -- no 85% handoff (an unworked frame decays) and no stall
                                  -- rescue (nothing is progressing anywhere)
 local PROGRESS_EPS       = 1e-3
+
+-- ── Escape guard (opt-in: M.EnableEscapeGuard) ────────────────────────────────
+-- Ground builders can be walled in by the very buildings they place.  See
+-- bar_framework/escape_guard.lua for the method; these are its pacing knobs.
+local ESCAPE_EVERY      = 60     -- frames between checks; ONE builder is checked per tick
+local ESCAPE_HOLD       = 240    -- frames a freed builder is left alone to reclaim + walk
+local SEAL_MAX_DEFERS   = 2      -- times a placement that would seal a builder in is put off
+local SEAL_DEFER        = 240    -- frames per deferral (the builder usually walks on)
+local SEAL_RANGE        = 500    -- only builders this close to a site can be sealed by it
 
 -- ── Classification ────────────────────────────────────────────────────────────
 
@@ -289,11 +307,13 @@ local function SpotIsBlocked(item)
     return res == 0
 end
 
--- Issue a build order for a task item.
-local function IssueBuildTask(builderID, item)
+-- Issue a build order for a task item.  shift=true appends behind whatever the
+-- builder is already doing, instead of replacing its current order.
+local function IssueBuildTask(builderID, item, shift)
     if not item.defID then return false end
     local wy = Spring.GetGroundHeight(item.wx, item.wz) or 0
-    Spring.GiveOrderToUnit(builderID, -item.defID, {item.wx, wy, item.wz, item.f}, {})
+    Spring.GiveOrderToUnit(builderID, -item.defID, {item.wx, wy, item.wz, item.f},
+        shift and {"shift"} or {})
     return true
 end
 
@@ -1173,7 +1193,9 @@ local function FindClaimable(state, builderID, frame, res)
     for i = 1, #state.queue do
         local item = state.queue[i]
         local blocked = item.waitsFor ~= nil and item.waitsFor.status ~= "built"
-        if not blocked and not item.claimedBy
+        -- reservedBy: shift-queued as some builder's NEXT job already (see
+        -- FindNextOpeningItem); it is not up for grabs until that builder frees it.
+        if not blocked and not item.claimedBy and not item.reservedBy
            and item.status ~= "built" and item.status ~= "skipped" then
             local ready = (item.status == "pending"
                            and (not item.deferUntil or frame >= item.deferUntil))
@@ -1198,6 +1220,67 @@ local function FindClaimable(state, builderID, frame, res)
     return best
 end
 
+-- A standing second order for this builder: what it would be given next if it were
+-- free RIGHT NOW, at its CURRENT position.  Mirrors FindClaimable's own selection
+-- (strict blueprint order inside the opening, nearest-in-range after it) so the
+-- guess is the same choice the normal path would make -- it is a genuine reservation,
+-- not a separate weaker mechanism.  A builder does not move while actively building,
+-- so "current position" is a good stand-in for "position once free".
+--
+-- Two things FindClaimable itself allows are deliberately excluded here:
+--   - Stalled reassignment (needs `res`, and reserving a stalled item out from under
+--     whoever abandoned it is a job for the real free-and-searching pass, not a guess).
+--   - Reclaim steps: their target is resolved at issue time (FindReclaimTarget), which
+--     may not be ready while the item ahead of them is still being built.
+-- Both fall back to being claimed the normal way once the builder is genuinely free.
+local function FindShiftCandidate(state, builderID, bDefID)
+    local bx, _, bz = Spring.GetUnitPosition(builderID)
+    local best, bestD2, seen = nil, nil, 0
+    for i = 1, #state.queue do
+        local item = state.queue[i]
+        local blocked = item.waitsFor ~= nil and item.waitsFor.status ~= "built"
+        if not blocked and not item.claimedBy and not item.reservedBy
+           and item.status == "pending" and item.act ~= "reclaim"
+           and CanBuild(bDefID, item.defID) then
+            if not bx then return item end
+            if (item.idx or 0) <= OPENING_ITEMS then return item end
+            if InBuildRange(bDefID, bx, bz, item) then return item end
+            if seen < CLAIM_LOOKAHEAD then
+                local dx, dz = item.wx - bx, item.wz - bz
+                local d2 = dx * dx + dz * dz
+                if not best or d2 < bestD2 then best, bestD2 = item, d2 end
+            end
+            seen = seen + 1
+            if seen >= REACH_LOOKAHEAD then break end
+        end
+    end
+    return best
+end
+
+-- Keep a second order standing behind whatever this builder is currently doing.  A
+-- slow order-landed check then never mistakes a build that is genuinely in progress
+-- for a dropped one: even if this widget's own poll of the FIRST order is late, the
+-- builder already has real work queued and has not been re-tasked onto something
+-- else mid-build.  Called both when an order is first issued AND right after a
+-- shift-queued job is promoted, so the "next" slot is refilled every time the
+-- active order changes, not just once -- otherwise a builder runs its two queued
+-- orders back to back and then sits idle again waiting for a fresh poll, which is
+-- the same latency this exists to avoid, just delayed by one item.
+local function MaintainShiftQueue(state, builderID, frame)
+    if state.shiftNext[builderID] then return end   -- already has one queued
+    local bDefID = Spring.GetUnitDefID(builderID)
+    if not bDefID then return end
+    local candidate = FindShiftCandidate(state, builderID, bDefID)
+    if not candidate then return end
+    IssueBuildTask(builderID, candidate, true)   -- shift: append, don't replace
+    candidate.reservedBy       = builderID
+    state.shiftNext[builderID] = candidate
+    if DEBUG then
+        Spring.Echo(string.format("[BP] shift-queued item#%d %s behind builder %d",
+            candidate.idx or 0, tostring(candidate.n), builderID))
+    end
+end
+
 local function SkipItem(state, item)
     -- A standing nanoframe is metal already spent; abandoning it to decay is
     -- strictly worse than letting the nanos (or stall rescue) finish it.
@@ -1211,6 +1294,37 @@ local function SkipItem(state, item)
         Spring.Echo(string.format("[BP] SKIP %s #%d at (%.0f, %.0f)",
             tostring(item.n), item.idx or 0, item.wx, item.wz))
     end
+end
+
+-- Buildings other builders have been told to place but that are not standing yet.
+local function ClaimedPlanned(state, exceptItem)
+    local list = {}
+    for i = 1, #state.queue do
+        local it = state.queue[i]
+        if it ~= exceptItem and it.act ~= "reclaim" and it.defID and not it.frameID
+           and (it.status == "claimed") then
+            list[#list + 1] = { defID = it.defID, wx = it.wx, wz = it.wz }
+        end
+    end
+    return list
+end
+
+-- Would placing this item trap a nearby ground builder?
+local function SealsABuilder(state, item)
+    local d = UnitDefs[item.defID]
+    if not d or d.canMove then return false end
+    local planned = nil
+    for i = 1, #state.builders do
+        local bid = state.builders[i]
+        local bx, _, bz = Spring.GetUnitPosition(bid)
+        if bx and EG.IsGroundBuilder(Spring.GetUnitDefID(bid))
+           and (bx - item.wx) ^ 2 + (bz - item.wz) ^ 2 <= SEAL_RANGE * SEAL_RANGE then
+            planned = planned or ClaimedPlanned(state, item)
+            local sealed, cells = EG.WouldSeal(bid, item.defID, item.wx, item.wz, planned)
+            if sealed then return true, bid, cells end
+        end
+    end
+    return false
 end
 
 local function IssueDistTask(state, builderID, item, frame)
@@ -1243,6 +1357,7 @@ local function IssueDistTask(state, builderID, item, frame)
             NANO.Reclaim(NANO.PRIO.CLEAR, nanos[i], target)
         end
         item.status = "started"
+        MaintainShiftQueue(state, builderID, frame)
         return
     end
 
@@ -1260,6 +1375,7 @@ local function IssueDistTask(state, builderID, item, frame)
         state.itemByFrame[item.frameID] = item
         Spring.GiveOrderToUnit(builderID, CMD_REPAIR, {item.frameID}, {})
         item.status = "started"
+        MaintainShiftQueue(state, builderID, frame)
         return
     end
 
@@ -1278,6 +1394,24 @@ local function IssueDistTask(state, builderID, item, frame)
         return
     end
 
+    -- Would this close the last gap behind a con?  Put it off: the builder usually
+    -- walks on and the same item is fine a few seconds later.  After a few tries place
+    -- it anyway rather than gut the build order; EscapeTick will free anyone caught.
+    if state.escapeGuard and (item.sealDefers or 0) < SEAL_MAX_DEFERS then
+        local seals, sealedID, pocket = SealsABuilder(state, item)
+        if seals then
+            item.sealDefers = (item.sealDefers or 0) + 1
+            DropClaim(state, item, "pending")
+            item.deferUntil = frame + SEAL_DEFER
+            local sd = UnitDefs[Spring.GetUnitDefID(sealedID) or -1]
+            Spring.Echo(string.format(
+                "[BP] deferred %s #%d at (%.0f, %.0f): would seal %s %d in a %d-cell pocket (%d/%d)",
+                tostring(item.n), item.idx or 0, item.wx, item.wz,
+                tostring(sd and sd.name), sealedID, pocket or 0, item.sealDefers, SEAL_MAX_DEFERS))
+            return
+        end
+    end
+
     IssueBuildTask(builderID, item)
     item.status = "claimed"
     if DEBUG then
@@ -1288,6 +1422,8 @@ local function IssueDistTask(state, builderID, item, frame)
                 math.floor(math.sqrt((item.wx-bx)^2 + (item.wz-bz)^2))))
         end
     end
+
+    MaintainShiftQueue(state, builderID, frame)
 end
 
 -- Returns true while the builder is still usefully occupied with its claim.
@@ -1419,6 +1555,85 @@ local function ProgressSweep(state, frame)
     end
 end
 
+-- The queue entry that placed this standing building, if any.
+local function ItemForUnit(state, unitID, defID, x, z)
+    local it = state.itemByFrame[unitID]
+    if it then return it end
+    for i = 1, #state.queue do
+        local q = state.queue[i]
+        if q.defID == defID and q.act ~= "reclaim"
+           and math.abs(q.wx - x) < 32 and math.abs(q.wz - z) < 32 then
+            return q
+        end
+    end
+    return nil
+end
+
+-- One ground builder per tick: is it walled in?  If so reclaim the cheapest structure
+-- that lets it out, and make sure the queue never rebuilds it.
+local function EscapeTick(state, frame)
+    if frame < (state.escapeNext or 0) then return end
+    state.escapeNext = frame + ESCAPE_EVERY
+    local n = #state.builders
+    if n == 0 then return end
+    state.escapeIdx = ((state.escapeIdx or 0) % n) + 1
+    local bid = state.builders[state.escapeIdx]
+    if (state.escapeUntil[bid] or 0) > frame then return end
+
+    -- The opening (first OPENING_ITEMS) is executed literally and built one at a time;
+    -- a frame in progress there is scarce early metal, not a wall to eat through.  Never
+    -- offer one as a reclaim candidate, however cheap or however walled-in the builder is.
+    local protected = nil
+    for i = 1, #state.queue do
+        local it = state.queue[i]
+        if (it.idx or 0) <= OPENING_ITEMS and it.frameID and it.status ~= "built" then
+            protected = protected or {}
+            protected[it.frameID] = true
+        end
+    end
+
+    local res = EG.Check(bid, protected)
+    if not res then return end
+    state.escapeUntil[bid] = frame + ESCAPE_HOLD
+
+    local bx, _, bz = Spring.GetUnitPosition(bid)
+    if not res.unitID then
+        Spring.Echo(string.format(
+            "[BP] builder %d TRAPPED at (%.0f, %.0f) and nothing removable touches its pocket",
+            bid, bx or 0, bz or 0))
+        return
+    end
+
+    -- The builder's own claim goes back to the pool first, so it cannot overwrite the
+    -- status we set on the reclaimed item below.
+    local claim = state.claimOf[bid]
+    if claim then DropClaim(state, claim, "pending") end
+
+    local item = ItemForUnit(state, res.unitID, res.defID, res.x, res.z)
+    if item then
+        if item.status == "built" then
+            -- Finished: leave it counted as built (phase logic counts nanos etc.), but
+            -- never rebuild it.
+            item.sacrificed = true
+        else
+            item.frameID = nil
+            DropClaim(state, item, "skipped")
+            state.skippedCount = (state.skippedCount or 0) + 1
+        end
+    end
+
+    Spring.GiveOrderToUnit(bid, CMD_RECLAIM, { res.unitID }, {})
+    local nanos = NanosInRange(res.x, res.z, bid)
+    for i = 1, #nanos do NANO.Reclaim(NANO.PRIO.CLEAR, nanos[i], res.unitID) end
+    state.holdUntil[bid] = frame + ESCAPE_HOLD
+    state.escapes = (state.escapes or 0) + 1
+    Spring.Echo(string.format(
+        "[BP] ESCAPE frame=%d builder %d walled in at (%.0f, %.0f): reclaiming %s at (%.0f, %.0f), "
+        .. "~%d metal, opens=%s (#%d)",
+        frame, bid, bx or 0, bz or 0, tostring(UnitDefs[res.defID] and UnitDefs[res.defID].name),
+        res.x, res.z, res.cost or 0, tostring(res.opens), state.escapes))
+end
+
 -- blueprint_gen reuses the ground a reclaimed building stood on (nano #3 sits
 -- where the bot lab was).  Those items are unbuildable until the reclaim step
 -- that frees the ground has run, and TestBuildOrder cannot tell "blocked
@@ -1472,6 +1687,11 @@ function M.NewDistributed(blueprint, anchorX, anchorZ, rotation, interrupts)
     state.skippedCount = 0
     state.lastFrame    = 0
     state.holdUntil    = {}   -- builderID -> frame until which it is left alone
+    state.escapeUntil  = {}   -- builderID -> frame before which it is not re-checked
+    state.shiftNext    = {}   -- builderID -> the opening item shift-queued as its next
+                              -- job, so it always has two orders queued and a slow
+                              -- order-landed check never mistakes a real build for a
+                              -- dropped one (see FindNextOpeningItem)
     ComputeBlockers(state.queue)
     return state
 end
@@ -1496,6 +1716,11 @@ function M.RemoveBuilder(state, unitID)
         state.claimOf[unitID] = nil
         item.claimedBy = nil
         if item.status == "claimed" then item.status = "pending" end
+    end
+    local pending = state.shiftNext and state.shiftNext[unitID]
+    if pending then
+        if pending.reservedBy == unitID then pending.reservedBy = nil end
+        state.shiftNext[unitID] = nil
     end
     for i = 1, #state.builders do
         if state.builders[i] == unitID then
@@ -1575,14 +1800,40 @@ function M.UpdateDistributed(state, frame, resources)
     end
 
     ProgressSweep(state, frame)
+    if state.escapeGuard then EscapeTick(state, frame) end
 
     for bi = 1, #state.builders do
         local bid = state.builders[bi]
         if (state.holdUntil[bid] or 0) > frame then
             -- stepping clear of a reclaim; leave it alone
         elseif not ServiceBuilder(state, bid, frame, resources) then
-            local item = FindClaimable(state, bid, frame, resources)
-            if item then IssueDistTask(state, bid, item, frame) end
+            -- Free: if a shift-queued next job is waiting, it is ALREADY sitting in
+            -- this builder's command queue (issued when its previous job was), so
+            -- promote it straight to "claimed" instead of re-searching and
+            -- re-issuing -- no new order needed, just start tracking its progress.
+            local nextItem = state.shiftNext[bid]
+            if nextItem and nextItem.reservedBy == bid and nextItem.status == "pending" then
+                state.shiftNext[bid]   = nil
+                nextItem.reservedBy    = nil
+                nextItem.claimedBy     = bid
+                nextItem.orderFrame    = frame
+                nextItem.status        = "claimed"
+                state.claimOf[bid]     = nextItem
+                if DEBUG then
+                    Spring.Echo(string.format("[BP] promoted shift-queued item#%d %s for builder %d",
+                        nextItem.idx or 0, tostring(nextItem.n), bid))
+                end
+                -- Refill now, not once nextItem ALSO finishes: otherwise the builder
+                -- runs its two queued orders back to back and then sits idle again,
+                -- which is the same latency this exists to avoid, just delayed by one
+                -- item instead of prevented.
+                MaintainShiftQueue(state, bid, frame)
+            else
+                if nextItem and nextItem.reservedBy == bid then nextItem.reservedBy = nil end
+                state.shiftNext[bid] = nil
+                local item = FindClaimable(state, bid, frame, resources)
+                if item then IssueDistTask(state, bid, item, frame) end
+            end
         end
     end
 
@@ -1622,6 +1873,41 @@ function M.InsertPriorityItem(state, unitName, wx, wz, facing)
     -- The queue may already have run dry; wake it so a builder picks this up.
     state.done = false
     return item
+end
+
+-- Turn on trapped-builder handling for a distributed queue.  Only ground builders are
+-- ever considered; air builders are ignored.
+function M.EnableEscapeGuard(state)
+    if state and state.distributed then state.escapeGuard = true end
+end
+
+-- Can a ground con get near this spot, counting the buildings still to come?  Use it
+-- to vet where to put something a ground con must build (the air lab).  Answers true
+-- when there is nothing to judge with (no ground builder), so it never blocks a bot
+-- that has none.
+function M.SpotReachable(state, defID, wx, wz)
+    if not state or not state.distributed then return true end
+    local half, reach = nil, nil
+    for i = 1, #state.builders do
+        local bd = Spring.GetUnitDefID(state.builders[i])
+        if EG.IsGroundBuilder(bd) then
+            local ud = UnitDefs[bd]
+            local r = (ud.buildDistance or 128)
+            half  = math.max(half or 0, EG.MoverHalf(bd))
+            reach = math.min(reach or r, r)
+        end
+    end
+    if not half then return true end
+    local planned = {}
+    for i = 1, #state.queue do
+        local it = state.queue[i]
+        if it.act ~= "reclaim" and it.defID and not it.frameID
+           and it.status ~= "built" and it.status ~= "skipped" then
+            planned[#planned + 1] = { defID = it.defID, wx = it.wx, wz = it.wz }
+        end
+    end
+    local hx, hz = HalfExtents(defID)
+    return EG.OutsideReach(wx, wz, reach + math.max(hx, hz), half, planned)
 end
 
 function M.GetItem(state, index)

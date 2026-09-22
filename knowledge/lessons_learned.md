@@ -58,9 +58,128 @@ still weak (team 0 saturates the ~2000 unit cap); prefer the `draw_score` army-m
   it should roughly halve the mirror-match gap, which is now the cleanest available
   regression metric.
 
+## Client-side order latency was silently sabotaging team 1's opening (2026-09-22)
+
+A DRAGON_BOT-vs-itself match showed team 0's opening completely clean (lab, con #1, con
+#2, reclaim, all on schedule, one stray decay) while team 1 abandoned 9-20+ structures
+mid-build in the same window, every run, 100% reproducible — including its own bot lab,
+more than once in the same game. Chased with `blueprint_placer.lua`'s own (normally-off)
+DEBUG logging rather than guessing: team 1 showed the SAME build order claimed, retried
+3 times 30 frames apart with `cmd=none` (the builder's queried command queue read empty),
+then SKIPped and reassigned to a different item — for cormex, corwin, AND corlab alike,
+not one unit type. The stats log then showed the "abandoned" building complete moments
+later anyway: **the order had genuinely landed; `Spring.GetUnitCommands()` just hadn't
+caught up with it yet when the check ran.**
+
+**Root cause: `ORDER_GRACE_FRAMES` (30 frames, tuned against host-side behaviour) is too
+short for team 1, the network CLIENT side.** `bot_testing.py` runs team 0 as the host
+and team 1 as a connecting player; a host process seeing its own just-issued order
+reflected in `Spring.GetUnitCommands()` is near-instant, but the client side can take
+several real seconds. One match, four minutes: **team 0 (host) — 0 skips, 0-1 retries.
+Team 1 (client), same code, same match — 26 skips, 79 retries.** Ruled out first (and
+worth recording as dead ends): `patch_team()` not covering `bar_framework/*.lua` or
+`blueprint_placer.lua` — checked empirically, both `Spring.GetMyTeamID()` and
+`GetMyAllyTeamID()` read correctly (0/0 and 1/1) on both sides regardless; disabling the
+escape guard entirely — made it measurably WORSE (fewer nanos, lower income), since the
+guard's job is freeing a genuinely walled-in builder and removing it just leaves that
+builder stuck with nothing rescuing it.
+
+**Fix, in `blueprint_placer.lua` (shared — every bot gets this):**
+1. `ORDER_GRACE_FRAMES` 30 -> 90 frames.
+2. Every distributed builder is now given a SECOND, shift-queued order the moment the
+   first is issued (`FindShiftCandidate` mirrors `FindClaimable`'s own selection — strict
+   order in the opening, nearest-in-range after it — so it is a genuine reservation, not
+   a weaker guess), refilled every time the active order changes (on issue AND on
+   promotion), not just once. A slow confirmation matters far less when the builder
+   always has real, engine-side work queued regardless of what the poll currently reads.
+   Reclaim-target items are excluded as *candidates* (their target isn't resolved until
+   issue time) but still get something queued behind them once active.
+
+Same match after the fix: team 1's skips dropped from 26 to 2 and self-decayed
+structures from double digits to 0-2, run after run; team 0 stayed at 0. Verified across
+DRAGON_BOT, RAIDER_BOT and GROUND_RAIDER_BOT (all share the file). **This is a
+host-vs-client asymmetry in the harness, not a per-bot bug** — any future distributed
+build order is exposed to it, and if this project ever runs a real (non-localhost)
+multiplayer match, round-trip latency could be far worse than headless-localhost, so the
+same class of fix (never trust a single order-landed check; always keep real work
+queued) is worth re-checking there too.
+
+**Two smaller bugs found chasing this, both fixed:**
+- **The escape guard had no opening-item protection.** When a ground builder got walled
+  in, it would reclaim the cheapest nearby structure to free itself — including a
+  half-built OPENING item, sacrificing scarce early metal to eat one piece of its own
+  base. Saw it reclaim the same partially-built wind four times in under 1000 frames.
+  Fixed by excluding any item with `idx <= OPENING_ITEMS` from ever being offered as a
+  reclaim candidate (`EG.Check`'s new optional `protected` set).
+- **A nano guarding an idle factory spends its build power on nothing.** `GUARD` only
+  assists what a factory is *currently* building; the bot lab sits genuinely idle for
+  real stretches (between con #1 and con #2, briefly at game start), and
+  `FactoryInReach` picked the nearest factory regardless of whether it had anything
+  queued. Fixed in `DRAGON_BOT/macro_controller.lua` (and both raider variants, copied
+  from it) by checking `Spring.GetFactoryCommands` is non-empty before offering a
+  factory as an army target.
+
+## Exploiter bots: RAIDER_BOT and GROUND_RAIDER_BOT test threat response on demand (2026-09-21)
+
+`find_bot_weakness`'s own Limits section flagged this: there was no scripted early-raid
+opponent, so `early_threat_undefended` could only be observed when OK_BOT happened to
+raid, which it doesn't reliably. Built two deliberate "exploiter" fixtures instead —
+DRAGON-derived bots whose whole job is to hit a known weak spot (no dedicated AA, no
+defensive structures) as early as the economy allows, so threat response becomes
+testable on demand rather than something to hope for.
+
+**`build_order_sim.py` gained a `raid` mode**, config-file driven
+(`raid_configs/*.json`) instead of a pile of CLI flags: a list of `{unit, count, by,
+required}` milestones (e.g. "3 bombers by 230s, required"), an optional `max` cap per
+unit, and a `weight` that raises how much the raid fraction counts against pure economy
+in the search. `required` milestones prune any build order that cannot meet them, so the
+sim is told what to prioritize, not begged for it. `blueprint_gen.py` exports the
+chosen unit order as `M.units` for `lab_controller.lua` to queue, and (for ground units)
+reserves an exit corridor in front of a factory (`CORRIDOR_ACTIONS`, exported as
+`M.keepout`) so nothing else in the layout blocks it — `macro_controller.lua` keeps mex
+grids off that rectangle and mirrors the whole blueprint 180 degrees when spawning in
+the map's far corner, so the corridor always points at the enemy.
+
+**RAIDER_BOT** (bombers, `corshad`) reaches the enemy base by ~4:30-5:00 and reliably
+kills DRAGON_BOT's commander before its own economy properly scales (measured commander
+kill at 6:11-8:39 across several runs). Bombers needed dynamic re-targeting to matter:
+the first version picked the single nearest enemy unit (usually one nano) and, worse,
+kept re-aiming at a target's STALE remembered value even after it was destroyed, so a
+flattened cluster still "looked" valuable and every bomber kept bombing empty ground.
+Fixed with a value-weighted cluster search (aim at the densest nearby group, not the
+nearest unit) plus live re-checking: the aim's remaining value is recomputed continuously
+and a bomb-drop schedules a fresh look 45 frames later.
+
+**GROUND_RAIDER_BOT** (Incisors, `corgator`, with `corveng` fighter escorts against
+Shuriken stun) is slower to arrive (~6:30-8:00) but equally effective once there — also
+recorded a commander kill. Untested: whether the fighter escort actually stops a
+Shuriken stun, since DRAGON_BOT never fielded one in any recorded run.
+
+**Verdict on DRAGON_BOT, confirmed by both:** it has no answer to either raid style. Its
+commander dies before nanos/army/AA exist in every recorded run against either exploiter
+— this is `find_bot_weakness`'s previously-`Not exercised` finding, now demonstrated
+rather than merely suspected. Saved matches and their `find_weakness.py` context are in
+`knowledge/raid_runs/`. Both bots are copies of `DRAGON_BOT`'s opening logic, not
+divergent forks — the client-latency fix above was verified on all three.
+
+- **Bug worth flagging for anyone else deriving a bot from DRAGON_BOT's macro:** after
+  the kickstart's bot lab is reclaimed, `botLabID` goes back to `nil`; the NEXT factory
+  the macro sees (a raid variant's own vehicle plant) was silently adopted as "the bot
+  lab", which made the macro order a `cormlv` minelayer as if it were a starter con bot.
+  Any bot whose blueprint places a second, non-`corlab` ground factory needs the same
+  explicit exclusion `GROUND_RAIDER_BOT/macro_controller.lua` now has.
+- **The slot-0 test advantage has (at least) two separate causes, not one.** The
+  existing champion_v1 finding above (hardcoded west-only expansion) is real for that
+  bot line. Separately, per the user: OK_BOT has a hard-coded facing direction (always
+  faces east), so from one spawn corner its production faces away from the enemy and its
+  eco expands toward them — the opposite of what you want — while DRAGON-derived bots
+  don't have this to the same degree. `ab_test.py` matters less for RAIDER_BOT /
+  GROUND_RAIDER_BOT as a result; they are deliberate exploiter fixtures, not champion
+  candidates, and should stay in their own folders rather than being merged into one.
+
 ## Scaling: the exponent is fixed at ~1.58 min/doubling (2026-09-21)
 
-`candidates/DISTRIBUTED_BO` now runs kickstarter -> hand-off -> mex grids -> T2 retrofit.
+`DRAGON_BOT (formerly DISTRIBUTED_BO)` now runs kickstarter -> hand-off -> mex grids -> T2 retrofit.
 Measured from replays (`replay_analysis.py` + a log-linear fit on the engine's own 15s
 `TeamStatistics` samples). It beats OK_BOT 4x on army value by frame 25200.
 
@@ -135,7 +254,7 @@ army at home for the entire game. It now falls back to advancing on `DefaultTarg
 
 ## Early-game macro: the sim-derived opening, executed distributed (2026-09-20)
 
-A "kickstarter" bot (`candidates/DISTRIBUTED_BO`) that runs one ordered, sim-generated
+A "kickstarter" bot (`DRAGON_BOT (formerly DISTRIBUTED_BO)`) that runs one ordered, sim-generated
 build order with several builders sharing the queue. Reached **184 m/s at 6 game-min**
 in-game, against ~50 m/s for OK_BOT-class bots at the same point. Everything below is from
 that work. Engine-level facts it depends on are in `game_mechanics.md` §2.7.

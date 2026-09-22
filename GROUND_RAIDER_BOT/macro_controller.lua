@@ -7,7 +7,24 @@
 -- complete it.  That keeps a fresh nanoframe standing at all times, which is what the
 -- nanos need to stay busy.
 --
--- Hard-coded early game (the rest is emergent):
+-- GROUND_RAIDER_BOT: DRAGON-style bot-lab kickstart, then a VEHICLE PLANT that makes
+-- Incisors (corgator) and, later, an air lab whose fighters escort them (Shuriken stun
+-- ground units).  The blueprint (blueprints/general/ground_raider_blueprint.lua, from
+-- `build_order_sim.py --config raid_configs/ground_raider.json`) reserves an exit
+-- corridor in front of the vehicle plant (M.keepout); this file keeps the mex grids off
+-- it, and turns the whole layout 180 degrees when our base is in the far half of the
+-- map so the corridor always points at the enemy.  Air-raid notes follow, from the
+-- variant this was copied from.  RAIDER_BOT differs from DRAGON_BOT in its kickstart:
+-- the blueprint
+-- (blueprints/general/raider_blueprint.lua, from `build_order_sim.py --mode raid`)
+-- has NO bot lab.  The commander builds the AIR lab in the opening, the lab's first
+-- air con becomes the second builder (it is the only one that can place nanos), and
+-- lab_controller opens with the sim's scout / fighter / bombers.  The grid hand-off
+-- below therefore waits for the kickstart to finish or metal to bank, instead of
+-- firing the moment the air lab exists.
+--
+-- Hard-coded early game (the rest is emergent; the bot-lab steps below only apply
+-- to a blueprint that has a corlab):
 --   1. The commander is the only builder, so it places wind, wind, corlab, mex, wind, wind.
 --   2. The lab's first con bot joins the queue and reaches nano #1 first (the commander
 --      cannot build nano turrets).  The commander then GUARDs that con so it assists
@@ -34,6 +51,7 @@ local spGetMyTeamID     = Spring.GetMyTeamID
 local spGetGroundHeight = Spring.GetGroundHeight
 local spGetUnitCommands = Spring.GetUnitCommands
 local spGetTeamUnits    = Spring.GetTeamUnits
+local spGetFactoryCommands = Spring.GetFactoryCommands
 
 local CMD_GUARD   = (CMD and CMD.GUARD)   or 25
 local CMD_REPAIR  = (CMD and CMD.REPAIR)  or 40
@@ -180,10 +198,13 @@ local bankFrames      = 0
 local handoffStarted  = false
 local airLabDefID     = nil
 local airLabID        = nil
-local airLabItem      = nil   -- the queue item for the hand-off lab
-local airLabFrame     = nil   -- frame it was queued, for the watchdog below
-local airLabWarned    = false
-local airLabRetries   = 0
+local airLabReady     = false -- the blueprint's air lab has finished
+local LAB_PROMOTE     = {}    -- lab unit name -> nanos that precede it in the blueprint
+local labPromoted     = {}    -- lab unit name -> true once moved to the front of the queue
+local buildRotation   = 0     -- 0, or 2 (180 degrees) when our base is in the far half
+local KEEPOUT_WORLD   = {}    -- {x1, z1, x2, z2} in world coords: the factory exit corridors
+local gridsStarted    = false -- grid expansion has begun (the real hand-off)
+local kickCons        = {}    -- air cons working the kickstart until the hand-off
 local airConDefID     = nil
 local gridStates      = {}    -- one single-builder placer state per grid
 local freeAirCons     = {}    -- air cons waiting for a grid
@@ -330,7 +351,10 @@ local function FindAirLabSpot()
                              baseX + r * math.cos(ang), baseZ + r * math.sin(ang))
             local y = spGetGroundHeight(x, z) or 0
             local ok = Spring.TestBuildOrder(airLabDefID, x, y, z, 0)
-            if ok and ok ~= 0 and not ClashesWithBuildOrder(x, z, labHalf) then
+            -- The spot must also stay reachable for a ground con once the rest of the
+            -- kickstart is up: a lab sealed inside the spiral is never built.
+            if ok and ok ~= 0 and not ClashesWithBuildOrder(x, z, labHalf)
+               and BP_PLACER.SpotReachable(distState, airLabDefID, x, z) then
                 local n = BP_PLACER.CountNanosInRange(x, z)
                 if n > bestNanos then bestX, bestZ, bestNanos = x, z, n end
                 if n >= AIR_LAB_MIN_NANOS then return x, z, n end
@@ -359,14 +383,32 @@ end
 local function StartBuildOrder()
     local cx, _, cz = spGetUnitPosition(commanderID)
     if not cx then return end
-    baseX = math.floor(cx / 16 + 0.5) * 16 + ANCHOR_OFFSET_X
-    baseZ = math.floor(cz / 16 + 0.5) * 16 + ANCHOR_OFFSET_Z
+    -- The blueprint's exit corridor points to +z.  Turn the whole layout half a turn when
+    -- our base is in the far half of the map, so it points at the enemy from either side.
+    buildRotation = (cz > ((Game and Game.mapSizeZ) or 8192) * 0.5) and 2 or 0
+    local sign = (buildRotation == 2) and -1 or 1
+    baseX = math.floor(cx / 16 + 0.5) * 16 + ANCHOR_OFFSET_X * sign
+    baseZ = math.floor(cz / 16 + 0.5) * 16 + ANCHOR_OFFSET_Z * sign
     startPending = true
     if DEBUG then Spring.Echo("[MC] anchor " .. baseX .. "," .. baseZ) end
 end
 
 local function BeginBuildOrder()
-    distState = BP_PLACER.NewDistributed(BUILD_ORDER, baseX, baseZ, 0)
+    distState = BP_PLACER.NewDistributed(BUILD_ORDER, baseX, baseZ, buildRotation)
+    -- Exit corridors, in world coordinates, for the keep-out check below.
+    KEEPOUT_WORLD = {}
+    for _, k in ipairs(BUILD_ORDER.keepout or {}) do
+        if buildRotation == 2 then
+            KEEPOUT_WORLD[#KEEPOUT_WORLD + 1] = { baseX - k[3], baseZ - k[4], baseX - k[1], baseZ - k[2] }
+        else
+            KEEPOUT_WORLD[#KEEPOUT_WORLD + 1] = { baseX + k[1], baseZ + k[2], baseX + k[3], baseZ + k[4] }
+        end
+    end
+    Spring.Echo(string.format("[MC] build rotation=%d, %d exit corridor(s) kept clear",
+        buildRotation, #KEEPOUT_WORLD))
+    -- Ground cons can wall themselves in with the kickstart's own buildings; this frees
+    -- them and holds back placements that would do it (bar_framework/escape_guard.lua).
+    BP_PLACER.EnableEscapeGuard(distState)
     BP_PLACER.AddBuilder(distState, commanderID)
     startPending = false
     if DEBUG then
@@ -453,6 +495,19 @@ local TryAssignUpgrades -- ditto: the grid onComplete closure below calls it, an
 
 local function AnchorKey(ax, az) return tostring(ax) .. "," .. tostring(az) end
 
+-- Would a mex grid centred here be built across a factory's exit corridor?  A grid is
+-- a dense field of winds and mexes, and units cannot path through it.
+local GRID_HALF = 140
+local function InKeepout(ax, az)
+    for _, k in ipairs(KEEPOUT_WORLD) do
+        if not (ax + GRID_HALF < k[1] or ax - GRID_HALF > k[3]
+                or az + GRID_HALF < k[2] or az - GRID_HALF > k[4]) then
+            return true
+        end
+    end
+    return false
+end
+
 local function AddCompletedAnchor(ax, az)
     local key = AnchorKey(ax, az)
     if not completedKeys[key] then
@@ -534,8 +589,10 @@ TryExpand = function()
         local key = AnchorKey(r.anchorX, r.anchorZ)
         if not assignedAnchors[key] then
             assignedAnchors[key] = true
-            pendingGrids[#pendingGrids + 1] = r
-            QueueAirCon()
+            if not InKeepout(r.anchorX, r.anchorZ) then
+                pendingGrids[#pendingGrids + 1] = r
+                QueueAirCon()
+            end
         end
     end
     TryAssignGrids()
@@ -561,9 +618,13 @@ local function StartGridExpansion()
         assignedAnchors[AnchorKey(ax, az)] = true
         -- Face the opening cluster, so this grid's first nano is inside the reach of
         -- the nanos already standing there and goes up in seconds.
-        local rot = BP_PLACER.BestRotation(MEX_GRID_BP, ax, az, baseX, baseZ)
-        pendingGrids[#pendingGrids + 1] = {anchorX = ax, anchorZ = az, rotation = rot}
-        QueueAirCon()
+        if InKeepout(ax, az) then
+            Spring.Echo(string.format("[MC] grid (%d, %d) skipped: on a factory exit corridor", ax, az))
+        else
+            local rot = BP_PLACER.BestRotation(MEX_GRID_BP, ax, az, baseX, baseZ)
+            pendingGrids[#pendingGrids + 1] = {anchorX = ax, anchorZ = az, rotation = rot}
+            QueueAirCon()
+        end
     end
     if DEBUG then Spring.Echo("[MC] grid expansion started, " .. #pendingGrids .. " cells") end
     TryAssignGrids()
@@ -827,35 +888,22 @@ end
 
 -- ── Hand-off ─────────────────────────────────────────────────────────────────
 
--- Metal is banking: the build order cannot spend what the economy earns any more.
--- Put an air lab up inside the nanos' reach and let the grid system take over.
-local function StartHandoff()
-    handoffStarted = true
-    airLabDefID = FindAirFactoryDefID()
-    if not airLabDefID then
-        Spring.Echo("[MC] hand-off: no builder we own can place an air factory")
-        return
+-- The kickstart is done (or metal is banking): hand the air cons over to the mex-grid
+-- system.  Until now they were builders in the kickstart's pool, because they are the
+-- only builders here that can place a nano.
+local function StartGrids(frame, why)
+    gridsStarted = true
+    for _, cid in ipairs(kickCons) do
+        if spGetUnitDefID(cid) then
+            BP_PLACER.RemoveBuilder(distState, cid)
+            freeAirCons[#freeAirCons + 1] = cid
+        end
     end
-    local x, z, nanos = FindAirLabSpot()
-    if not x then
-        Spring.Echo("[MC] hand-off: nowhere to put the air lab")
-        handoffStarted = false
-        return
-    end
-    local name = UnitDefs[airLabDefID] and UnitDefs[airLabDefID].name
-    local item = BP_PLACER.InsertPriorityItem(distState, name, x, z, 0)
-    if not item then
-        Spring.Echo("[MC] hand-off: could not queue " .. tostring(name))
-        handoffStarted = false
-        return
-    end
-    airLabItem  = item
-    airLabFrame = currentFrame
-    -- Not DEBUG-gated: this is the one event that decides whether the bot scales,
-    -- and a silent success is indistinguishable from a silent failure.
-    Spring.Echo(string.format(
-        "[MC] HAND-OFF frame=%d: %s at (%d, %d), %d nanos in range, %d builders",
-        currentFrame, tostring(name), x, z, nanos or 0, #distState.builders))
+    kickCons = {}
+    StartGridExpansion()
+    DispatchConBots()
+    -- Not DEBUG-gated: this is the one event that decides whether the bot scales.
+    Spring.Echo(string.format("[MC] HAND-OFF frame=%d: grids started (%s)", frame, why))
 end
 
 -- ── Nano army/eco balance ────────────────────────────────────────────────────
@@ -903,7 +951,19 @@ local function NanoBuildSpeed(defID)
     return (d and d.buildSpeed) or 0
 end
 
--- The nearest factory this nano can physically reach; nil if none.
+-- Does this factory actually have something queued?  Guarding an idle one spends the
+-- nano's build power on nothing: GUARD only assists what the factory is CURRENTLY
+-- building, and an empty queue means that's nothing.  The bot lab sits idle like this
+-- between con #1 and con #2 (and briefly at the very start) -- a nano switched to
+-- "army" there just does nothing until the lab is reclaimed and it falls back to eco.
+local function FactoryHasWork(fid)
+    if not spGetFactoryCommands then return true end   -- can't tell; assume yes
+    local cmds = spGetFactoryCommands(fid, -1)
+    return cmds and #cmds > 0
+end
+
+-- The nearest factory this nano can physically reach that has something to build;
+-- nil if none.
 local function FactoryInReach(uid, defID)
     local reach = (UnitDefs[defID] and UnitDefs[defID].buildDistance) or 380
     local ux, _, uz = spGetUnitPosition(uid)
@@ -911,11 +971,13 @@ local function FactoryInReach(uid, defID)
     local best, bestD2 = nil, reach * reach
     for fid in pairs(factories) do
         if spGetUnitDefID(fid) then
-            local fx, _, fz = spGetUnitPosition(fid)
-            if fx then
-                local dx, dz = ux - fx, uz - fz
-                local d2 = dx * dx + dz * dz
-                if d2 <= bestD2 then best, bestD2 = fid, d2 end
+            if FactoryHasWork(fid) then
+                local fx, _, fz = spGetUnitPosition(fid)
+                if fx then
+                    local dx, dz = ux - fx, uz - fz
+                    local d2 = dx * dx + dz * dz
+                    if d2 <= bestD2 then best, bestD2 = fid, d2 end
+                end
             end
         else
             factories[fid] = nil
@@ -1020,7 +1082,7 @@ end
 function widget:Initialize()
     local ok1, r1 = pcall(VFS.Include, "LuaUI/Widgets/blueprint_placer.lua")
     local ok2, r2 = pcall(VFS.Include,
-        "LuaUI/Widgets/blueprints/general/build_order_blueprint.lua")
+        "LuaUI/Widgets/blueprints/general/ground_raider_blueprint.lua")
     if not ok1 then Spring.Echo("[MC] ERROR loading blueprint_placer: "      .. tostring(r1)); return end
     if not ok2 then Spring.Echo("[MC] ERROR loading build_order_blueprint: " .. tostring(r2)); return end
     local ok3, r3 = pcall(VFS.Include,
@@ -1034,6 +1096,18 @@ function widget:Initialize()
     NANO         = r1.NANO
     MEX_GRID_BP  = r3
     GRID_SPACING = BP_PLACER.GRID_SPACING
+    do  -- nanos that precede each raid lab in the blueprint
+        local nanos = 0
+        for _, u in ipairs(BUILD_ORDER.layout) do
+            if u.n == "cornanotc" and u.a ~= "reclaim" then nanos = nanos + 1 end
+            if (u.n == "corap" or u.n == "corvp") and u.a ~= "reclaim" then LAB_PROMOTE[u.n] = nanos end
+        end
+    end
+    -- The blueprint places the air lab, so recognise it from the start (otherwise the
+    -- first factory to appear is taken for the bot lab).
+    local apd = UnitDefNames and UnitDefNames["corap"]
+    airLabDefID = apd and apd.id
+    if not airLabDefID then Spring.Echo("[MC] ERROR: corap unknown") end
 
     if DEBUG then
         -- Real footprints, to check them against the sizes blueprint_gen assumed.
@@ -1073,6 +1147,12 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
         if airLabDefID and unitDefID == airLabDefID and not airLabID then
             airLabID = unitID
             if DEBUG then Spring.Echo("[MC] air lab frame " .. unitID) end
+        elseif d.name == "corvp" then
+            -- The raid vehicle plant.  It must NOT become the "bot lab": once the real bot
+            -- lab has been reclaimed botLabID is empty, and the next factory to appear took
+            -- its place -- the macro then queued the cheapest ground builder the plant
+            -- offers (a cormlv minelayer) as if it were a con bot, and put it in the pool.
+            if DEBUG then Spring.Echo("[MC] raid vehicle plant " .. unitID) end
         elseif not botLabID then
             botLabID = unitID
             if DEBUG then Spring.Echo("[MC] bot lab " .. unitID) end
@@ -1118,8 +1198,8 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
 
     -- Air lab finished -> the grid system takes over from here.
     if unitID == airLabID then
-        StartGridExpansion()
-        DispatchConBots()
+        airLabReady = true
+        Spring.Echo(string.format("[MC] air lab finished frame=%d", currentFrame))
     end
 
     -- Air cons roll out.  The factory gives them a guard order on itself as they
@@ -1132,6 +1212,14 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         if IsT2Con(unitDefID) then
             freeT2Cons[#freeT2Cons + 1] = unitID
             TryAssignUpgrades()
+        elseif not gridsStarted and distState and not distState.done then
+            -- Kickstart builder: it must be in the pool or nothing places a nano.
+            kickCons[#kickCons + 1] = unitID
+            BP_PLACER.AddBuilder(distState, unitID)
+            -- The first one plays the part the ground con bot plays in DRAGON_BOT: the
+            -- commander guards it through the first nanos.  Without that, nano #1 is
+            -- left as an unfinished frame (nothing else can finish it) and decays.
+            if not conBot1ID then conBot1ID = unitID end
         else
             freeAirCons[#freeAirCons + 1] = unitID
             TryAssignGrids()
@@ -1231,41 +1319,100 @@ local function FirePendingStops(frame)
     end
 end
 
-local function UpdateHandoff(frame, resources)
-    -- Trigger: metal banked above BANK_FRAC of storage for BANK_HOLD frames, but
-    -- only once the economy is real (income rules out the stocked start).
-    if not handoffStarted and resources.metalStorage > 0
-       and resources.metalIncome >= HANDOFF_MIN_INCOME then
-        if (resources.metal / resources.metalStorage) >= BANK_FRAC then
-            bankFrames = bankFrames + 10
-            if bankFrames >= BANK_HOLD then StartHandoff() end
-        else
-            bankFrames = 0
+-- The labs are single items in a ~100-item queue, and builders take the lowest-index item
+-- they can build, so when one finished depended on how fast everything ahead of it went
+-- (the air lab: 3:53, 4:33 and 6:28 in three runs of one blueprint).  Once the nanos that
+-- precede a lab in the blueprint are up, move it to the front of the queue.
+--
+-- That nano count is a proxy for "the kickstart is far enough along", and on a slow
+-- kickstart it can arrive well after metal is ALREADY banking -- measured: banking
+-- started before the nano gate opened, and nothing acted on it because UpdateHandoff
+-- bailed out on `not airLabReady` before the banking check ever ran, so the lab (and
+-- everything behind it: grid scaling) waited on the nano count alone.  Banking now
+-- promotes whichever lab is still waiting, same as its nano gate, whichever comes first.
+local function PromoteOneLab(name, frame, why)
+    if labPromoted[name] or not distState then return end
+    for i, item in ipairs(distState.queue) do
+        if item.n == name then
+            labPromoted[name] = true
+            if item.built or item.status ~= "pending" then return end   -- already under way
+            table.remove(distState.queue, i)
+            item.idx = 1          -- opening work: strict order, no 85% hand-off
+            table.insert(distState.queue, 1, item)
+            distState.done = false
+            Spring.Echo(string.format("[MC] %s moved to the front of the queue frame=%d (%s)",
+                name, frame, why))
+            return
         end
     end
+    -- Not in the blueprint at all: only the air lab gets a fallback placement (it is
+    -- what the grid hand-off needs; the vehicle plant has no equivalent afterlife).
+    labPromoted[name] = true
+    if name ~= "corap" then return end
+    airLabDefID = airLabDefID or FindAirFactoryDefID()
+    if not airLabDefID then
+        Spring.Echo("[MC] hand-off: no builder we own can place an air factory")
+        return
+    end
+    local x, z, nanos = FindAirLabSpot()
+    if not x then
+        Spring.Echo("[MC] hand-off: nowhere to put the air lab")
+        labPromoted[name] = false   -- try again next tick
+        return
+    end
+    local uname = UnitDefs[airLabDefID] and UnitDefs[airLabDefID].name
+    local item = BP_PLACER.InsertPriorityItem(distState, uname, x, z, 0)
+    if item then
+        Spring.Echo(string.format(
+            "[MC] hand-off FALLBACK frame=%d: %s at (%d, %d), %d nanos in range (%s)",
+            frame, tostring(uname), x, z, nanos or 0, why))
+    else
+        labPromoted[name] = false
+        Spring.Echo("[MC] hand-off fallback: could not queue " .. tostring(uname))
+    end
+end
 
-    -- Watchdog: queued but nothing has begun building it.
-    if airLabItem and not airLabID and airLabFrame and (frame - airLabFrame) > 900 then
-        local st = airLabItem.status
-        if st == "skipped" or st == "pending" then
-            -- The spot was taken (usually by the build order itself).  Try again
-            -- elsewhere: without this lab there is no army and no expansion, so
-            -- giving up once is giving up for the whole game.
-            airLabRetries = (airLabRetries or 0) + 1
-            Spring.Echo(string.format(
-                "[MC] hand-off retry %d: %s not started (status=%s), picking a new spot",
-                airLabRetries, tostring(airLabItem.n), tostring(st)))
-            airLabItem.status = "skipped"
-            airLabItem.built  = true
-            airLabItem = nil
-            if airLabRetries <= 5 then
-                handoffStarted = false     -- StartHandoff runs again next tick
-                bankFrames     = BANK_HOLD -- and fires immediately
-            elseif not airLabWarned then
-                airLabWarned = true
-                Spring.Echo("[MC] hand-off GAVE UP after 5 attempts")
+local function PromoteLabs(frame, forceBank)
+    if not distState then return end
+    local nanos = BP_PLACER.CountBuilt(distState, "nano")
+    for name, need in pairs(LAB_PROMOTE) do
+        if not labPromoted[name] then
+            if nanos >= need then
+                PromoteOneLab(name, frame, "nano threshold")
+            elseif forceBank then
+                PromoteOneLab(name, frame, "metal banking")
             end
         end
+    end
+end
+
+local function AllLabsPromoted()
+    for name in pairs(LAB_PROMOTE) do
+        if not labPromoted[name] then return false end
+    end
+    return true
+end
+
+local function UpdateHandoff(frame, resources)
+    if gridsStarted then return end
+
+    -- One banking measurement, used for whichever action is next: promoting a lab
+    -- still in the queue, or starting the grids once both exist.
+    local banking = resources.metalStorage > 0 and resources.metalIncome >= HANDOFF_MIN_INCOME
+                    and (resources.metal / resources.metalStorage) >= BANK_FRAC
+    if banking then bankFrames = bankFrames + 10 else bankFrames = 0 end
+
+    if not AllLabsPromoted() then
+        PromoteLabs(frame, bankFrames >= BANK_HOLD)
+        if bankFrames >= BANK_HOLD then bankFrames = 0 end
+        return
+    end
+
+    if not airLabReady then return end
+    if distState.done then
+        StartGrids(frame, "kickstart finished")
+    elseif bankFrames >= BANK_HOLD then
+        StartGrids(frame, "metal banking")
     end
 end
 

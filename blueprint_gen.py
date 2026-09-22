@@ -42,9 +42,21 @@ ACTION_DEFS: dict[str, tuple[str, int, int]] = {
     'bot_lab': ('corlab',    6, 6),
     'veh_lab': ('corvp',     6, 6),
     'nano':    ('cornanotc', 3, 3),
+    'air_lab': ('corap',     9, 6),
 }
 
-SKIP_ACTIONS = {'con_bot', 'cv', 'incisor'}
+SKIP_ACTIONS = {'con_bot', 'cv', 'incisor', 'scout', 'fighter', 'bomber', 'air_con'}
+
+# Mobile units the sim builds from the air lab, by action.  They are not placed,
+# but their ORDER is exported as M.units so lab_controller can queue them.
+UNIT_OF = {'scout': 'corfink', 'fighter': 'corveng', 'bomber': 'corshad', 'air_con': 'corca',
+           'incisor': 'corgator'}
+
+# A ground-unit factory must have a way out.  When a veh_lab is placed, this many cells
+# in FRONT of it (facing +z, f=0) are reserved so nothing later is built across the exit;
+# the rectangle is exported as M.keepout so the bot's own mex grids stay off it too.
+CORRIDOR_LEN = 22
+CORRIDOR_ACTIONS = {'veh_lab'}
 
 # Reclaim actions are not buildings, but they ARE ordered steps the bot must
 # execute: reclaiming the lab refunds its metal, which the rest of the build
@@ -58,6 +70,7 @@ COLORS = {
     'corlab':    '#9C27B0',
     'corvp':     '#E91E63',
     'cornanotc': '#2196F3',
+    'corap':     '#3F51B5',
 }
 
 
@@ -75,6 +88,7 @@ class Building:
     nano_when_built: int     # nanos that existed when this was queued
     x:               float = 0.0   # world x in elmos (set during layout)
     z:               float = 0.0   # world z in elmos
+    corridor:        tuple | None = None   # (x, z, w, h) in elmos: reserved exit strip
 
     @property
     def cx(self) -> float:
@@ -96,6 +110,11 @@ def parse_reclaims(history: list[dict]) -> list[dict]:
         for seq, entry in enumerate(history, 1)
         if entry['action'] in RECLAIM_OF
     ]
+
+
+def parse_units(history: list[dict]) -> list[str]:
+    """Air-lab units in build-order sequence, as unitDef names."""
+    return [UNIT_OF[e['action']] for e in history if e['action'] in UNIT_OF]
 
 
 def parse_buildings(history: list[dict]) -> list[Building]:
@@ -152,6 +171,7 @@ class OccupancyGrid:
         tx: int, tz: int,
         w: int, h: int,
         max_r: int = 60,
+        require=None,
     ) -> tuple[int, int] | None:
         """
         Return the (ox, oz) origin cell nearest to target (tx, tz) where a
@@ -170,6 +190,8 @@ class OccupancyGrid:
             for dz in range(-max_r, max_r + 1):
                 ox, oz = tx + dx, tz + dz
                 if not self.can_place(ox, oz, w, h):
+                    continue
+                if require is not None and not require(ox, oz):
                     continue
                 dist = cx + (dz + half_h) ** 2
                 if best is None or dist < best[0]:
@@ -223,6 +245,17 @@ def layout(
 
     for seq, kind, item in events:
         if kind == 'build':
+            if item.action in CORRIDOR_ACTIONS:
+                res = grid.find_nearest(tx, tz, item.w, item.h, max_r=max_r,
+                                        require=lambda ox, oz, b=item: grid.can_place(ox, oz + b.h, b.w, CORRIDOR_LEN))
+                if res is None:
+                    print(f'  WARNING: no spot with a clear exit for {item.action} seq={seq}')
+                elif True:
+                    grid.place(item, *res)
+                    grid.mark(res[0], res[1] + item.h, item.w, CORRIDOR_LEN)
+                    item.corridor = (res[0] * GRID, (res[1] + item.h) * GRID, item.w * GRID, CORRIDOR_LEN * GRID)
+                    print(f'  {item.action} exit corridor: {item.w * GRID}x{CORRIDOR_LEN * GRID} elmos at ({item.corridor[0]}, {item.corridor[1]})')
+                continue
             if not grid.find_and_place(item, tx, tz, max_r=max_r):
                 print(f'  WARNING: could not place {item.action} seq={seq}')
             continue
@@ -296,7 +329,8 @@ def nano_stats(buildings: list[Building]) -> None:
 # ---------------------------------------------------------------------------
 
 def write_lua(buildings: list[Building], path: str, header: str = '',
-              reclaims: list[dict] | None = None) -> None:
+              reclaims: list[dict] | None = None,
+              units: list[str] | None = None) -> None:
     lines = [
         '-- Auto-generated build-order blueprint',
         f'-- {header}',
@@ -332,7 +366,19 @@ def write_lua(buildings: list[Building], path: str, header: str = '',
             f' x={xi:7d}, z={zi:7d}, f=0}},  -- reclaim {victim.action}'))
     for _, line in sorted(entries, key=lambda e: e[0]):
         lines.append(line)
-    lines += ['}', 'return M', '']
+    lines.append('}')
+    keep = [b.corridor for b in buildings if b.corridor]
+    if keep:
+        lines.append('-- Reserved exit corridors for ground factories: {x1, z1, x2, z2} relative to the anchor.')
+        lines.append('-- Keep mex grids and other builds off these so units can leave the base.')
+        lines.append('M.keepout = {')
+        for (kx, kz, kw, kh) in keep:
+            lines.append(f'    {{{int(kx)}, {int(kz)}, {int(kx + kw)}, {int(kz + kh)}}},')
+        lines.append('}')
+    if units:
+        lines.append('-- Air-lab units in the sim\'s build order; lab_controller queues these first.')
+        lines.append('M.units = { ' + ', '.join('"%s"' % u for u in units) + ' }')
+    lines += ['return M', '']
     Path(path).write_text('\n'.join(lines), encoding='utf-8')
     print(f'Saved blueprint  -> {path}')
 
@@ -429,6 +475,9 @@ def main() -> None:
     # Parse
     buildings = parse_buildings(data['actions'])
     reclaims  = parse_reclaims(data['actions'])
+    units     = parse_units(data['actions'])
+    if units:
+        print('Air-lab units:', ' '.join(units))
     if reclaims:
         print(f'Reclaim steps: {len(reclaims)}')
     by_type: dict[str, int] = {}
@@ -466,10 +515,12 @@ def main() -> None:
         desc = f'max_rate — {metal_rate} m/s'
     elif mode in ('max_units', 'balanced'):
         desc = f'{mode} — {incisors} Incisors, {metal_rate} m/s'
+    elif mode == 'raid':
+        desc = f'raid — {metal_rate} m/s, units {data.get("final_units")}'
     else:
         desc = f'{mode} — {metal_rate} m/s'
 
-    write_lua(buildings, f'{args.output}.lua', desc, reclaims=reclaims)
+    write_lua(buildings, f'{args.output}.lua', desc, reclaims=reclaims, units=units)
     visualize(buildings, f'{args.output}.png', f'Build Order Blueprint  |  {desc}')
 
 

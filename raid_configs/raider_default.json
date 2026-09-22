@@ -1,0 +1,31 @@
+{
+  "mode": "raid",
+  "end_time": 300,
+  "beam_width": 2000,
+  "em_ratio": 0,
+  "out": "raider_order_result",
+  "raid": {
+    "milestones": [
+      {
+        "unit": "scout",
+        "count": 1,
+        "by": 200
+      },
+      {
+        "unit": "bomber",
+        "count": 3,
+        "by": 230,
+        "required": true
+      },
+      {
+        "unit": "bomber",
+        "count": 5,
+        "by": 300
+      }
+    ],
+    "max": {
+      "bomber": 6
+    },
+    "weight": 4
+  }
+}

@@ -314,18 +314,57 @@ local function NodeWorldPos(node)
            baseZ + advDir.z * node.adv + perpDir.z * node.lateral
 end
 
+-- Lateral extent of the perpendicular line through the map centre, clipped to the
+-- map rectangle. Its two ends land exactly on map edges, so nodes spread across
+-- the full width of the map instead of a fixed-size window around the base.
+local function LateralRange()
+    local mapX = Game.mapSizeX or 8192
+    local mapZ = Game.mapSizeZ or 8192
+    local cx, cz = mapX * 0.5, mapZ * 0.5
+    local lmin, lmax = -math.huge, math.huge
+    if math.abs(perpDir.x) > 1e-6 then
+        local a = (MAP_MARGIN - cx) / perpDir.x
+        local b = (mapX - MAP_MARGIN - cx) / perpDir.x
+        lmin = math.max(lmin, math.min(a, b))
+        lmax = math.min(lmax, math.max(a, b))
+    end
+    if math.abs(perpDir.z) > 1e-6 then
+        local a = (MAP_MARGIN - cz) / perpDir.z
+        local b = (mapZ - MAP_MARGIN - cz) / perpDir.z
+        lmin = math.max(lmin, math.min(a, b))
+        lmax = math.min(lmax, math.max(a, b))
+    end
+    if lmin > lmax or lmin == -math.huge then
+        return -NODE_MIN_SPACING * (NODE_COUNT - 1) / 2, NODE_MIN_SPACING * (NODE_COUNT - 1) / 2
+    end
+    return lmin, lmax
+end
+
+-- Spread node laterals evenly over the full map width (node.t in [-1,1] is fixed;
+-- lateral follows the current advance direction so the ends stay on the map edges).
+local function SpreadNodeLaterals()
+    local lmin, lmax = LateralRange()
+    local mid, half = (lmin + lmax) * 0.5, (lmax - lmin) * 0.5
+    for i = 1, NODE_COUNT do
+        nodes[i].lateral = mid + nodes[i].t * half
+    end
+end
+
 local function InitNodes()
     nodes = {}
     thrustNodeIdx = math.floor(NODE_COUNT / 2)
     for i = 1, NODE_COUNT do
-        local t       = (i - 1) / (NODE_COUNT - 1) * 2 - 1   -- -1 to 1
-        local lateral = t * lineHalfWidth
-        local minAdv  = MinAdvForNode(lateral)
+        nodes[i] = { t = (i - 1) / (NODE_COUNT - 1) * 2 - 1, lateral = 0, adv = 0,
+                     engaged = false, atEdge = false }
+    end
+    SpreadNodeLaterals()
+    for i = 1, NODE_COUNT do
+        local node   = nodes[i]
+        local minAdv = MinAdvForNode(node.lateral)
         -- Arc on top of the minimum advance needed to land on-map.
-        -- Centre gets full ARC_RADIUS bump; edges get 0, so the arc is always visible.
-        local arcBump = ARC_RADIUS * math.max(0, math.cos(math.pi * 0.5 * t))
-        local adv     = math.min(minAdv + arcBump, MaxAdvForNode(lateral))
-        nodes[i] = { lateral = lateral, adv = adv, engaged = false, atEdge = false }
+        -- Centre gets full ARC_RADIUS bump; ends get 0 and sit on the map edge.
+        local arcBump = ARC_RADIUS * math.max(0, math.cos(math.pi * 0.5 * node.t))
+        node.adv = math.min(minAdv + arcBump, MaxAdvForNode(node.lateral))
     end
 end
 
@@ -334,11 +373,9 @@ local function InitContactLine()
     lineInited = true
     local tx, tz = DefaultTarget()
     RecomputeLineDir(tx, tz)
-    local mapX = Game.mapSizeX or 8192
-    local mapZ = Game.mapSizeZ or 8192
-    local perpMapDim = (math.abs(advDir.x) >= math.abs(advDir.z)) and mapZ or mapX
-    lineHalfWidth = NODE_MIN_SPACING * (NODE_COUNT - 1) / 2
     InitNodes()
+    local lmin, lmax = LateralRange()
+    lineHalfWidth = (lmax - lmin) * 0.5
     Spring.Echo("[UnitCtrl] Contact line init: " .. NODE_COUNT
         .. " nodes, halfWidth=" .. math.floor(lineHalfWidth))
 end
@@ -371,6 +408,7 @@ local function UpdateNodes()
     if targetX then tx, tz = targetX, targetZ
     else            tx, tz = DefaultTarget() end
     RecomputeLineDir(tx, tz)
+    SpreadNodeLaterals()
 
     local count = 0
     for _ in pairs(combatUnits) do count = count + 1 end
@@ -392,6 +430,7 @@ local function UpdateNodes()
             node.adv = node.adv + NODE_ADVANCE_STEP
         end
         local maxAdv = MaxAdvForNode(node.lateral)
+        node.adv     = math.max(node.adv, MinAdvForNode(node.lateral))
         node.adv     = math.min(node.adv, maxAdv)
         node.adv     = math.max(0, node.adv)
         -- Flag nodes that have run out of forward room so unit assignment skips them.
@@ -540,6 +579,317 @@ local function IssueLineOrders()
     end
 end
 
+-- ── Fighter raid (RAIDER_BOT) ─────────────────────────────────────────────────
+-- Fighters are pulled out of the contact line and sent across the map as one group
+-- to hunt the enemy's air constructors.  This is a deliberate exploit, there to be
+-- the "unit test" that an opponent's air defence is checked against: lab_controller
+-- makes the fighters, this decides where they go.  Everything is echoed as [RAID]
+-- lines so a run shows when the threat appeared, not just that it did.
+
+local RAID_DEFS = { corveng = "fighter", corshad = "bomber", corfink = "spotter" }
+local RAID_WAVE_BOMBERS = 3     -- launch once this many bombers wait at home: fewer is not
+                                -- enough to matter, and bombers are one-way
+local RAID_FORCE_FRAME = 11700  -- ...or at 6:30 with at least 2, so it cannot stall
+local RAID_CLUSTER_R   = 160    -- bombs land within about this of the aim point
+local RAID_RETARGET    = 1.25   -- a new aim point must be this much denser to switch
+local RAID_STALE_FRAC  = 0.5    -- re-aim once what is left at the aim is under this share
+                                -- of what was there when it was chosen
+local RAID_MEMORY      = 900    -- frames an enemy stays in the bombers' picture after it was
+                                -- last seen; vision flickers, so "not visible" is not "dead"
+local RAID_SWITCH_GAP  = 60     -- min frames between denser-cluster switches (not for a depleted aim)
+local RAID_DROP_LOOK   = 45     -- frames after a bomb drop to look again (bombs take a moment
+                                -- to land, and the target may be gone by then)
+local RAID_SEARCH_R    = 1600   -- how far from the group / enemy base to look for targets
+local RAID_SWEEP_R     = 350    -- radius of the sweep around the enemy base
+local RAID_ARRIVE_R    = 1200
+
+local CMD_ATTACK = (CMD and CMD.ATTACK) or 20
+
+local raidUnits    = {}    -- [unitID] = true once sent, false while waiting at home
+local raidKind     = {}    -- [unitID] = "fighter" | "bomber"
+local raidLaunched = false
+local raidArrived  = false
+local raidKills    = 0
+local raidBaseX, raidBaseZ = nil, nil
+local raidSweepIdx = 0
+
+local function GameClock(frame)
+    local sec = math.floor(frame / 30)
+    return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+local function RaidEnemyBase()
+    if raidBaseX then return raidBaseX, raidBaseZ end
+    local src = "mirror"
+    if Spring.GetTeamStartPosition and Spring.GetTeamList and Spring.GetTeamInfo then
+        for _, t in ipairs(Spring.GetTeamList()) do
+            local _, _, _, _, _, allyID = Spring.GetTeamInfo(t)
+            if t ~= myTeamID and allyID ~= myAllyID then
+                local x, _, z = Spring.GetTeamStartPosition(t)
+                if x and x > 0 and z and z > 0 then
+                    raidBaseX, raidBaseZ, src = x, z, "start_pos"
+                    break
+                end
+            end
+        end
+    end
+    if not raidBaseX then
+        -- Start positions are unknown: the maps are symmetric, so mirror ours.
+        raidBaseX = (Game.mapSizeX or 8192) - baseX
+        raidBaseZ = (Game.mapSizeZ or 8192) - baseZ
+    end
+    Spring.Echo(string.format("[RAID] enemy base (%s) at %d, %d", src, raidBaseX, raidBaseZ))
+    return raidBaseX, raidBaseZ
+end
+
+-- Best visible enemy for a group: fighters can only hit aircraft, bombers only ground
+-- targets.  Constructors first (the point of the raid), then anything else; ties go to
+-- whichever is nearest the group.
+local function RaidPickTarget(cx, cz, bx, bz, wantAir)
+    local best, bestScore = nil, math.huge
+    for _, centre in ipairs({ {cx, cz}, {bx, bz} }) do
+        local list = spGetUnitsInCylinder(centre[1], centre[2], RAID_SEARCH_R)
+        for _, uid in ipairs(list or {}) do
+            local allyID = spGetUnitAllyTeam(uid)
+            local defID  = spGetUnitDefID(uid)
+            local d      = defID and UnitDefs[defID]
+            if allyID and allyID ~= myAllyID and d and (d.canFly and true or false) == wantAir then
+                local ux, _, uz = spGetUnitPosition(uid)
+                if ux then
+                    local dist = math.sqrt((ux - cx) ^ 2 + (uz - cz) ^ 2)
+                    local tier = (d.isBuilder and not d.isFactory) and 0 or 1
+                    local score = tier * 100000 + dist
+                    if score < bestScore then bestScore = score; best = uid end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- Where to bomb: the densest cluster of visible enemy ground units/structures near the
+-- enemy base, by metal value, so one pass lands on a whole mex/wind field instead of on
+-- the single nano a nearest-target rule picks.
+local raidSeen = {}   -- [enemyUnitID] = { x, z, v, frame }: what the bombers know is out there
+
+local function RaidGather(bx, bz, frame)
+    for _, uid in ipairs(spGetUnitsInCylinder(bx, bz, RAID_SEARCH_R) or {}) do
+        local allyID = spGetUnitAllyTeam(uid)
+        local defID  = spGetUnitDefID(uid)
+        local d      = defID and UnitDefs[defID]
+        if allyID and allyID ~= myAllyID and d and not d.canFly then
+            local x, _, z = spGetUnitPosition(uid)
+            if x then
+                raidSeen[uid] = { x = x, z = z, v = math.max(d.metalCost or 0, 10), frame = frame }
+            end
+        end
+    end
+    -- Forget what has not been seen for a while.  Things that are destroyed are removed
+    -- at once in UnitDestroyed; this only ages out the ones that went unseen.
+    local pts = {}
+    for uid, e in pairs(raidSeen) do
+        if frame - e.frame > RAID_MEMORY then
+            raidSeen[uid] = nil
+        elseif #pts < 220 then
+            pts[#pts + 1] = e
+        end
+    end
+    return pts
+end
+
+-- Best cluster among the visible points: x, z (value-weighted centre), score; or nil when
+-- nothing is visible yet (the spotter has not arrived).
+local function RaidBestCluster(pts)
+    if #pts == 0 then return nil end
+    local r2 = RAID_CLUSTER_R * RAID_CLUSTER_R
+    local bestScore, bestI = -1, 1
+    for i, a in ipairs(pts) do
+        local sum = 0
+        for _, b in ipairs(pts) do
+            if (a.x - b.x) ^ 2 + (a.z - b.z) ^ 2 <= r2 then sum = sum + b.v end
+        end
+        if sum > bestScore then bestScore, bestI = sum, i end
+    end
+    -- Aim at the value-weighted centre of that cluster, not at one unit in it.
+    local c, wx, wz, wsum = pts[bestI], 0, 0, 0
+    for _, b in ipairs(pts) do
+        if (c.x - b.x) ^ 2 + (c.z - b.z) ^ 2 <= r2 then
+            wx, wz, wsum = wx + b.x * b.v, wz + b.z * b.v, wsum + b.v
+        end
+    end
+    return wx / wsum, wz / wsum, bestScore
+end
+
+-- What is still standing (and visible) at a point.  This is what tells the bombers that
+-- the spot they were sent to has already been flattened.
+local function RaidValueAt(pts, x, z)
+    local r2, sum = RAID_CLUSTER_R * RAID_CLUSTER_R, 0
+    for _, b in ipairs(pts) do
+        if (x - b.x) ^ 2 + (z - b.z) ^ 2 <= r2 then sum = sum + b.v end
+    end
+    return sum
+end
+
+-- True on the tick a bomber has just dropped its load (its bomb weapon went from ready
+-- to reloading).  Bombers are one-way, so the drop is the moment that matters.
+local raidReloading = {}
+local function RaidBomberDropped(uid, frame)
+    local ok, ready = pcall(Spring.GetUnitWeaponState, uid, 1, "reloadState")
+    if not ok or type(ready) ~= "number" then
+        ok, ready = pcall(Spring.GetUnitWeaponState, uid, 1, "reloadFrame")
+    end
+    if not ok or type(ready) ~= "number" then return false end
+    local reloading = ready > frame
+    local was = raidReloading[uid]
+    raidReloading[uid] = reloading
+    return reloading and not was
+end
+
+local raidAim = nil   -- { x, z, score } the bombers are committed to
+
+local function UpdateRaid(frame)
+    if not baseX then return end
+    -- Two groups: raiders still at home waiting for a wave, and raiders in the field.
+    -- Reinforcements are held until they are a wave of their own, so they do not fly
+    -- one at a time into whatever killed the last group.
+    local home, field, sx, sz, homeBombers = {}, {}, 0, 0, 0
+    for uid, sent in pairs(raidUnits) do
+        local x, _, z = spGetUnitPosition(uid)
+        if x then
+            if sent then
+                field[#field + 1] = uid
+                sx, sz = sx + x, sz + z
+            else
+                home[#home + 1] = uid
+                if raidKind[uid] == "bomber" then homeBombers = homeBombers + 1 end
+            end
+        else
+            raidUnits[uid] = nil
+        end
+    end
+
+    local bx, bz = RaidEnemyBase()
+    local firstWave = not raidLaunched
+    if homeBombers >= RAID_WAVE_BOMBERS
+       or (firstWave and frame >= RAID_FORCE_FRAME and homeBombers >= 2) then
+        raidLaunched = true
+        local nf, nb = 0, 0
+        for _, uid in ipairs(home) do
+            raidUnits[uid] = true
+            field[#field + 1] = uid
+            if raidKind[uid] == "bomber" then nb = nb + 1 else nf = nf + 1 end
+            local x, _, z = spGetUnitPosition(uid)
+            sx, sz = sx + x, sz + z
+        end
+        Spring.Echo(string.format("[RAID] %s frame=%d (%s) fighters=%d bombers=%d",
+            firstWave and "launch" or "reinforce", frame, GameClock(frame), nf, nb))
+    end
+
+    local n = #field
+    if n == 0 then return end
+    local cx, cz = sx / n, sz / n
+
+    if not raidArrived then
+        for _, uid in ipairs(field) do
+            local x, _, z = spGetUnitPosition(uid)
+            if x and (x - bx) ^ 2 + (z - bz) ^ 2 < RAID_ARRIVE_R ^ 2 then
+                raidArrived = true
+                Spring.Echo(string.format("[RAID] arrived frame=%d (%s) in field=%d",
+                    frame, GameClock(frame), n))
+                break
+            end
+        end
+    end
+
+    -- Nothing to shoot: sweep the enemy base.  Raiders on FIGHT engage anything in
+    -- range on the way, and idle ones are simply handed the next waypoint.
+    local waypoints = {
+        { bx, bz },
+        { bx + RAID_SWEEP_R, bz }, { bx, bz + RAID_SWEEP_R },
+        { bx - RAID_SWEEP_R, bz }, { bx, bz - RAID_SWEEP_R },
+    }
+    local mapX, mapZ = Game.mapSizeX or 8192, Game.mapSizeZ or 8192
+    -- Bombers: one shared aim point, chosen by density and CHECKED AGAINST WHAT IS LEFT
+    -- there.  The old rule compared a new cluster with the value the aim had when it was
+    -- chosen, so once the bombs had flattened it every bomber kept flying at empty ground.
+    -- Re-aim when: nothing dense is chosen yet; the aim has lost over half its value; a
+    -- clearly denser spot exists; or a bomber has just dropped and, a moment later, a
+    -- better spot exists than what remains at the aim.
+    local pts = RaidGather(bx, bz, frame)
+    local bx2, bz2, bscore = RaidBestCluster(pts)
+    local dropped = false
+    for _, uid in ipairs(field) do
+        if raidKind[uid] == "bomber" and RaidBomberDropped(uid, frame) then dropped = true end
+    end
+    if dropped and raidAim and not raidAim.lookAt then
+        raidAim.lookAt = frame + RAID_DROP_LOOK
+        Spring.Echo(string.format("[RAID] bomb dropped frame=%d; looking again at %d",
+            frame, raidAim.lookAt))
+    end
+    local retarget = false
+    if bx2 then
+        local live = raidAim and RaidValueAt(pts, raidAim.x, raidAim.z) or 0
+        local why
+        if not raidAim or not raidAim.dense then
+            why = "first sighting"
+        elseif live < raidAim.score * RAID_STALE_FRAC then
+            why = string.format("aim depleted (%d of %d left)", live, raidAim.score)
+        elseif bscore > live * RAID_RETARGET and frame - (raidAim.since or 0) >= RAID_SWITCH_GAP then
+            why = "denser cluster"
+        elseif raidAim.lookAt and frame >= raidAim.lookAt then
+            if bscore > live and (bx2 - raidAim.x) ^ 2 + (bz2 - raidAim.z) ^ 2 > 60 ^ 2 then
+                why = "post-drop look"
+            end
+            raidAim.lookAt = nil
+        end
+        if why then
+            raidAim = { x = bx2, z = bz2, score = bscore, dense = true, since = frame }
+            retarget = true
+            Spring.Echo(string.format("[RAID] bomb aim (%d, %d) cluster value=%d frame=%d: %s",
+                bx2, bz2, bscore, frame, why))
+        end
+    elseif not raidAim then
+        -- Nothing visible yet: head for the enemy start position; the spotter is ahead.
+        raidAim = { x = bx, z = bz, score = 0, dense = false }
+        retarget = true
+    end
+
+    for _, kind in ipairs({ "spotter", "fighter", "bomber" }) do
+        local group = {}
+        for _, uid in ipairs(field) do
+            if raidKind[uid] == kind then group[#group + 1] = uid end
+        end
+        if #group > 0 then
+            if kind == "bomber" then
+                local ay = spGetGroundHeight(raidAim.x, raidAim.z) or 0
+                for _, uid in ipairs(group) do
+                    -- Ground-attack the aim point (bombers on FIGHT only bomb what they
+                    -- can see); re-issue to idle ones so a second pass is made too.
+                    if retarget or IsIdle(uid) then
+                        spGiveOrderToUnit(uid, CMD_ATTACK, {raidAim.x, ay, raidAim.z}, {})
+                    end
+                end
+            else
+                local target = (kind == "fighter") and RaidPickTarget(cx, cz, bx, bz, true) or nil
+                for _, uid in ipairs(group) do
+                    if target then
+                        spGiveOrderToUnit(uid, CMD_ATTACK, {target}, {})
+                    elseif IsIdle(uid) then
+                        raidSweepIdx = raidSweepIdx % #waypoints + 1
+                        local wp = waypoints[raidSweepIdx]
+                        local wx = math.max(MAP_MARGIN, math.min(mapX - MAP_MARGIN, wp[1]))
+                        local wz = math.max(MAP_MARGIN, math.min(mapZ - MAP_MARGIN, wp[2]))
+                        -- The spotter only needs to be over the base and stay alive long
+                        -- enough to show the bombers where the value is.
+                        local cmd = (kind == "spotter") and CMD_MOVE or CMD_FIGHT
+                        spGiveOrderToUnit(uid, cmd, {wx, spGetGroundHeight(wx, wz) or 0, wz}, {})
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- ── Widget callbacks ──────────────────────────────────────────────────────────
 
 function widget:Initialize()
@@ -572,14 +922,31 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         return
     end
 
-    if IsScoutDef(unitDefID) then
+    if RAID_DEFS[d.name] then
+        -- Bombers and fighters wait at home for a wave; the spotter goes at once, so
+        -- it is over the enemy base before they are.
+        raidUnits[unitID] = (RAID_DEFS[d.name] == "spotter")
+        raidKind[unitID]  = RAID_DEFS[d.name]
+    elseif IsScoutDef(unitDefID) then
         scoutUnits[unitID] = unitDefID
     elseif d.weapons and #d.weapons > 0 then
         combatUnits[unitID] = unitDefID
     end
 end
 
-function widget:UnitDestroyed(unitID)
+function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
+    if attackerID and raidUnits[attackerID] and teamID ~= myTeamID then
+        local d = unitDefID and UnitDefs[unitDefID]
+        raidKills = raidKills + 1
+        Spring.Echo(string.format("[RAID] kill #%d %s%s frame=%d", raidKills,
+            d and d.name or "?",
+            (d and d.isBuilder and d.canFly and not d.isFactory) and " (air con)" or "",
+            Spring.GetGameFrame and Spring.GetGameFrame() or 0))
+    end
+    raidSeen[unitID]      = nil
+    raidUnits[unitID]     = nil
+    raidKind[unitID]      = nil
+    raidReloading[unitID] = nil
     combatUnits[unitID]   = nil
     scoutUnits[unitID]    = nil
     scoutAssigned[unitID] = nil
@@ -604,6 +971,9 @@ function widget:GameFrame(frame)
         AssignScouts(frame)
         IssueLineOrders()
     end
+
+    -- Fighters are fast, so re-aim them every second.
+    if frame % 30 == 0 then UpdateRaid(frame) end
 
     -- Retreat check every ~1s: override active commands for critical HP units.
     if frame % 30 == 0 and baseX then

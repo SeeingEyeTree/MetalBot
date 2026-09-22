@@ -46,14 +46,22 @@ BAR_DATA_DIR = Path(os.environ.get(
 ))
 MAP_NAME         = "Full Metal Plate 1.7"
 DEFAULT_DURATION = 400
-MAX_GAME_MINUTES = 75                         # in-game time cap
-DRAW_FRAME       = MAX_GAME_MINUTES * 60 * 30  # 135 000 game frames at 30 fps
-# Game frame at which both sides self-destruct their commander so the match ends
-# cleanly. A frame trigger is symmetric and deterministic across both processes,
-# unlike the os.clock() deadline, which measures CPU time and drifts per process.
-# The engine only writes a replay's footer on a clean shutdown, so without this a
-# match stopped by the wall-clock kill leaves a 0-byte .sdfz.
-END_FRAME        = 36000                       # 20 game-minutes at 30 fps
+# A match runs normally until this much GAME time has passed. Then both commanders
+# self-destruct and the winner is declared from stats (see END_SCORE below). Configure with
+# --end-minutes. The frame trigger is symmetric across both processes, and a clean
+# self-destruct is also what lets the engine write the replay footer: a match stopped by
+# the wall-clock kill leaves a 0-byte .sdfz.
+END_MINUTES      = 60
+FPS              = 30
+END_FRAME        = END_MINUTES * 60 * FPS      # 108 000 game frames
+# Winner score = army metal value + ECO_WEIGHT_SECS * metal income per second, i.e. the
+# army you have plus that many seconds of the economy that will build the next one.
+ECO_WEIGHT_SECS  = 60
+TIE_MARGIN       = 1.1                         # a score must beat the other by 10%
+# Rough real seconds per game frame on the test hardware, used only to pick a default
+# --duration long enough for END_FRAME to be reached. Measured ~100-130 frames/s early on;
+# it slows as unit counts grow, hence the conservative 80.
+FRAMES_PER_REAL_SEC = 80
 EXIT_GRACE       = 60                          # seconds to finish after the deadline
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -62,9 +70,9 @@ EXIT_GRACE       = 60                          # seconds to finish after the dea
 class MatchResult:
     """Structured output from a single bot-vs-bot match."""
     winner:             "int | None"    # 0, 1, or None (draw/unknown)
-    winner_method:      str             # "game_over"|"draw_score"|"unit_count_fallback"|"draw"
+    winner_method:      str             # "end_score"|"end_score_wallclock"|"game_over"|"unit_count_fallback"|"draw"
     units_built:        dict            # {0: int, 1: int}  cumulative over whole match
-    draw_score:         "dict | None"   # {nc0,nc1,mv0,mv1,score_winner} — only when time limit hit
+    draw_score:         "dict | None"   # end-of-match score per team + score_winner; None if no limit was hit
     sanity:             dict            # {0: {alive_nc,built}, 1: ...} — from 1-game-min check
     sanity_pass:        dict            # {0: bool, 1: bool}
     resource_timeline:  list            # [{frame,game_min,team,metal,metal_inc,energy,energy_inc}]
@@ -76,6 +84,8 @@ class MatchResult:
     bot1_name:          str             # directory name of team-1 bot
     timestamp:          str             # ISO-8601 UTC
     log_excerpt:        str             # last 20 interesting log lines joined with \n
+    end_reason:         "str | None" = None   # "frame" (full length), "wallclock" (cut short), None
+    tracker_timeline:   list = field(default_factory=list)  # [TRK] rows from the stats tracker
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -99,6 +109,8 @@ class MatchResult:
             "bot1_name":         self.bot1_name,
             "timestamp":         self.timestamp,
             "log_excerpt":       self.log_excerpt,
+            "end_reason":        self.end_reason,
+            "tracker_timeline":  self.tracker_timeline,
         }
 
 
@@ -106,12 +118,16 @@ class MatchResult:
 
 # Logs unit creation events and periodic unit-count summaries.
 STATS_WIDGET = r"""
--- frame constants (mirror bot_testing.py constants)
-local DRAW_FRAME  = __END_FRAME__   -- game frame at which the match is ended
--- Wall-clock adjudication deadline, injected by setup_player. DRAW_FRAME alone is
--- unreachable in a normal match (the sim only reaches ~30k frames in 150 real seconds
--- on this hardware, not 135k), so without this the fair scoring path never ran.
+-- Constants injected by setup_player.
+local END_FRAME   = __END_FRAME__   -- game frame at which the match is ended by stats
+local ECO_WEIGHT  = __ECO_WEIGHT__  -- seconds of metal income counted into the score
+-- Wall-clock BACKSTOP. If the game-frame limit is not reached in this many real seconds
+-- (slow hardware, or a deliberately short test run) the match is ended and scored anyway,
+-- tagged reason=wallclock so it is never mistaken for a full-length verdict. It uses
+-- os.time, not os.clock: os.clock is per-process CPU time, which drifts between the two
+-- headless processes and made them adjudicate at different game frames.
 local ADJ_SECS    = __ADJ_SECS__
+local clock       = os.time or os.clock
 local SANITY_FRAME = 1800    -- 1 game-minute
 local startTime   = nil
 
@@ -134,7 +150,7 @@ function widget:GetInfo()
 end
 
 function widget:GameStart()
-    startTime = os.clock()
+    startTime = clock()
 end
 
 -- ── UnitCreated ───────────────────────────────────────────────────────────────
@@ -160,8 +176,8 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
 end
 
 -- ── Helper: live stats via direct unit query ──────────────────────────────────
--- Works correctly on P0 (fullview=1) for both teams.
--- On P1, GetTeamUnits(0) returns empty — P0 log is authoritative.
+-- Only meaningful for the team this process controls: a headless client cannot see the
+-- other team's units, so every process scores its OWN team and Python compares the two.
 local function teamLiveStats(teamID)
     local mv, nc = 0, 0
     for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
@@ -175,6 +191,22 @@ local function teamLiveStats(teamID)
         end
     end
     return mv, nc
+end
+
+-- Army for the end-of-match score: finished, armed, mobile, non-commander units. Structures
+-- are left out on purpose; the economy is scored separately through metal income.
+local function myArmy(teamID)
+    local mv, n = 0, 0
+    for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
+        local defID = Spring.GetUnitDefID(uid)
+        local d = defID and UnitDefs[defID]
+        if d and not isCommander(defID) and d.canMove
+           and d.weapons and #d.weapons > 0 and not Spring.GetUnitIsBeingBuilt(uid) then
+            mv = mv + (d.metalCost or 0)
+            n  = n + 1
+        end
+    end
+    return mv, n
 end
 
 -- ── GameFrame ─────────────────────────────────────────────────────────────────
@@ -219,22 +251,26 @@ function widget:GameFrame(n)
         end
     end
 
-    -- Draw detection at DRAW_FRAME: score the game, then self-d own commander.
-    -- P0 (fullview) emits accurate cross-team scores; Python uses P0 as authoritative.
-    -- Both processes independently kill their own commander so the game ends cleanly.
-    local deadlineHit = (startTime ~= nil) and (os.clock() - startTime >= ADJ_SECS)
-    if (n >= DRAW_FRAME or deadlineHit) and not drawDone then
+    -- End of match: score OWN team only, then self-destruct own commander. Python takes
+    -- team 0's line from P0 and team 1's from P1 and compares them.
+    local reason
+    if n >= END_FRAME then
+        reason = "frame"
+    elseif startTime ~= nil and clock() - startTime >= ADJ_SECS then
+        reason = "wallclock"
+    end
+    if reason and not drawDone then
         drawDone = true
-        local mv0, nc0 = teamLiveStats(0)
-        local mv1, nc1 = teamLiveStats(1)
-        local scoreWinner = -1
-        if mv0 > mv1 * 1.1 then scoreWinner = 0
-        elseif mv1 > mv0 * 1.1 then scoreWinner = 1
-        end
-        Spring.Echo(string.format(
-            "[DRAW_SCORE] frame=%d nc0=%d nc1=%d mv0=%.0f mv1=%.0f score_winner=%d",
-            n, nc0, nc1, mv0, mv1, scoreWinner))
         local myTeam = Spring.GetMyTeamID()
+        local armyMv, armyN = myArmy(myTeam)
+        local _, _, _, metalInc = Spring.GetTeamResources(myTeam, "metal")
+        local _, _, _, energyInc = Spring.GetTeamResources(myTeam, "energy")
+        metalInc = metalInc or 0
+        local ecoMv = metalInc * ECO_WEIGHT
+        Spring.Echo(string.format(
+            "[END_SCORE] reason=%s frame=%d team=%d army_mv=%.0f army_n=%d metal_inc=%.2f "
+            .. "energy_inc=%.1f eco_mv=%.0f score=%.0f",
+            reason, n, myTeam, armyMv, armyN, metalInc, energyInc or 0, ecoMv, armyMv + ecoMv))
         for _, uid in ipairs(Spring.GetTeamUnits(myTeam) or {}) do
             local defID = Spring.GetUnitDefID(uid)
             if defID then
@@ -422,7 +458,8 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
 
 def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
                  include_stats: bool, game_end_target: int, do_selfd: bool,
-                 spring_data: str, end_frame: int = END_FRAME) -> list:
+                 spring_data: str, end_frame: int = END_FRAME,
+                 eco_weight: float = ECO_WEIGHT_SECS) -> list:
     """
     Populate one player's write_dir with bot widgets, shared deps, shadow stubs,
     BYAR config, and springsettings.cfg.  Returns list of active widget names.
@@ -441,9 +478,20 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
     if include_stats:
         (widgets_dir / "headless_stats.lua").write_text(
             STATS_WIDGET.replace("__ADJ_SECS__", str(game_end_target))
-                        .replace("__END_FRAME__", str(end_frame)), encoding="utf-8")
+                        .replace("__END_FRAME__", str(end_frame))
+                        .replace("__ECO_WEIGHT__", str(eco_weight)), encoding="utf-8")
         skip.add("headless_stats.lua")
         active.append("Headless Stats")
+
+        # The general stats tracker: one private copy per process, so what it logs is what
+        # that bot can actually see. Same file a bot would run in a real game.
+        tracker_src = REPO_DIR / "metalbot_stats_tracker.lua"
+        if tracker_src.exists():
+            (widgets_dir / tracker_src.name).write_bytes(tracker_src.read_bytes())
+            skip.add(tracker_src.name)
+            active.append("Stats Tracker")
+        else:
+            print(f"  [{suffix}] WARNING: {tracker_src.name} missing; no tracker data")
 
     copy_shared_deps(widgets_dir, skip)
 
@@ -548,12 +596,10 @@ def _common_script_body(game_type, map_name, save_replay) -> str:
         "    [TEAM1]\n    {\n"
         "        teamleader=1;\n        allyteam=1;\n"
         "        side=Cortex;\n        rgbcolor=0.9 0.2 0.2;\n    }\n\n"
-        # fullview=1 on BOTH players. P0 needs it so the stats widget can see both
-        # teams' units. P1 needs it for *fairness*: without it team 1's bot plays
-        # fogged while team 0 effectively has full map vision, which silently decided
-        # every match -- side-swap tests showed whoever was --bot1 always won,
-        # regardless of which bot it was. Do not remove without re-running a
-        # side-swap sanity check. See knowledge/lessons_learned.md.
+        # fullview=1 on BOTH players, kept symmetric so neither bot plays fogged while the
+        # other sees the map. It is NOT relied on for stats: it has been observed not to
+        # give cross-team visibility headless, so every process scores only its own team.
+        # The stats tracker logs the fullview flag it actually gets ([TRK] init).
         "    [PLAYER0]\n    {\n        name=BotCtrl;\n        team=0;\n        fullview=1;\n    }\n"
         "    [PLAYER1]\n    {\n        name=BotB;\n        team=1;\n        fullview=1;\n    }\n"
     )
@@ -651,18 +697,45 @@ def _parse_winner(text: str) -> "int | None":
     return None
 
 
-def _parse_draw_score(text: str) -> "dict | None":
+def _parse_end_score(text: str, team: int) -> "dict | None":
+    """This team's own [END_SCORE] line, or None. Only the team's own process is asked."""
     for line in reversed(text.splitlines()):
-        m = re.search(
-            r"\[DRAW_SCORE\].*nc0=(\d+).*nc1=(\d+).*mv0=([\d.]+).*mv1=([\d.]+).*score_winner=(-?\d+)",
-            line)
-        if m:
+        if "[END_SCORE]" not in line:
+            continue
+        kv = dict(re.findall(r"(\w+)=(\S+)", line))
+        if kv.get("team") != str(team):
+            continue
+        try:
             return {
-                "nc0": int(m.group(1)), "nc1": int(m.group(2)),
-                "mv0": float(m.group(3)), "mv1": float(m.group(4)),
-                "score_winner": int(m.group(5)),
+                "reason":     kv["reason"],
+                "frame":      int(kv["frame"]),
+                "army_mv":    float(kv["army_mv"]),
+                "army_n":     int(kv["army_n"]),
+                "metal_inc":  float(kv["metal_inc"]),
+                "energy_inc": float(kv["energy_inc"]),
+                "eco_mv":     float(kv["eco_mv"]),
+                "score":      float(kv["score"]),
             }
+        except (KeyError, ValueError):
+            return None
     return None
+
+
+def _parse_tracker(text: str, team: int) -> list:
+    """Rows from the stats-tracker widget: {kind, frame, team, <key>: number|str ...}."""
+    rows: list = []
+    for line in text.splitlines():
+        m = re.search(r"\[TRK\] (\w+) frame=(\d+) team=(\d+) ?(.*)", line)
+        if not m or int(m.group(3)) != team:
+            continue
+        row: dict = {"kind": m.group(1), "frame": int(m.group(2)), "team": team}
+        for k, v in re.findall(r"(\w+)=(\S+)", m.group(4)):
+            try:
+                row[k] = float(v) if ("." in v or "e" in v.lower()) else int(v)
+            except ValueError:
+                row[k] = v
+        rows.append(row)
+    return rows
 
 
 def _parse_sanity(text: str) -> dict:
@@ -723,6 +796,19 @@ def _parse_loss_summary(text: str) -> dict:
     return losses
 
 
+def _dedupe(rows: list) -> list:
+    """Drop repeated rows. _read_log concatenates headless.log and infolog.txt, which both
+    carry every Lua echo, so each timeline row is seen twice."""
+    seen: set = set()
+    out: list = []
+    for r in rows:
+        key = json.dumps(r, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
 def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
                 duration_secs: float) -> MatchResult:
     """Build a MatchResult from the raw log text of both headless processes."""
@@ -737,23 +823,29 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
 
     winner_raw = _parse_winner(p0_text) if _parse_winner(p0_text) is not None \
                  else _parse_winner(p1_text)
-    # Adjudicate by army metal value, taking each side's figure from the process that
-    # can actually see it. Both processes emit a [DRAW_SCORE] line at the same deadline,
-    # but each one's numbers for the *other* team are blind: in one mirror match P0
-    # reported mv0=194262 mv1=12599 while P1 reported mv0=9904 mv1=54920 for the very
-    # same frame. Only the own-team half of each line is trustworthy, so take mv0/nc0
-    # from P0 and mv1/nc1 from P1 and compare those.
-    ds0 = _parse_draw_score(p0_text)
-    ds1 = _parse_draw_score(p1_text)
+    # Adjudicate from each team's OWN [END_SCORE] line: team 0 from P0, team 1 from P1.
+    # Neither process can see the other team, so each scores only itself and the two
+    # numbers are compared here. If either line is missing (a process died, or the game
+    # ended by a genuine commander kill first) there is no score verdict.
+    es0 = _parse_end_score(p0_text, 0)
+    es1 = _parse_end_score(p1_text, 1)
     draw_score = None
-    if ds0 is not None and ds1 is not None:
-        mv0, ncl0 = ds0["mv0"], ds0["nc0"]
-        mv1, ncl1 = ds1["mv1"], ds1["nc1"]
-        if   mv0 > mv1 * 1.1: sw = 0
-        elif mv1 > mv0 * 1.1: sw = 1
-        else:                 sw = -1
-        draw_score = {"nc0": ncl0, "nc1": ncl1, "mv0": mv0, "mv1": mv1,
-                      "score_winner": sw}
+    end_reason = None
+    if es0 is not None and es1 is not None:
+        if   es0["score"] > es1["score"] * TIE_MARGIN: sw = 0
+        elif es1["score"] > es0["score"] * TIE_MARGIN: sw = 1
+        else:                                          sw = -1
+        # "frame" only if BOTH sides hit the game-time limit.
+        end_reason = "frame" if es0["reason"] == es1["reason"] == "frame" else "wallclock"
+        draw_score = {
+            "reason": end_reason, "score_winner": sw,
+            "nc0": es0["army_n"],   "nc1": es1["army_n"],
+            "mv0": es0["army_mv"],  "mv1": es1["army_mv"],
+            "metal_inc0": es0["metal_inc"], "metal_inc1": es1["metal_inc"],
+            "eco_mv0": es0["eco_mv"], "eco_mv1": es1["eco_mv"],
+            "score0": es0["score"], "score1": es1["score"],
+            "frame0": es0["frame"], "frame1": es1["frame"],
+        }
 
     # Sanity, same rule: team 0 from P0, team 1 from P1. P0 used to overwrite P1's entry
     # for team 1 with its own blind reading, which is why team 1 reported "0 built at
@@ -763,22 +855,25 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
     if 0 in s_p0: sanity[0] = s_p0[0]
     if 1 in s_p1: sanity[1] = s_p1[1]
 
-    # Determine winner — priority: draw score > natural GameOver > unit-count fallback.
-    # draw_score is only emitted when the adjudication deadline was reached, and in that
-    # case both players self-d simultaneously, so the resulting GameOver just reflects
-    # whichever scripted suicide the engine processed first. The army-value score is the
-    # real verdict, so it has to outrank it. A genuine commander kill before the deadline
-    # emits no draw_score at all, and falls through to winner_raw as before.
+    # Determine winner — priority: end score > natural GameOver > unit-count fallback.
+    # The end score is only emitted when the match limit was reached, and then both
+    # players self-d together, so the resulting GameOver just reflects whichever scripted
+    # suicide the engine processed first. The stats score is the real verdict and must
+    # outrank it. A genuine commander kill before the limit emits no end score at all
+    # and falls through to winner_raw.
     game_winner = None
     game_method = "draw"
     if draw_score is not None:
         sw = draw_score.get("score_winner", -1)
         game_winner = sw if sw >= 0 else None
-        game_method = "draw_score" if game_winner is not None else "draw_tied"
+        base = "end_score" if end_reason == "frame" else "end_score_wallclock"
+        game_method = base if game_winner is not None else base + "_tied"
     if game_winner is None and winner_raw is not None and draw_score is None:
         game_winner = winner_raw
         game_method = "game_over"
-    if game_winner is None:
+    # A tie on the end score stays a draw. Falling back to units built would let the
+    # slot-0 unit-cap saturation decide exactly the games the stats could not separate.
+    if game_winner is None and draw_score is None:
         if nc[0] > nc[1]:
             game_winner, game_method = 0, "unit_count_fallback"
         elif nc[1] > nc[0]:
@@ -798,7 +893,7 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
     interesting = [l for l in (p0_text + p1_text).splitlines() if any(
         kw in l for kw in ("Loading widget", "ERROR", "[STATS]", "[MC]", "[LC]",
                            "[UC]", "[WE]", "Player ", "Connection", "Initial Spawn",
-                           "finished loading", "[WINNER]", "[DRAW_SCORE]", "[SANITY]")
+                           "finished loading", "[WINNER]", "[END_SCORE]", "[TRK] init", "[SANITY]")
     )]
 
     return MatchResult(
@@ -811,11 +906,11 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         # Per-team sourcing again: P0 for team 0, P1 for team 1. Concatenating the two
         # logs mostly worked because each process only logs its own team mid-game, but
         # both log both teams once the game is over, which injected junk rows.
-        resource_timeline = ([r for r in _parse_resource_timeline(p0_text) if r.get("team") == 0]
-                             + [r for r in _parse_resource_timeline(p1_text) if r.get("team") == 1]),
+        resource_timeline = _dedupe([r for r in _parse_resource_timeline(p0_text) if r.get("team") == 0]
+                                    + [r for r in _parse_resource_timeline(p1_text) if r.get("team") == 1]),
         # Same sourcing rule: each team's rows come from the process that can see it.
-        army_timeline     = ([r for r in _parse_army_timeline(p0_text) if r.get("team") == 0]
-                             + [r for r in _parse_army_timeline(p1_text) if r.get("team") == 1]),
+        army_timeline     = _dedupe([r for r in _parse_army_timeline(p0_text) if r.get("team") == 0]
+                                    + [r for r in _parse_army_timeline(p1_text) if r.get("team") == 1]),
         loss_summary      = {0: loss_p0.get(0, {}), 1: loss_p1.get(1, {})},
         lua_errors        = extract_lua_errors(p0_text, p1_text),
         duration_secs     = duration_secs,
@@ -823,6 +918,9 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         bot1_name         = bot1_name,
         timestamp         = datetime.now(timezone.utc).isoformat(),
         log_excerpt       = "\n".join(interesting[-20:]),
+        end_reason        = end_reason,
+        # Own-team rows only, each from the process that controls that team.
+        tracker_timeline  = _dedupe(_parse_tracker(p0_text, 0) + _parse_tracker(p1_text, 1)),
     )
 
 
@@ -836,12 +934,15 @@ def run_match(
     save_replay: bool = False,
     verbose: bool = True,
     end_frame: int = END_FRAME,
+    eco_weight: float = ECO_WEIGHT_SECS,
 ) -> MatchResult:
     """
     Run a headless bot-vs-bot match and return a structured MatchResult.
 
     bot0_dir / bot1_dir must contain *.lua widget files.
-    duration is wall-clock seconds; the game runs at ~20-100x in-game speed.
+    duration is wall-clock seconds; the game runs at ~20-100x in-game speed. It is a
+    backstop: the match normally ends at end_frame game frames, and only ends earlier
+    (result.end_reason == "wallclock") if duration - 150s of real time passes first.
     """
     bot0_files = sorted(Path(bot0_dir).glob("*.lua"))
     bot1_files = sorted(Path(bot1_dir).glob("*.lua"))
@@ -886,7 +987,7 @@ def run_match(
     game_end_target = max(30, duration - 150)
     setup_player(p0_dir, bot0_files, 0, "T0", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 spring_data=spring_data)
+                 eco_weight=eco_weight, spring_data=spring_data)
     # do_selfd=False on BOTH players. It used to be True for P1 only, which meant team 1
     # self-destructed its own commander at game_end_target while team 0 never did --
     # with deathmode=com that handed team 0 an automatic "game_over" win in every match
@@ -895,7 +996,7 @@ def run_match(
     # The stats widget now ends the match symmetrically at the same deadline instead.
     setup_player(p1_dir, bot1_files, 1, "T1", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 spring_data=spring_data)
+                 eco_weight=eco_weight, spring_data=spring_data)
 
     write_script(p0_dir / "startscript.txt",
         render_host_script("BotCtrl", game_type, map_name, save_replay, host_port))
@@ -983,16 +1084,19 @@ def run_match(
     duration_secs = time.monotonic() - global_start
 
     if save_replay:
-        demos_src = p0_dir / "demos"
-        if not demos_src.is_dir():
-            demos_src = p0_dir / "demos-server"
+        # Either client may be the one that recorded it (observed: only P1's demos/ held
+        # the file), so look in both and keep the largest non-empty one.
+        found = [f for d in (p0_dir, p1_dir) for sub in ("demos", "demos-server")
+                 for f in (d / sub).glob("*.sdfz") if f.stat().st_size > 0]
         demos_dst = BAR_DATA_DIR / "demos"
         demos_dst.mkdir(exist_ok=True)
-        for sdfz in sorted(demos_src.glob("*.sdfz")):
-            if sdfz.stat().st_size > 0:
-                shutil.copy2(str(sdfz), str(demos_dst / sdfz.name))
-                if verbose:
-                    print(f"\nReplay saved: {demos_dst / sdfz.name}")
+        if found:
+            best = max(found, key=lambda f: f.stat().st_size)
+            shutil.copy2(str(best), str(demos_dst / best.name))
+            if verbose:
+                print(f"\nReplay saved: {demos_dst / best.name}")
+        elif verbose:
+            print("\nWARNING: --save-replay set but no non-empty .sdfz was found.")
 
     return _parse_logs(
         _read_log(p0_log), _read_log(p1_log),
@@ -1029,9 +1133,12 @@ def print_result(result: MatchResult) -> None:
 
     if result.draw_score:
         ds = result.draw_score
-        print(f"\nDraw score at {MAX_GAME_MINUTES} game-min:")
-        print(f"  Team 0: {ds['nc0']} alive units  {ds['mv0']:.0f} metal value")
-        print(f"  Team 1: {ds['nc1']} alive units  {ds['mv1']:.0f} metal value")
+        cut = "" if result.end_reason == "frame" else "  ** CUT SHORT by wall-clock, not a full-length verdict **"
+        print(f"\nEnd score (frames {ds['frame0']}/{ds['frame1']}, {result.end_reason}){cut}:")
+        for t in (0, 1):
+            print(f"  Team {t}: score {ds[f'score{t}']:8.0f} = army {ds[f'mv{t}']:.0f} "
+                  f"({ds[f'nc{t}']} units) + eco {ds[f'eco_mv{t}']:.0f} "
+                  f"(metal income {ds[f'metal_inc{t}']:.1f}/s)")
 
     print(f"\nSanity check (1 game-minute):")
     for t in (0, 1):
@@ -1098,14 +1205,18 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--bot1", required=True, metavar="PATH", help="Team-0 bot folder")
     p.add_argument("--bot2", required=True, metavar="PATH", help="Team-1 bot folder")
-    p.add_argument("--duration", type=int, default=DEFAULT_DURATION, metavar="SECS",
-                   help="Real seconds to run before killing (default: 300)")
+    p.add_argument("--duration", type=int, default=None, metavar="SECS",
+                   help="Real-seconds backstop; the match is cut short (and marked so) if "
+                        "the game-time limit is not reached by then. Default: long enough "
+                        "for --end-minutes (~end-frame/80 + 300s), min %ds" % DEFAULT_DURATION)
     p.add_argument("--save-replay", action="store_true")
     p.add_argument("--map", default=MAP_NAME, dest="map_name")
-    p.add_argument("--end-frame", type=int, default=END_FRAME, dest="end_frame",
-                   help="game frame at which both commanders self-destruct so the "
-                        "match ends cleanly and the replay is written "
-                        "(default: 36000 = 20 game-min)")
+    p.add_argument("--end-minutes", type=float, default=END_MINUTES, dest="end_minutes",
+                   help="game minutes after which both commanders self-destruct and the "
+                        "winner is declared from stats (default: %g)" % END_MINUTES)
+    p.add_argument("--eco-weight", type=float, default=ECO_WEIGHT_SECS, dest="eco_weight",
+                   help="seconds of metal income added to army metal value in the end "
+                        "score (default: %g)" % ECO_WEIGHT_SECS)
     p.add_argument("--save-result", metavar="PATH",
                    help="Write result.json to this path after the match")
     args = p.parse_args()
@@ -1116,14 +1227,17 @@ def main() -> None:
         if not d.is_dir():
             sys.exit(f"{label}: folder not found: {d}")
 
+    end_frame = int(args.end_minutes * 60 * FPS)
+    duration = args.duration or max(DEFAULT_DURATION, end_frame // FRAMES_PER_REAL_SEC + 300)
     result = run_match(
         bot0_dir    = bot1_dir,
         bot1_dir    = bot2_dir,
-        duration    = args.duration,
+        duration    = duration,
         map_name    = args.map_name,
         save_replay = args.save_replay,
         verbose     = True,
-        end_frame   = args.end_frame,
+        end_frame   = end_frame,
+        eco_weight  = args.eco_weight,
     )
 
     print_result(result)

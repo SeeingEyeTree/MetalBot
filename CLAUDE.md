@@ -14,7 +14,13 @@ A bot is a **folder** containing three Lua widget files:
 | `lab_controller.lua` | Factory queues: what units each lab builds and in what ratio |
 | `unit_controller.lua` | Combat/scouts: where units move and how they fight |
 
-The existing bot is `OK_BOT/`. Copy it as a starting point for a new bot.
+`OK_BOT/` is the original reference bot. `DRAGON_BOT/` is the current main bot (sim-derived
+opening, executed distributed via `blueprint_placer.lua`, then mex-grid scaling — see
+`knowledge/lessons_learned.md`). `RAIDER_BOT/` and `GROUND_RAIDER_BOT/` are DRAGON_BOT-derived
+**exploiter fixtures**, not champion candidates: each is tuned to hit a specific known weakness
+(no AA, no ground defence) as early as possible, so `find_bot_weakness` can test threat response
+on demand instead of waiting for an opponent that might raid. Copy `DRAGON_BOT/` as a starting
+point for a new bot; keep exploiter variants in their own folders rather than merging them.
 
 ### Key Lua API calls used by bots
 
@@ -107,6 +113,52 @@ Pis are aarch64). A same-LAN Pi-to-Pi copy won't work directly between these two
 Pis ("No route to host" between their 192.168.1.x addresses) — route it over their Tailscale
 IPs instead, e.g. `tar -C ~ -cf - bar_data | ssh iamtree@<new-pi-tailscale-ip> "tar -C ~ -xf -"`.
 
+## How matches end
+
+A match runs normally until **`--end-minutes`** of game time (default 60). Then both commanders
+self-destruct and the winner is declared from stats, not from which suicide the engine
+processed first. Each process scores only its **own** team (a headless client cannot see the
+other; the tracker's `[TRK] init` line logs `fullview=0` in both), and Python compares the two:
+
+    score = army metal value (finished, armed, mobile units) + --eco-weight (default 60) x metal income/s
+
+A score must beat the other by 10% to win; otherwise the result is a draw (`end_score_tied`) —
+it deliberately does NOT fall back to units built. `--duration` is only a real-time backstop; if
+it fires first the result is tagged `end_score_wallclock` / `end_reason: wallclock` and is not a
+full-length verdict. Default `--duration` is derived from `--end-minutes` (~frames/80 + 300s).
+
+## Stats tracker
+
+`metalbot_stats_tracker.lua` is a general widget (also deployed to BAR by `deploy.ps1`). Each
+headless process gets its own copy, so it logs only what that bot can see. Every 30 game-seconds it
+writes `[TRK] eco | units | army | intel | combat` rows plus once-only `event` lines; the harness
+parses them into `result["tracker_timeline"]` (dicts with `kind`, `frame`, `team` and the fields).
+The header comment in the file is the reference for every field. The signals that matter for finding
+weaknesses:
+
+- **Economy/production:** stall and float fractions, metal pull vs income, `units_total`/`unit_cap`,
+  factories busy/idle, build power idle.
+- **Threat response:** `first_enemy_seen`, `first_enemy_near_base` (with `warned_dist`/`lead_frames`),
+  `first_damage_taken`, `first_army`, `first_defense`, `first_aa` (dedicated AA only), and how much
+  of the army/defence can hit air (`*_hits_air`, `aa_dedicated`) or ground.
+- **Awareness:** `los_frac`, `radar_frac`, `explored_frac` (share of the map ever seen).
+- **Attrition:** `cons_alive`, `lost_cons`, `cons_all_dead`/`cons_restored` events, `lost_enemy_*`
+  (enemy-attributed losses; `lost_*` also counts the bot's own reclaims), `killers=`, `lost_to_air`.
+- **Engagement shape:** `pm_deaths`/`pm_isolated`/`pm_support_avg` (did our units die alone?),
+  `groups`/`main_share` (is the army one group?).
+- **Cover and strategic threats:** `fac_aa_cover`/`fac_aa_ded_cover`, `fighters`; `antinuke`,
+  `fac_antinuke_cover`, `silo`, `lrpc`; enemy `first_enemy_nuke`/`first_enemy_lrpc`.
+- **Commander:** a `cmdr` row (hp, distance from base, enemies/friends/AA/anti-nuke near it) and
+  `commander_lost killer=`.
+- **Radar blips:** radar-only contacts are tracked; a moving blip's speed is matched to unit types
+  (either/or): `first_radar_moving`, `blip_*`, and `WG.StatsTracker.DecodeSpeed(speed)` for bots.
+- Not tracked: cloaked/stealth units (see `knowledge/game_mechanics.md` 7.5).
+
+`python find_weakness.py result.json` reads those rows and ranks likely weaknesses; the
+`/find_bot_weakness <bot>` command wraps it into a full diagnosis (it reports weaknesses, it does not
+fix them; `improve_bot` does that). Both Pis need the new `bot_testing.py` and tracker;
+`remote_testing.py` does not sync them.
+
 ## Reading test results
 
 The test prints a summary at the end:
@@ -173,10 +225,22 @@ Or the deploy skill runs automatically when a `.lua` file is created or modified
 MetalBot/
   bot_testing.py       — test harness (single match; rarely what you want directly)
   ab_test.py           — CORRECT way to compare two bots: both slot orders, frame-18000 metric
-  OK_BOT/              — reference bot (Cortex faction)
+  find_weakness.py     — ranks likely weaknesses from a result's tracker_timeline
+  replay_analysis.py   — economy/combat telemetry from a .sdfz replay (needs a clean game-end)
+  build_order_sim.py   — beam-search opening optimizer; modes incl. max_rate and config-driven
+                          `raid` (raid_configs/*.json: unit milestones, required/weight)
+  blueprint_gen.py     — turns a build_order_sim.py result into a blueprint .lua + layout image;
+                          reserves an exit corridor (M.keepout) for ground-unit factories
+  OK_BOT/              — original reference bot (Cortex faction)
+  DRAGON_BOT/          — current main bot: sim-derived opening + mex-grid scaling
+  RAIDER_BOT/          — exploiter: air raid (bombers) on an early timer
+  GROUND_RAIDER_BOT/   — exploiter: ground raid (Incisors + fighter escort) on an early timer
     macro_controller.lua
     lab_controller.lua
     unit_controller.lua
-  blueprint_placer.lua — shared helper (mex grid expansion)
-  blueprints/          — mex grid layout data files
+  blueprint_placer.lua — shared helper (distributed build orders, mex grid expansion)
+  bar_framework/       — shared widgets loaded via VFS.Include (escape_guard, nano_broker, ...)
+  blueprints/          — blueprint .lua files + the build_order_sim.py results they came from
+  raid_configs/        — build_order_sim.py `raid` mode configs
+  knowledge/raid_runs/ — saved exploiter-bot match results and analysis
 ```

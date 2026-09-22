@@ -4,8 +4,8 @@
 -- Load in a widget with:
 --   local RU = VFS.Include("LuaUI/Widgets/bar_framework/resource_utils.lua")
 --
--- All functions take a teamID argument so they work for any team (P0 can query
--- both teams due to fullview=1; P1 can query its own team reliably).
+-- All functions take a teamID argument so they work for any team (do not assume
+-- both teams; a headless client reliably sees only its own team, so query your own).
 
 local M = {}
 

@@ -138,7 +138,33 @@ diagnostic match to find:
   `replay_analysis.py` reports `Duration: 0s`. End matches by a *game frame* trigger (both
   sides self-destruct their commander symmetrically) and give the process time to quit.
   Note `os.clock()` in a widget is CPU time, not wall time, so clock-based deadlines drift
-  per process and are not symmetric.
+  per process and are not symmetric. This also happens on an ABRUPTLY-CLOSED local client
+  session (not just a headless wall-clock kill): the file need not be near-empty — one
+  observed case was 826 KB with a genuine ~5 MB packet stream inside — but
+  `durationMs`/`numPlayers`/`numTeams`/`teamStatSize` in the footer are all zero, so
+  `replay_analysis.py` has nothing to read even though the game was real. Only a proper
+  end-of-game/quit flow writes usable stats; there is currently no fallback that
+  reconstructs them from the raw packet stream.
+- **`Spring.GetUnitCommands()` can lag well behind an order that has actually landed, and
+  the lag is asymmetric between the match HOST and a connecting CLIENT.** In
+  `bot_testing.py`, team 0 runs as the host and team 1 connects as a player; querying a
+  just-issued order's presence in `Spring.GetUnitCommands()` is near-instant for the host's
+  own units but can take several real seconds on the client side. `blueprint_placer.lua`
+  polls this to confirm a build order landed before trusting it (`ORDER_GRACE_FRAMES`,
+  historically 30 frames / 1s, tuned against host-side behaviour); on the client side the
+  order had genuinely landed — the building completed moments later regardless — but the
+  query still read empty at the 30-frame check, so the code judged it dropped and
+  re-tasked the builder onto a different item, abandoning a real, in-progress structure.
+  Measured on one match: team 0 (host) 0 skips in 4 minutes, team 1 (client) 26, same code,
+  same conditions. Fixed by raising the grace period (90 frames) and, more importantly, by
+  never depending on a single poll being timely at all: every distributed builder is now
+  given a second, shift-queued order the moment the first is issued, refilled every time
+  the active order changes — so a slow confirmation matters far less, since the builder
+  always has real engine-side work queued regardless of what the query currently shows.
+  Post-fix: 2 skips instead of 26. See `knowledge/lessons_learned.md` "Client-side order
+  latency" for the full trace. This is a harness/engine-interaction fact, not specific to
+  any one bot, and headless-localhost latency may understate what a real (non-localhost)
+  multiplayer match would show.
 
 ---
 
@@ -219,9 +245,42 @@ Needs a standing **baseline** at all times (getting caught with zero AA against 
 
 ### 7.4 Combat model notes
 
-- No damage types or armor classes exist in this game — combat is fundamentally HP vs. DPS, range, and speed.
+- Combat is mostly HP vs. DPS, range, and speed, with one exception the author has confirmed: **some units do different damage to air targets** (anti-air weapons carry their own air damage). So a unit can be strong or weak against air independent of its ground stats. The exact rules are not verified against the unit definitions.
 - **Flanking damage** is real: a unit hit from multiple directions in quick succession takes multiplied damage (roughly up to ~2×, exact values unconfirmed). Not a current priority to model explicitly, but worth knowing it exists.
 - Terrain does not affect combat on this map (see §6).
+
+### 7.5 Threats and mechanics the bots do not yet handle
+
+Confirmed by the author (2026-09-21). None of these has a detector or counter in any bot yet; the
+stats tracker records what it can (see `metalbot_stats_tracker.lua`).
+
+- **Nukes and anti-nukes.** Nuclear silos are a real late-game threat, and a bot banking tens of
+  thousands of metal with a clustered production base is a natural target. The counter is an anti-nuke
+  covering the production cluster. Tracked: own `antinuke`, `silo`, `fac_antinuke_cover`; enemy
+  `first_enemy_nuke` / `first_enemy_antinuke` / `vis_nuke`.
+- **Long-range plasma cannons (LRPCs) and the "lol cannon".** Static long-range guns (LRPC-class and
+  the very-long-range "lol cannon") can hit a base from outside its defences and are especially
+  dangerous to a bot with a low unit count. Tracked as a static ground-attack weapon of very long range
+  (`lrpc`, `first_enemy_lrpc`, `vis_lrpc`). Classification is from weapon data and is unverified: check
+  the `[TRK] def` lines.
+- **Cloaked / stealth units (spy bots, skuttles).** They cannot be detected without counter-intrusion
+  equipment. How realistic it is to build detection across a large front is an open question, so this is
+  a **note only**: it is *not* tracked and *not* modelled. A bot that loses units to something it never
+  saw may be losing them to this.
+- **Air has no repair pads or air bases** (they were removed from the game). **Bombers are one-way**:
+  they should never retreat to heal, and their attrition is not itself a weakness. Do not flag it.
+- **Radar blips can be partly identified by speed.** A radar-only contact has no unit type, but if it
+  moves its speed can be measured, and every unit type has a known speed. Several types share a speed,
+  so the honest answer is a list ("either/or") until the unit is seen. The tracker does this
+  (`first_radar_moving`, `blip_*`, and `WG.StatsTracker.DecodeSpeed(speed)` for a bot to call).
+- **Piecemeal engagement and AA coverage** are measured, not just assumed: `pm_*` (were our units
+  alone when they died?), `groups` / `main_share` (is the army in one group?), `fac_aa_cover` /
+  `fac_aa_ded_cover` (do the factories have air cover?), and the `cmdr` row (is the commander alone?).
+
+Hypotheses not yet confirmed by the author (treat as ideas, not facts): nano turrets healing units in
+range could serve as a free repair network; wrecks near the base are free metal (`wreck_metal`); and
+the unit cap may crowd out the army when most of it is economy structures (compare `units_total`
+against `unit_cap` and the per-role counts).
 
 ---
 
