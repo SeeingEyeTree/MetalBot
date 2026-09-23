@@ -1,7 +1,7 @@
--- lab_controller.lua  ─  Factory queue manager with scout support
--- Labs with a defined LAB_QUEUES entry use a proportional build order that
--- loops forever. All other labs fall back to scout-first then generic combat
--- unit selection. BLACKLIST units are never built by any lab.
+-- lab_controller.lua  ─  Factory queue manager
+-- Priority per idle lab: an outmatched threat first, then scouts, then the defence
+-- floor (fighters, vehicle defenders), then army -- the last only out of surplus
+-- metal.  BLACKLIST units are never built by any lab.
 
 local widget = widget
 local Spring = Spring
@@ -28,8 +28,24 @@ local ARMY_PICKS = {
     cheap    = {"corbw"},     -- Shuriken
     main     = {"corape"},    -- Wasp
     floating = {"corcrwh"},   -- Dragon
+    -- Dedicated air-to-air.  corveng reads aaOnly=true (hits air, cannot hit ground),
+    -- which is the only kind of answer a bomber raid actually respects.
+    fighter  = {"corveng"},
+    -- corvp.  corgator (speed 85) and corraid (72) are fast enough to RESPOND to a
+    -- raid; corwolv/cormist are longer-ranged but too slow to chase anything.
+    vcheap   = {"corgator"},
+    vmain    = {"corraid"},
 }
-local FLOAT_FRAC = 0.40   -- metal at this share of storage: build the heavy unit
+-- Army beyond the defence floor is paid for out of surplus only: the macro is
+-- exponential and the army's job is to buy it time, not to compete with it.
+local FLOAT_FRAC     = 0.40   -- metal at this share of storage counts as floating
+local FLOAT_HEAVY    = 0.60   -- and at this share, build the expensive unit
+local FLOAT_SURPLUS  = 15     -- or income exceeding pull by this much (m/s): storage
+                              -- can be large enough that the fraction never trips
+-- The defence floor: built whether or not metal is floating, because it has to
+-- exist BEFORE the raid, not in response to it.
+local FIGHTER_TARGET  = 3
+local DEFENDER_TARGET = 4
 
 function widget:GetInfo()
     return {
@@ -57,73 +73,31 @@ local BLACKLIST = {
     corkarg  = true,
 }
 
--- Hard-coded build queues keyed by lab UnitDef name.
--- Each entry: { name = "unitDefName", count = N }
--- Units are interleaved proportionally to their counts and loop forever.
--- Labs not listed here fall back to generic scout/combat logic.
-local LAB_QUEUES = {
-    corvp = {        -- Vehicle Plant (T1)
-        { name = "corraid",  count = 15 },
-        { name = "corgator", count = 10 },
-        { name = "corlevlr", count =  5 },
-        { name = "cormist",  count =  2 },
-    },
-    coralab = {      -- Advanced Bot Lab (T2)
-        { name = "cormort",  count = 10 },
-        { name = "corsumo",  count =  2 },
-        { name = "coraak",   count =  1 },
-    },
-}
-
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 local myTeamID     = nil
 local labs         = {}   -- [labID] = labDefID
 local scoutCount   = 0
 local myScouts     = {}   -- [unitID] = true
-local labQueueData = {}   -- [labID] = { sequence={defID,...}, idx=1 }
-
--- ── Queue generation ──────────────────────────────────────────────────────────
-
--- Weighted round-robin: produces a flat defID sequence that distributes units
--- proportionally to their counts. The sequence can be cycled with a modulo index.
-local function GenerateFlatQueue(spec, labDefID)
-    local total = 0
-    for _, entry in ipairs(spec) do total = total + entry.count end
-    if total == 0 then return {} end
-
-    local resolved = {}
-    for _, entry in ipairs(spec) do
-        local ud    = UnitDefNames and UnitDefNames[entry.name]
-        local defID = ud and ud.id
-        if defID then
-            resolved[#resolved + 1] = { defID = defID, count = entry.count }
-        else
-            Spring.Echo("[LabCtrl] WARNING: unknown unit '" .. entry.name
-                .. "' in queue for lab "
-                .. (UnitDefs[labDefID] and UnitDefs[labDefID].name or tostring(labDefID)))
-        end
-    end
-    if #resolved == 0 then return {} end
-
-    total = 0
-    for _, r in ipairs(resolved) do total = total + r.count end
-
-    local accum    = {}
-    local sequence = {}
-    for i = 1, #resolved do accum[i] = 0 end
-
-    for slot = 1, total do
-        local bestIdx, bestVal = 1, -math.huge
-        for i, r in ipairs(resolved) do
-            accum[i] = accum[i] + r.count
-            if accum[i] > bestVal then bestVal = accum[i]; bestIdx = i end
-        end
-        accum[bestIdx] = accum[bestIdx] - total
-        sequence[slot] = resolved[bestIdx].defID
-    end
-    return sequence
-end
+local myFighters   = {}   -- [unitID] = true
+-- What this widget has asked for, tracked here rather than read back from factory
+-- queues.  Counting only finished (or even started) units left a blind window
+-- between ORDERING a unit and its production starting -- minutes long during the
+-- economy's deliberate stall -- in which every tick saw the shortfall again and
+-- ordered another.  Scouts ordered at 5:40 finished at 7:52; five were queued.
+local building = {}       -- [unitID] = kind: started in a lab, not finished
+local ordered  = {}       -- { {defID, kind, frame}, ... } ordered, not yet started
+local ORDER_TTL = 3600    -- frames before an order that never started is written off
+local labPending   = {}   -- [labID] = frame a defence unit was put ahead of its queue
+-- Frames to leave a lab alone after ordering it.  Reading a factory's queue back
+-- (GetFactoryCommands) lags on the CLIENT process -- the documented host/client
+-- asymmetry (game_mechanics 2.7) that forced the macro's ORDER_GRACE_FRAMES to 90.
+-- Without this, team 1 saw its just-ordered queue as still empty and re-ordered every
+-- tick: five scouts in eight seconds, both labs idle at 5:00, and no fighter up
+-- before the bombers.  Slightly above the macro's 90 because this gap looked longer.
+local LAB_ORDER_GRACE = 120
+local labOrderFrame  = {}   -- [labID] = frame this widget last ordered it
+local myDefenders  = {}   -- [unitID] = true
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -148,9 +122,39 @@ local function IsScoutDef(d)
     return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0)
 end
 
+-- Shared classifier, so "is this a fighter" means the same thing here as it does in
+-- the unit controller and the stats tracker.  Loaded in Initialize.
+local UQ = nil
+
+-- Real air cover: flies, hits air, cannot hit ground.  Anything merely air-capable
+-- does not count -- almost every weapon reads as air-capable unless it says otherwise.
+local function IsFighterDef(defID)
+    return UQ ~= nil and UQ.is_air(defID) and UQ.is_dedicated_aa(defID)
+end
+
+-- A ground unit that can fight: what the vehicle plant is for.
+local function IsDefenderDef(d)
+    return UQ ~= nil and d ~= nil and (d.speed or 0) > 0 and not d.canFly
+       and not d.isBuilder and not d.isFactory and UQ.has_weapons(d.id)
+       and not UQ.is_commander(d.id)
+end
+
+local function KindOf(defID)
+    local d = defID and UnitDefs[defID]
+    if not d or d.isFactory then return nil end
+    if IsScoutDef(d) then return "scout" end
+    if IsFighterDef(defID) then return "fighter" end
+    if IsDefenderDef(d) then return "defender" end
+    return nil
+end
+
+local function NoteOrder(defID, frame)
+    local kind = KindOf(defID)
+    if kind then ordered[#ordered + 1] = { defID = defID, kind = kind, frame = frame } end
+end
+
 local armyCache = {}    -- [labDefID] = {cheap=defID, main=defID, floating=defID} or false
-local armyFlip  = {}    -- [labID] = alternates cheap/main; kept out of labQueueData,
-                        -- which holds the proportional-queue cursor for other labs
+local armyFlip  = {}    -- [labID] = alternates cheap/main
 
 local function MatchesName(od, wanted)
     local internal = string.lower(od.name or "")
@@ -228,6 +232,30 @@ local function QueueEmpty(labID)
     return not cmds or #cmds == 0
 end
 
+-- Put a unit NEXT in a lab's queue, ahead of whatever is waiting.  The macro keeps
+-- the air lab's queue full of air constructors for the grid system, and this widget
+-- used to act only when a queue was empty -- so from the weaker slot the air lab
+-- never had a gap, no fighter was ever built, and bombers killed the commander at
+-- 6:15.  Pattern copied from BAR's own unit_factory_quota.lua.  Position 1 (after
+-- the unit currently being built) rather than 0: 0 cancels the build in progress,
+-- and throwing away a half-built constructor is a pure loss.
+local CMD_INSERT       = CMD and CMD.INSERT
+local CMD_OPT_ALT      = (CMD and CMD.OPT_ALT) or 128
+local CMD_OPT_CTRL     = (CMD and CMD.OPT_CTRL) or 64
+local CMD_OPT_INTERNAL = (CMD and CMD.OPT_INTERNAL) or 8
+local PENDING_TIMEOUT  = 600   -- frames before an insert that never started is retried
+
+local function InsertNext(labID, defID)
+    if not CMD_INSERT then
+        spGiveOrderToUnit(labID, -defID, {}, {})
+        return
+    end
+    local _, busyTarget = Spring.GetUnitWorkerTask(labID)
+    local pos = busyTarget and 1 or 0
+    spGiveOrderToUnit(labID, CMD_INSERT,
+        { pos, -defID, CMD_OPT_ALT + CMD_OPT_INTERNAL }, CMD_OPT_ALT + CMD_OPT_CTRL)
+end
+
 local function CheapestScout(scouts)
     local best, bestCost = nil, math.huge
     for _, optID in ipairs(scouts) do
@@ -268,7 +296,26 @@ end
 
 function widget:Initialize()
     myTeamID = spGetMyTeamID()
+    local okU, rU = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/unit_query.lua")
+    if okU then UQ = rU
+    else Spring.Echo("[LabCtrl] ERROR loading unit_query: " .. tostring(rU)) end
     if DEBUG then Spring.Echo("[LabCtrl] Initialized team=" .. tostring(myTeamID)) end
+end
+
+-- A unit starting in a lab means that lab's pending insert has been honoured.  Scouts
+-- are counted from here, not only once finished: counting finished scouts alone let
+-- every idle lab queue one each tick while the earlier ones were still being built,
+-- and one lab turned out six scouts in six seconds during an air alarm.
+function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
+    if teamID ~= myTeamID then return end
+    if builderID and labPending[builderID] then labPending[builderID] = nil end
+    local kind = KindOf(unitDefID)
+    if kind then
+        building[unitID] = kind
+        for i = 1, #ordered do
+            if ordered[i].defID == unitDefID then table.remove(ordered, i); break end
+        end
+    end
 end
 
 function widget:UnitFinished(unitID, unitDefID, teamID)
@@ -281,31 +328,68 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         local labName = d.name or "?"
         if DEBUG then Spring.Echo("[LabCtrl] Lab registered id=" .. unitID .. " def=" .. labName) end
 
-        local spec = LAB_QUEUES[labName]
-        if spec then
-            local seq = GenerateFlatQueue(spec, unitDefID)
-            if #seq > 0 then
-                labQueueData[unitID] = { sequence = seq, idx = 1 }
-                if DEBUG then Spring.Echo("[LabCtrl] Using defined queue (" .. #seq .. " slots) for " .. labName) end
-            end
-        end
         return
     end
 
+    building[unitID] = nil
     if IsScoutDef(d) and not myScouts[unitID] then
         myScouts[unitID] = true
         scoutCount = scoutCount + 1
+    elseif IsFighterDef(unitDefID) then
+        myFighters[unitID] = true
+    elseif IsDefenderDef(d) then
+        myDefenders[unitID] = true
     end
 end
 
 function widget:UnitDestroyed(unitID)
     labs[unitID]        = nil
-    labQueueData[unitID] = nil
+    myFighters[unitID]   = nil
+    myDefenders[unitID]  = nil
+    building[unitID]     = nil
+    labPending[unitID]   = nil
+    labOrderFrame[unitID] = nil
     armyFlip[unitID]     = nil
     if myScouts[unitID] then
         myScouts[unitID] = nil
         scoutCount = math.max(0, scoutCount - 1)
     end
+end
+
+local function CountAlive(set)
+    local n = 0
+    for uid in pairs(set) do
+        if spGetUnitDefID(uid) then n = n + 1 else set[uid] = nil end
+    end
+    return n
+end
+
+-- Everything of a kind we already have or have asked for: alive, being built, and
+-- ordered but not started.  Stale orders expire so a dropped one cannot block forever.
+local function Have(kind, frame)
+    for i = #ordered, 1, -1 do
+        if frame - ordered[i].frame > ORDER_TTL then table.remove(ordered, i) end
+    end
+    local n = 0
+    for _, o in ipairs(ordered) do
+        if o.kind == kind then n = n + 1 end
+    end
+    for uid, k in pairs(building) do
+        if not spGetUnitDefID(uid) then building[uid] = nil
+        elseif k == kind then n = n + 1 end
+    end
+    local alive = (kind == "scout" and myScouts) or (kind == "fighter" and myFighters)
+                  or myDefenders
+    return n + CountAlive(alive)
+end
+
+local function Announce(frame, why, choice, labDefID, inserted)
+    local sec = math.floor(frame / 30)
+    Spring.Echo(string.format("[LabCtrl] %d:%02d %-14s %s in %s%s",
+        math.floor(sec / 60), sec % 60, why,
+        UnitDefs[choice] and UnitDefs[choice].name or "?",
+        UnitDefs[labDefID] and UnitDefs[labDefID].name or "?",
+        inserted and " (ahead of queue)" or ""))
 end
 
 function widget:GameFrame(frame)
@@ -322,51 +406,113 @@ function widget:GameFrame(frame)
     energyPull   = (okE and type(energyPull)   == "number") and energyPull   or 0
     energyIncome = (okE and type(energyIncome) == "number") and energyIncome or 0
 
+    -- Production urgency is judged by the unit controller, which can see both the
+    -- threat and what is in range to answer it (threat_map.ProductionUrgency).
+    local mb       = WG and WG.MetalBot
+    local urgency  = (mb and mb.urgency) or "none"
+    local urgentCh = mb and mb.urgencyChannel
+    local rush     = urgency == "rush"
+
+    -- The stall guard now only blocks DISCRETIONARY spending.  It used to return
+    -- before anything was decided, and the economy runs a deliberate stall through
+    -- the whole growth phase -- so the defence floor, which exists precisely because
+    -- it must be up before the raid, was silently never built.
     local metalStalling  = metalPull  > metalIncome  * 1.05
     local energyStalling = energyPull > energyIncome * 1.05
-    if (metalStalling or energyStalling) and metalCur < 50 then return end
+    local stalled        = (metalStalling or energyStalling) and metalCur < 50
 
-    local needScout = scoutCount < SCOUT_TARGET
+    local frac     = metalStorage > 0 and (metalCur / metalStorage) or 0
+    local floating = frac >= FLOAT_FRAC or (metalIncome - metalPull) >= FLOAT_SURPLUS
+    local heavy    = frac >= FLOAT_HEAVY
+
+    -- Counts include what is already ordered, and are bumped as orders go out below,
+    -- so two labs in the same tick cannot both answer the same shortfall.
+    local fightersHave  = Have("fighter", frame)
+    local defendersHave = Have("defender", frame)
+    local scoutsHave    = Have("scout", frame)
+    local scoutRoom     = SCOUT_TARGET - scoutsHave
 
     for labID, labDefID in pairs(labs) do
-        if spGetUnitDefID(labID) and QueueEmpty(labID) then
-            local qdata  = labQueueData[labID]
-            local choice = nil
+        local recent = labOrderFrame[labID] and frame - labOrderFrame[labID] < LAB_ORDER_GRACE
+        local picks  = not recent and spGetUnitDefID(labID) and GetArmyPicks(labDefID)
+        if picks then
+            local cache    = GetBuildCache(labDefID)
+            local armyA    = picks.cheap or picks.vcheap
+            local armyB    = picks.main  or picks.vmain
+            local defender = picks.vcheap or picks.vmain
 
-            local picks = GetArmyPicks(labDefID)
-            if picks then
-                local cache = GetBuildCache(labDefID)
-                -- Scouts first, and they matter more than they look: the unit
-                -- controller only advances its line once it has SEEN enemies, so
-                -- with no scout the whole army sits at home indefinitely.
-                if needScout and #cache.scouts > 0 then
-                    choice = CheapestScout(cache.scouts)
-                else
-                    -- Simple composition: alternate cheap and main, and when metal
-                    -- is piling up put it into the heavy unit instead.
-                    local floating = metalStorage > 0
-                                     and (metalCur / metalStorage) >= FLOAT_FRAC
-                    if floating and picks.floating then
-                        choice = picks.floating
+            -- DEFENCE: goes ahead of the queue if the lab is busy.
+            local def, defWhy = nil, nil
+            if rush then
+                if urgentCh ~= "ground" and picks.fighter then
+                    def, defWhy = picks.fighter, "rush-air"
+                elseif urgentCh ~= "air" then
+                    def, defWhy = defender or armyA or armyB, "rush-ground"
+                end
+            end
+            local needFighter  = fightersHave  < FIGHTER_TARGET
+            local needDefender = defendersHave < DEFENDER_TARGET
+            local floor, floorWhy = nil, nil
+            if needFighter and picks.fighter then
+                floor, floorWhy = picks.fighter, "floor-fighter"
+            elseif needDefender and defender then
+                floor, floorWhy = defender, "floor-defender"
+            end
+            local canScout = not rush and scoutRoom > 0 and #cache.scouts > 0
+
+            if QueueEmpty(labID) then
+                -- rush -> ONE early scout -> floor -> more scouts -> surplus army.  The
+                -- single early scout outranks the floor so the spawn search starts at
+                -- once; every scout after it waits behind defence.  (Only here, where
+                -- the lab can actually build it: letting it block the busy-lab branch
+                -- below deadlocked a busy air lab -- no scout, and no fighter either.)
+                local choice, why = def, defWhy
+                if not choice and canScout and scoutsHave == 0 then
+                    choice, why = CheapestScout(cache.scouts), "scout"
+                end
+                if not choice then choice, why = floor, floorWhy end
+                if not choice and canScout then
+                    choice, why = CheapestScout(cache.scouts), "scout"
+                end
+                if not choice and floating and not stalled then
+                    if heavy and picks.floating then
+                        choice, why = picks.floating, "float-heavy"
                     else
                         local flip = armyFlip[labID]
                         armyFlip[labID] = not flip
-                        choice = (flip and picks.cheap or picks.main)
-                              or picks.main or picks.cheap
+                        choice, why = (flip and armyA or armyB) or armyA or armyB, "float"
                     end
                 end
-            end
-            -- A lab with no army picks builds NOTHING.  The bot lab exists only to
-            -- make the two con bots the build order asks for (the macro orders those
-            -- directly) and is reclaimed straight after; anything else queued into it
-            -- competes with the opening for metal and delays the whole economy.
-
-            if choice then
-                spGiveOrderToUnit(labID, -choice, {}, {})
-                if DEBUG then
-                    Spring.Echo("[LabCtrl] Queued "
-                        .. (UnitDefs[choice] and UnitDefs[choice].name or "?")
-                        .. " in lab " .. labID)
+                -- A lab with no army picks builds NOTHING (the bot lab only makes the
+                -- two con bots the build order asks for, then is reclaimed).
+                if choice then
+                    spGiveOrderToUnit(labID, -choice, {}, {})
+                    labOrderFrame[labID] = frame
+                    NoteOrder(choice, frame)
+                    local k = KindOf(choice)
+                    if k == "scout" then
+                        scoutRoom, scoutsHave = scoutRoom - 1, scoutsHave + 1
+                    elseif k == "fighter" then fightersHave = fightersHave + 1
+                    elseif k == "defender" then defendersHave = defendersHave + 1 end
+                    if why ~= "float" and why ~= "float-heavy" then
+                        Announce(frame, why, choice, labDefID, false)
+                    end
+                end
+            else
+                -- Busy (usually the macro's constructors): defence goes in next, once,
+                -- and waits for that unit to actually start before inserting again, so
+                -- the economy's own units are delayed by one build at most.
+                local ins, insWhy = def or floor, def and defWhy or floorWhy
+                local pend = labPending[labID]
+                if ins and (not pend or frame - pend > PENDING_TIMEOUT) then
+                    InsertNext(labID, ins)
+                    labPending[labID] = frame
+                    labOrderFrame[labID] = frame
+                    NoteOrder(ins, frame)
+                    local k = KindOf(ins)
+                    if k == "fighter" then fightersHave = fightersHave + 1
+                    elseif k == "defender" then defendersHave = defendersHave + 1 end
+                    Announce(frame, insWhy, ins, labDefID, true)
                 end
             end
         end

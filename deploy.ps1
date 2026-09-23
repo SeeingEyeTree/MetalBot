@@ -34,11 +34,17 @@ $files = @(
     "blueprints\general\build_order_blueprint.lua",
     "blueprints\general\mex_grid_alab.lua",
     "blueprints\general\upgrade.lua",
+    "blueprints\general\raider_blueprint.lua",
+    "blueprints\general\ground_raider_blueprint.lua",
     "metalbot_stats_tracker.lua",
     "bar_framework\escape_guard.lua",
     "bar_framework\nano_broker.lua",
     "bar_framework\resource_utils.lua",
-    "bar_framework\unit_query.lua"
+    "bar_framework\unit_query.lua",
+    "bar_framework\threat_map.lua",
+    "bar_framework\army_broker.lua",
+    "bar_framework\scout_plan.lua",
+    "bar_framework\map_model.lua"
 )
 
 # The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).

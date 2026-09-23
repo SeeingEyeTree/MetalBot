@@ -243,11 +243,55 @@ Micro is explicitly **not the current priority** — correct unit composition an
 
 Needs a standing **baseline** at all times (getting caught with zero AA against a bomber run is just an instant loss), scaling up **reactively** once the enemy is seen investing in air. The right baseline/reactive balance is something to tune empirically through actual test games rather than derive analytically.
 
+**There are only two working shapes of air defence, and the choice is forced by speed.** Air moves far faster than ground, so the attacker picks the target and you do not get to reposition ground-speed defences in time. That leaves:
+
+- **Enough static AA to cover everything you care about** — every mex grid, lab and the commander. This scales with the number of things worth protecting, not with the size of the threat, so it gets expensive fast on a spread-out economy.
+- **Enough fighters to respond** — a mobile reserve that can reach any threatened point because it travels at air speed too.
+
+A little of each is the failure case: too few static guns to cover the map and too few fighters to intercept. Pick a lane and fund it properly. (DRAGON_BOT's current answer is fighters — see the plan — because it already has an air lab and no spare build power for a static net.)
+
+Relevant measured speeds (§7.4a): `corveng` fighter **297.6**, `corshad` bomber **234.0**, vs `corgator` ground **85.0**. A ground unit is roughly a third the speed of the thing attacking it.
+
 ### 7.4 Combat model notes
 
 - Combat is mostly HP vs. DPS, range, and speed, with one exception the author has confirmed: **some units do different damage to air targets** (anti-air weapons carry their own air damage). So a unit can be strong or weak against air independent of its ground stats. The exact rules are not verified against the unit definitions.
 - **Flanking damage** is real: a unit hit from multiple directions in quick succession takes multiplied damage (roughly up to ~2×, exact values unconfirmed). Not a current priority to model explicitly, but worth knowing it exists.
 - Terrain does not affect combat on this map (see §6).
+
+### 7.4a Measured unit stats (read from UnitDefs, 2026-09-22)
+
+The rest of this document had no unit stats at all, which blocked any "can I catch that raider" or "when does the attack land" reasoning. These are read from `UnitDefs` at runtime by `bar_framework/unit_query.lua` and echoed by DRAGON_BOT at frame 0. **Bots should call the helpers, not copy this table** — it is here so humans can reason about matchups.
+
+| unit | lab | role | speed | hits ground | dedicated AA | scout | max range |
+|---|---|---|---|---|---|---|---|
+| `corveng` | air | fighter | 297.6 | **no** | **yes** | no | 680 |
+| `corbw` | air | Shuriken | 280.5 | yes | no | no | 220 |
+| `corshad` | air | bomber | 234.0 | yes | no | no | 1280 |
+| `corape` | air T2 | Wasp | 159.0 | yes | no | no | 410 |
+| `corfav` | `corvp` | fast vehicle | 153.0 | yes | no | **yes** | 180 |
+| `corgator` | `corvp` | Incisor | 85.0 | yes | no | no | 230 |
+| `corraid` | `corvp` | raider | 72.0 | yes | no | no | 350 |
+| `corgarp` | `corvp` | — | 58.5 | yes | no | no | 305 |
+| `cormist` | `corvp` | AA-ish | 52.0 | yes | **no** | no | 700 |
+| `corwolv` | `corvp` | Wolverine | 48.0 | yes | no | no | 710 |
+| `corlevlr` | `corvp` | Leveler | 40.0 | yes | no | no | 315 |
+| `coraak` | `coralab` T2 | AA bot | **34.5** | no | yes | no | 1300 |
+
+Two things the `corvp` roster settles:
+
+- **`corvp` contains no dedicated AA.** `cormist` looks like the mobile AA option but reads `dedicated AA = no` — it can hit ground, so it is not a specialist. This is consistent with the rule above: a vehicle plant does not solve air, fighters or static guns do.
+- **`corfav` is a proper ground scout** (speed 153, flagged scout, nearly the speed of a Wasp). Before this, scouting depended on whatever the air lab happened to offer.
+
+Within `corvp` there is a clean split by speed and range: `corgator`/`corraid` (85/72 speed, 230/350 range) are fast enough to *respond* to a raid, while `corwolv`/`cormist` (48/52 speed, 710/700 range) are long-range and too slow to chase — picket material, not responders.
+
+Two things this immediately settles:
+
+- **`corveng` is real AA** (hits air, cannot hit ground), so fighters are a genuine answer to a bomber raid.
+- **`coraak`, the T2 AA bot, has speed 34.5 and cannot respond to anything.** It appears as the AA pick in the (dead) T2 bot-lab queue, but at ~40% of an Incisor's speed it is a turret that happens to walk. Do not count it as a mobile responder. The T2 bot lab is not a practical early-defence option anyway: ~16k energy for the lab alone at ~3 min, before a single defender exists. DRAGON_BOT uses a T1 vehicle plant (`corvp`) for ground defence instead.
+
+**`hits air` is permissive and mostly meaningless.** A weapon that sets no `onlyTargets` restriction reads as air-capable, which is why nearly everything says yes. The trustworthy test is `dedicated AA` (`UQ.is_dedicated_aa`) — hits air and *cannot* hit ground. This matches the stats tracker's `aa_dedicated`, deliberately, so bot decisions and `[TRK]` numbers cannot disagree.
+
+**Travel time, and why arrival frames must never be hardcoded.** Measured map is **12288 x 12288**; the repo-wide `Game.mapSizeX or 8192` fallback is wrong by 4096 wherever it fires. Recorded cross-position spawns are ~12,968 elmos apart; in-line spawns are ~10,560. Crossing the full cross-position distance takes `corshad` ~1663 frames, `corgator` ~4577. So the same attack lands meaningfully earlier on in-line spawns — ~10s earlier for bombers, ~28s for Incisors. Store the build-time component (spawn-independent) and add `MM.TravelFrames(speed)` at runtime; see `bar_framework/map_model.lua`.
 
 ### 7.5 Threats and mechanics the bots do not yet handle
 

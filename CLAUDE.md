@@ -53,7 +53,12 @@ python bot_testing.py --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay
 ```
 
 - `--bot1` / `--bot2` — folder names (relative to repo) or absolute paths
-- `--duration` — real-wall-clock seconds to run (game runs at 100x speed internally)
+- `--duration` — real-wall-clock seconds to run (game runs at `--speed`, default 10x)
+- `--server spectator|host` — default `spectator`: a third, bot-less headless process hosts so
+  both bots get the same order latency. `host` is the old layout (team 0 hosts) and gives team 1
+  several game-seconds of extra lag at high speed — see `knowledge/lessons_learned.md`
+- `--speed` — sim speed multiplier (default 10). Order latency in game frames scales with it:
+  ~20 frames at 10x, ~40 at 20x, for both teams. The result prints an `Order latency` block
 - `--save-replay` — saves a `.sdfz` replay to BAR's demos folder
 
 ### Via Tailscale (recommended)
@@ -202,7 +207,8 @@ a result is ambiguous.
 - Each team's numbers must be read from its own process — team 0 from P0, team 1 from P1.
   `fullview=1` does not give cross-team visibility in headless.
 - If a team built 0 units, the bot crashed or failed to connect.
-- Game runs at ~100x speed; a 300s match reaches roughly frame 31 000 (~17 game-minutes).
+- Game runs at 10x by default (300 frames/s real); `--speed 100` was the old setting and reached
+  ~1500-2000 frames/s on this PC, but with one-sided order latency (see `--server`).
 - Lua errors mentioning `gui_pip.lua` / `CreateShader` are BAR's own stock widget failing
   headless. They appear in every run and are harmless.
 

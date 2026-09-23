@@ -35,6 +35,117 @@ function M.metal_cost(defID)
     return d and (d.metalCost or 0) or 0
 end
 
+function M.is_air(defID)
+    local d = defID and UnitDefs[defID]
+    return d ~= nil and d.canFly == true
+end
+
+function M.is_mobile(defID)
+    local d = defID and UnitDefs[defID]
+    return d ~= nil and (d.speed or 0) > 0
+end
+
+-- Top speed in elmos/second (0 for structures).  Pair with map_model.TravelFrames
+-- to turn a distance into an arrival frame.
+function M.max_speed(defID)
+    local d = defID and UnitDefs[defID]
+    return d and (d.speed or 0) or 0
+end
+
+-- ── Weapon capability ─────────────────────────────────────────────────────────
+
+local capsCache = {}
+
+-- What can this unit shoot at?  Read from the weapons' own targeting restrictions:
+--   onlyTargets.vtol      -> anti-air only        onlyTargets.surface -> cannot hit air
+--   canAttackGround=false -> cannot hit ground    otherwise           -> both
+--
+-- EVERY weapon is inspected.  Judging a unit by its first weapon misled this
+-- project once, and a unit with a dedicated AA gun plus a main gun reads as
+-- ground-only if you stop at weapon 1.  Kept identical to the stats tracker's
+-- capsOf() so bot decisions and [TRK] numbers cannot disagree.
+local function caps(defID)
+    local c = capsCache[defID]
+    if c then return c[1], c[2], c[3] end
+    local air, gnd = false, false
+    local d = defID and UnitDefs[defID]
+    if d and d.weapons then
+        for i = 1, #d.weapons do
+            local w  = d.weapons[i]
+            local wd = w and w.weaponDef and WeaponDefs and WeaponDefs[w.weaponDef]
+            local only = (w and w.onlyTargets) or {}
+            local groundOK = not (wd and wd.canAttackGround == false)
+            if only.vtol then
+                air = true
+            else
+                if not only.surface and not only.notair then air = true end
+                if groundOK then gnd = true end
+            end
+        end
+    end
+    capsCache[defID] = { air, gnd, air and not gnd }
+    return air, gnd, air and not gnd
+end
+
+function M.can_hit_air(defID)    local a = caps(defID)          return a end
+function M.can_hit_ground(defID) local _, g = caps(defID)       return g end
+
+-- Real AA: hits air and cannot hit ground.  This is the test to trust when asking
+-- "do we have an answer to bombers" -- a flag saying a weapon MAY target air does
+-- not mean it is any good at it.
+function M.is_dedicated_aa(defID)
+    local _, _, aaOnly = caps(defID)
+    return aaOnly
+end
+
+function M.has_weapons(defID)
+    local d = defID and UnitDefs[defID]
+    return d ~= nil and d.weapons ~= nil and #d.weapons > 0
+end
+
+local rangeCache = {}
+
+-- Longest weapon range, across all weapons (0 if unarmed).
+function M.max_weapon_range(defID)
+    local r = rangeCache[defID]
+    if r then return r end
+    r = 0
+    local d = defID and UnitDefs[defID]
+    if d and d.weapons then
+        for i = 1, #d.weapons do
+            local w  = d.weapons[i]
+            local wd = w and w.weaponDef and WeaponDefs and WeaponDefs[w.weaponDef]
+            if wd and (wd.range or 0) > r then r = wd.range end
+        end
+    end
+    rangeCache[defID] = r
+    return r
+end
+
+-- Is this def a scout?  Category and name tests first, then the fallback that
+-- catches anything fast and unarmed.
+function M.is_scout(defID)
+    local d = defID and UnitDefs[defID]
+    if not d then return false end
+    local mc = d.modCategories
+    if mc then
+        for k in pairs(mc) do
+            if string.find(k, "scout") then return true end
+        end
+    end
+    local cat = d.category
+    if type(cat) == "string" and string.find(string.lower(cat), "scout") then return true end
+    local name  = string.lower(d.name or "")
+    local hName = string.lower((d.translatedHumanName or d.humanName) or "")
+    if string.find(name,  "scout")  or string.find(hName, "scout")
+    or string.find(name,  "peep")   or string.find(name,  "flea")
+    or string.find(name,  "fink")   or string.find(name,  "phantom")
+    or string.find(name,  "weasel") or string.find(name,  "wheelie") then
+        return true
+    end
+    return (d.speed or 0) > 150 and not M.has_weapons(defID)
+end
+
 -- ── Team-wide queries ─────────────────────────────────────────────────────────
 
 -- Returns alive non-commander units split by role.

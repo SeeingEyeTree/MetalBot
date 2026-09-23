@@ -2,15 +2,18 @@
 """
 bot_testing.py  -  Bot-vs-bot headless tester for Beyond All Reason.
 
-Architecture (mirroring how BAR real servers work):
-  1. spring-dedicated.exe  — lightweight server; coordinates game start,
-                             waits for ALL players before beginning.
-  2. spring-headless.exe   — BotCtrl (team 0) — runs bot1 widgets
-  3. spring-headless.exe   — BotB    (team 1) — runs bot2 widgets
+Architecture (default --server spectator):
+  1. spring-headless.exe   — bot-less spectator; hosts the game
+  2. spring-headless.exe   — team 0 — runs bot1 widgets, connects to the host
+  3. spring-headless.exe   — team 1 — runs bot2 widgets, connects to the host
+With --server host, process 2 hosts instead and there is no process 1; team 1 is then
+the only side paying network latency. Each process gets its own main CPU core.
 
-Both headless processes load independently (no timing race) and connect to
-the dedicated server when ready.  The dedicated server holds the game open
-until both send their loadfinished signal.
+Players are named after their bot folder plus slot (e.g. DRAGON_BOT_s0), so they
+can be told apart in replays.
+
+The processes load independently and the host holds the game until every player
+has sent its loadfinished signal.
 
 Usage:
     python bot_testing.py --bot1 PATH --bot2 PATH [options]
@@ -63,6 +66,19 @@ TIE_MARGIN       = 1.1                         # a score must beat the other by 
 # it slows as unit counts grow, hence the conservative 80.
 FRAMES_PER_REAL_SEC = 80
 EXIT_GRACE       = 60                          # seconds to finish after the deadline
+SPECTATOR_HOST_NAME = "MatchHost"              # the bot-less host in --server spectator
+# How the match is networked, and how fast it runs. Every order a bot gives makes a round
+# trip through the server; for a UDP client the engine adds ~33 ms each way (a hard-coded
+# 30 packets/s cap in UDPConnection), so the lag in GAME frames is that fixed real time
+# times the sim rate. Measured round trips (frames, team 0 / team 1, DRAGON_BOT mirror):
+#   host,      speed 100, unpinned:  32 / 105-225   <- team 1 acted seconds late
+#   host,      speed 10:              2 / 21        <- still one-sided
+#   spectator, speed 20:             40 / 42
+#   spectator, speed 10:             20 / 20
+# "spectator" puts both bots behind the same UDP link, so neither side is favoured, and
+# speed 10 keeps that shared lag at ~0.7 game-seconds. Raise --speed for faster, laggier runs.
+DEFAULT_SERVER   = "spectator"
+DEFAULT_SPEED    = 10
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
@@ -86,6 +102,7 @@ class MatchResult:
     log_excerpt:        str             # last 20 interesting log lines joined with \n
     end_reason:         "str | None" = None   # "frame" (full length), "wallclock" (cut short), None
     tracker_timeline:   list = field(default_factory=list)  # [TRK] rows from the stats tracker
+    order_latency:      dict = field(default_factory=dict)  # {team: {median,opening,worst,windows}} in frames
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -111,6 +128,7 @@ class MatchResult:
             "log_excerpt":       self.log_excerpt,
             "end_reason":        self.end_reason,
             "tracker_timeline":  self.tracker_timeline,
+            "order_latency":     {str(k): v for k, v in self.order_latency.items()},
         }
 
 
@@ -286,7 +304,50 @@ end
 """
 
 
-def make_game_end_widget(target_secs: int, do_selfd: bool) -> str:
+# Measures how many game frames pass between this process sending something to the server
+# and the simulation seeing it: the same path every unit order takes. It sends itself a
+# LuaUI message every 15 frames and logs the round trip, per 30 game-seconds, as
+#   [LAT] team=T frame=F n=N min=.. med=.. p90=.. max=..
+# A bot on a process with a higher figure acts that many frames late on every order.
+LATENCY_PROBE_WIDGET = r"""
+function widget:GetInfo()
+    return { name="Latency Probe", desc="Order round-trip in game frames", layer=0, enabled=true }
+end
+
+local PREFIX = "mblat:"
+local WINDOW = 900
+local myPlayer, myTeam
+local samples = {}
+
+function widget:Initialize()
+    myPlayer = Spring.GetMyPlayerID()
+    myTeam   = Spring.GetMyTeamID()
+end
+
+local function Flush(n)
+    table.sort(samples)
+    local c = #samples
+    Spring.Echo(string.format("[LAT] team=%d frame=%d n=%d min=%d med=%d p90=%d max=%d",
+        myTeam, n, c, samples[1], samples[math.floor(c / 2) + 1],
+        samples[math.min(c, math.floor(c * 0.9) + 1)], samples[c]))
+    samples = {}
+end
+
+function widget:GameFrame(n)
+    if n % 15 == 0 then Spring.SendLuaUIMsg(PREFIX .. n) end
+    if n % WINDOW == 0 and #samples > 0 then Flush(n) end
+end
+
+function widget:RecvLuaMsg(msg, playerID)
+    if playerID ~= myPlayer or msg:sub(1, #PREFIX) ~= PREFIX then return end
+    local sent = tonumber(msg:sub(#PREFIX + 1))
+    if sent then samples[#samples + 1] = Spring.GetGameFrame() - sent end
+    return true
+end
+"""
+
+
+def make_game_end_widget(target_secs: int, do_selfd: bool, speed: float = 100) -> str:
     """Widget that sets max speed, optionally self-ds the commander, and quits on game over.
 
     target_secs is wall-clock seconds (os.clock), not game-time seconds.
@@ -321,7 +382,9 @@ def make_game_end_widget(target_secs: int, do_selfd: bool) -> str:
         "\n"
         "function widget:GameStart()\n"
         "    startTime = os.clock()\n"
-        "    Spring.SendCommands('setminspeed 100', 'setmaxspeed 100', 'speed 100')\n"
+        # Redundant with the minspeed/maxspeed modoptions (see _common_script_body), kept as
+        # a backstop. Only the hosting process is allowed to run these.
+        f"    Spring.SendCommands('setmaxspeed {speed:g}', 'setminspeed {speed:g}')\n"
         "end\n"
         + selfd +
         "\nfunction widget:GameOver(winners)\n"
@@ -459,7 +522,8 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
 def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
                  include_stats: bool, game_end_target: int, do_selfd: bool,
                  spring_data: str, end_frame: int = END_FRAME,
-                 eco_weight: float = ECO_WEIGHT_SECS) -> list:
+                 eco_weight: float = ECO_WEIGHT_SECS, speed: float = 100,
+                 main_core_mask: int = 0) -> list:
     """
     Populate one player's write_dir with bot widgets, shared deps, shadow stubs,
     BYAR config, and springsettings.cfg.  Returns list of active widget names.
@@ -470,10 +534,14 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
     active: list = []
     skip:  set   = set()
 
-    game_end = make_game_end_widget(game_end_target, do_selfd)
+    game_end = make_game_end_widget(game_end_target, do_selfd, speed)
     (widgets_dir / "headless_game_end.lua").write_text(game_end, encoding="utf-8")
     skip.add("headless_game_end.lua")
     active.append("Game Ender")
+
+    (widgets_dir / "headless_latency_probe.lua").write_text(LATENCY_PROBE_WIDGET, encoding="utf-8")
+    skip.add("headless_latency_probe.lua")
+    active.append("Latency Probe")
 
     if include_stats:
         (widgets_dir / "headless_stats.lua").write_text(
@@ -517,10 +585,28 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
         "LogFlushLevel = 0\n"
         "HangTimeout = 120\n"
         "InitialNetworkTimeout = 300\n"
-        "NetworkTimeout = 300\n",
+        "NetworkTimeout = 300\n"
+        + (f"SetCoreAffinity = {main_core_mask}\n" if main_core_mask else ""),
         encoding="utf-8",
     )
     return active
+
+
+def main_core_masks(count: int) -> list:
+    """One distinct CPU mask per engine process, for its main (sim) thread.
+
+    Left alone, the engine pins every process's main thread to the same "preferred" core
+    (observed: 0x4000 in all of them), so the processes of one match share one core and
+    time-slice each other's simulation. Pick the highest even-numbered logical cores --
+    one per physical core on a hyperthreaded CPU -- falling back to plain top cores.
+    Returns zeros (engine default) when there are too few cores to separate them.
+    """
+    n = os.cpu_count() or 1
+    step = 2 if n >= 4 * count else 1
+    bits = [n - step * (i + 1) for i in range(count)]
+    if bits[-1] < 0:
+        return [0] * count
+    return [1 << b for b in bits]
 
 
 def setup_dedicated(ded_dir: Path, spring_data: str) -> None:
@@ -567,10 +653,25 @@ def setup_dedicated(ded_dir: Path, spring_data: str) -> None:
     )
 
 
+def bot_player_name(bot_dir, slot: int) -> str:
+    """In-game player name for a bot: its folder name plus the slot, e.g. DRAGON_BOT_s1.
+
+    Shown in the replay browser and in-game, so you can tell the bots apart when
+    watching. The slot suffix keeps a mirror match's two names distinct (each process
+    connects by name, so they must be unique) and shows which side had slot 0's edge.
+    """
+    base = Path(str(bot_dir).rstrip("/\\")).name
+    base = re.sub(r"[^A-Za-z0-9_-]", "_", base)[:17] or "bot"
+    return f"{base}_s{slot}"
+
+
 def render_host_script(player_name: str, game_type: str, map_name: str,
-                       save_replay: bool, host_port: int) -> str:
-    """Start script for P0 running as the host (no separate dedicated server)."""
-    body = _common_script_body(game_type, map_name, save_replay)
+                       save_replay: bool, host_port: int,
+                       name0: str = "BotCtrl", name1: str = "BotB",
+                       speed: float = 100, spectator: "str | None" = None) -> str:
+    """Start script for the hosting process: P0, or the bot-less spectator host."""
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed,
+                               spectator)
     return (
         "[GAME]\n{\n"
         f"    IsHost=1;\n    MyPlayerName={player_name};\n    HostPort={host_port};\n"
@@ -578,15 +679,23 @@ def render_host_script(player_name: str, game_type: str, map_name: str,
     )
 
 
-def _common_script_body(game_type, map_name, save_replay) -> str:
+def _common_script_body(game_type, map_name, save_replay,
+                        name0: str = "BotCtrl", name1: str = "BotB",
+                        speed: float = 100, spectator: "str | None" = None) -> str:
     record = "1" if save_replay else "0"
+    spec = (f"    [PLAYER2]\n    {{\n        name={spectator};\n        team=0;\n"
+            "        spectator=1;\n    }\n") if spectator else ""
     return (
         f"    GameType={game_type};\n    MapName={map_name};\n"
         "    StartPosType=0;\n    FixedRNGSeed=1;\n"
         f"    RecordDemo={record};\n    GameStartDelay=0;\n"
         "    NoHelperAIs=0;\n\n"
         "    [MODOPTIONS]\n    {\n"
-        "        deathmode=com;\n        maxspeed=100;\n        minspeed=0.1;\n"
+        # minspeed=maxspeed pins the requested speed: the server clamps its starting speed
+        # into this range, the only way to set it on a dedicated server (which refuses
+        # setminspeed from a non-host client). Speed control can still slow the sim below
+        # it when a client cannot keep up -- it ignores minspeed.
+        f"        deathmode=com;\n        maxspeed={speed:g};\n        minspeed={speed:g};\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"
         "    [ALLYTEAM0] { numallies=0; }\n    [ALLYTEAM1] { numallies=0; }\n\n"
@@ -600,14 +709,17 @@ def _common_script_body(game_type, map_name, save_replay) -> str:
         # other sees the map. It is NOT relied on for stats: it has been observed not to
         # give cross-team visibility headless, so every process scores only its own team.
         # The stats tracker logs the fullview flag it actually gets ([TRK] init).
-        "    [PLAYER0]\n    {\n        name=BotCtrl;\n        team=0;\n        fullview=1;\n    }\n"
-        "    [PLAYER1]\n    {\n        name=BotB;\n        team=1;\n        fullview=1;\n    }\n"
+        f"    [PLAYER0]\n    {{\n        name={name0};\n        team=0;\n        fullview=1;\n    }}\n"
+        f"    [PLAYER1]\n    {{\n        name={name1};\n        team=1;\n        fullview=1;\n    }}\n"
+        + spec
     )
 
 
-def render_dedicated_script(game_type, map_name, save_replay, host_port) -> str:
+def render_dedicated_script(game_type, map_name, save_replay, host_port,
+                            name0: str = "BotCtrl", name1: str = "BotB",
+                            speed: float = 100) -> str:
     """Startscript for spring-dedicated: the authoritative server, no local player."""
-    body = _common_script_body(game_type, map_name, save_replay)
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed)
     return (
         "[GAME]\n{\n"
         f"    IsHost=1;\n    HostPort={host_port};\n"
@@ -615,9 +727,12 @@ def render_dedicated_script(game_type, map_name, save_replay, host_port) -> str:
     )
 
 
-def render_player_script(player_name, game_type, map_name, save_replay, host_port) -> str:
-    """Startscript for a spring-headless client connecting to the dedicated server."""
-    body = _common_script_body(game_type, map_name, save_replay)
+def render_player_script(player_name, game_type, map_name, save_replay, host_port,
+                         name0: str = "BotCtrl", name1: str = "BotB",
+                         speed: float = 100, spectator: "str | None" = None) -> str:
+    """Startscript for a spring-headless client connecting to the host or dedicated server."""
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed,
+                               spectator)
     return (
         "[GAME]\n{\n"
         f"    MyPlayerName={player_name};\n    IsHost=0;\n"
@@ -921,7 +1036,30 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         end_reason        = end_reason,
         # Own-team rows only, each from the process that controls that team.
         tracker_timeline  = _dedupe(_parse_tracker(p0_text, 0) + _parse_tracker(p1_text, 1)),
+        order_latency     = {0: _parse_latency(p0_text, 0), 1: _parse_latency(p1_text, 1)},
     )
+
+
+_LAT_RE = re.compile(r"\[LAT\] team=(\d+) frame=(\d+) n=\d+ min=-?\d+ med=(-?\d+) "
+                     r"p90=(-?\d+) max=(-?\d+)")
+
+
+def _parse_latency(text: str, team: int) -> dict:
+    """Summarise one process's [LAT] rows: order round trip in game frames.
+
+    `median` is the median of the per-window medians over the whole match, `opening` the
+    same over the first 4 game-minutes (where a few frames compound the most), and
+    `worst` the highest window median. Empty if the probe logged nothing.
+    """
+    # Keyed by frame: _read_log concatenates two copies of the same log.
+    rows = sorted({int(f): (int(f), int(med), int(mx))
+                   for t, f, med, _p90, mx in _LAT_RE.findall(text) if int(t) == team}.values())
+    if not rows:
+        return {}
+    med = lambda xs: sorted(xs)[len(xs) // 2]
+    opening = [m for f, m, _ in rows if f <= 4 * 60 * FPS] or [rows[0][1]]
+    return {"median": med([m for _, m, _ in rows]), "opening": med(opening),
+            "worst": max(m for _, m, _ in rows), "windows": len(rows)}
 
 
 # ── Core run function ─────────────────────────────────────────────────────────
@@ -935,6 +1073,9 @@ def run_match(
     verbose: bool = True,
     end_frame: int = END_FRAME,
     eco_weight: float = ECO_WEIGHT_SECS,
+    server: str = DEFAULT_SERVER,
+    speed: float = DEFAULT_SPEED,
+    pin_cores: bool = True,
 ) -> MatchResult:
     """
     Run a headless bot-vs-bot match and return a structured MatchResult.
@@ -943,6 +1084,10 @@ def run_match(
     duration is wall-clock seconds; the game runs at ~20-100x in-game speed. It is a
     backstop: the match normally ends at end_frame game frames, and only ends earlier
     (result.end_reason == "wallclock") if duration - 150s of real time passes first.
+
+    server="spectator": a bot-less headless process hosts and both bots connect to it, so
+    both pay the same network latency. server="host": P0 hosts in-process and only P1 pays
+    it -- team 1 then acts later on every order (see DEFAULT_SERVER).
     """
     bot0_files = sorted(Path(bot0_dir).glob("*.lua"))
     bot1_files = sorted(Path(bot1_dir).glob("*.lua"))
@@ -985,9 +1130,11 @@ def run_match(
     # process never flushes its .sdfz replay. 150s covers load (~65s worst case) plus
     # shutdown (quit + demo write + process exit, up to graceful_stop's 15s wait).
     game_end_target = max(30, duration - 150)
+    masks = main_core_masks(3) if pin_cores else [0, 0, 0]
     setup_player(p0_dir, bot0_files, 0, "T0", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 eco_weight=eco_weight, spring_data=spring_data)
+                 eco_weight=eco_weight, spring_data=spring_data, speed=speed,
+                 main_core_mask=masks[0])
     # do_selfd=False on BOTH players. It used to be True for P1 only, which meant team 1
     # self-destructed its own commander at game_end_target while team 0 never did --
     # with deathmode=com that handed team 0 an automatic "game_over" win in every match
@@ -996,12 +1143,37 @@ def run_match(
     # The stats widget now ends the match symmetrically at the same deadline instead.
     setup_player(p1_dir, bot1_files, 1, "T1", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 eco_weight=eco_weight, spring_data=spring_data)
+                 eco_weight=eco_weight, spring_data=spring_data, speed=speed,
+                 main_core_mask=masks[1])
 
-    write_script(p0_dir / "startscript.txt",
-        render_host_script("BotCtrl", game_type, map_name, save_replay, host_port))
+    name0 = bot_player_name(bot0_dir, 0)
+    name1 = bot_player_name(bot1_dir, 1)
+    # "spectator": a third, bot-less headless process hosts, so both bots are ordinary
+    # clients and pay the same network latency. It is a real headless client rather than
+    # spring-dedicated because the host paces frame creation to its own local client;
+    # spring-dedicated has no local client, creates frames on the wall clock, and (tested
+    # at speed 100) left both bots thousands of frames behind with nothing to rein it in.
+    separate = server == "spectator"
+    spec = SPECTATOR_HOST_NAME if separate else None
+    spec_dir = test_dir / "server"
+    if separate:
+        setup_player(spec_dir, [], 0, "SPEC", include_stats=False,
+                     game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
+                     eco_weight=eco_weight, spring_data=spring_data, speed=speed,
+                     main_core_mask=masks[2])
+        write_script(spec_dir / "startscript.txt",
+            render_host_script(spec, game_type, map_name, save_replay, host_port,
+                               name0, name1, speed, spec))
+        write_script(p0_dir / "startscript.txt",
+            render_player_script(name0, game_type, map_name, save_replay, host_port,
+                                 name0, name1, speed, spec))
+    else:
+        write_script(p0_dir / "startscript.txt",
+            render_host_script(name0, game_type, map_name, save_replay, host_port,
+                               name0, name1, speed))
     write_script(p1_dir / "startscript.txt",
-        render_player_script("BotB", game_type, map_name, save_replay, host_port))
+        render_player_script(name1, game_type, map_name, save_replay, host_port,
+                             name0, name1, speed, spec))
 
     if verbose:
         print("Scripts written.\n")
@@ -1013,8 +1185,21 @@ def run_match(
 
     global_start = time.monotonic()
 
+    spec_proc = None
+    if separate:
+        if verbose:
+            print("Launching spectator host headless...")
+        with open(spec_dir / "headless.log", "wb") as fh:
+            spec_proc = subprocess.Popen(
+                [str(headless), "--isolation", "--write-dir", str(spec_dir),
+                 str(spec_dir / "startscript.txt")],
+                cwd=str(spec_dir), stdout=fh, stderr=subprocess.STDOUT,
+                env=env, creationflags=flags,
+            )
+        time.sleep(2)
+
     if verbose:
-        print("Launching host headless (P0)...")
+        print(f"Launching {'client' if separate else 'host'} headless (P0)...")
     with open(p0_log, "wb") as fh:
         p0_proc = subprocess.Popen(
             [str(headless), "--isolation", "--write-dir", str(p0_dir),
@@ -1023,7 +1208,7 @@ def run_match(
             env=env, creationflags=flags,
         )
     if verbose:
-        print(f"  BotCtrl PID: {p0_proc.pid}  (team 0, host)")
+        print(f"  {name0} PID: {p0_proc.pid}  (team 0{'' if separate else ', host'})")
 
     time.sleep(2)
 
@@ -1037,7 +1222,7 @@ def run_match(
             env=env, creationflags=flags,
         )
     if verbose:
-        print(f"  BotB    PID: {p1_proc.pid}  (team 1)")
+        print(f"  {name1} PID: {p1_proc.pid}  (team 1)")
         print(f"Running for {duration}s total.\n")
 
     deadline = global_start + duration
@@ -1049,6 +1234,13 @@ def run_match(
                 if verbose:
                     elapsed = time.monotonic() - global_start
                     print(f"\nAll processes exited after {elapsed:.0f}s.")
+                break
+            if (spec_proc is not None and spec_proc.poll() is not None
+                    and any(t == "run " for t in tags.values())):
+                if verbose:
+                    print(f"\nSpectator host exited early; see {spec_dir / 'infolog.txt'}")
+                graceful_stop(p1_proc)
+                graceful_stop(p0_proc)
                 break
             if verbose:
                 elapsed = time.monotonic() - global_start
@@ -1080,13 +1272,19 @@ def run_match(
             print("\nInterrupted; stopping.")
         graceful_stop(p1_proc)
         graceful_stop(p0_proc)
+    if spec_proc is not None:
+        # The spectator host quits on GameOver like the players; this is only a backstop.
+        try:
+            spec_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            graceful_stop(spec_proc)
 
     duration_secs = time.monotonic() - global_start
 
     if save_replay:
         # Either client may be the one that recorded it (observed: only P1's demos/ held
         # the file), so look in both and keep the largest non-empty one.
-        found = [f for d in (p0_dir, p1_dir) for sub in ("demos", "demos-server")
+        found = [f for d in (p0_dir, p1_dir, spec_dir) for sub in ("demos", "demos-server")
                  for f in (d / sub).glob("*.sdfz") if f.stat().st_size > 0]
         demos_dst = BAR_DATA_DIR / "demos"
         demos_dst.mkdir(exist_ok=True)
@@ -1139,6 +1337,18 @@ def print_result(result: MatchResult) -> None:
             print(f"  Team {t}: score {ds[f'score{t}']:8.0f} = army {ds[f'mv{t}']:.0f} "
                   f"({ds[f'nc{t}']} units) + eco {ds[f'eco_mv{t}']:.0f} "
                   f"(metal income {ds[f'metal_inc{t}']:.1f}/s)")
+
+    if any(result.order_latency.values()):
+        print(f"\nOrder latency (game frames, 30 = 1 game-second; opening = first 4 min):")
+        for t in (0, 1):
+            lat = result.order_latency.get(t) or {}
+            if lat:
+                print(f"  Team {t}: opening {lat['opening']}  median {lat['median']}  "
+                      f"worst {lat['worst']}")
+        lats = [result.order_latency.get(t, {}).get("opening") for t in (0, 1)]
+        if None not in lats and abs(lats[0] - lats[1]) > 10:
+            print(f"  WARNING: teams differ by {abs(lats[0] - lats[1])} frames -- "
+                  f"the slower side acts later on every order")
 
     print(f"\nSanity check (1 game-minute):")
     for t in (0, 1):
@@ -1217,6 +1427,15 @@ def main() -> None:
     p.add_argument("--eco-weight", type=float, default=ECO_WEIGHT_SECS, dest="eco_weight",
                    help="seconds of metal income added to army metal value in the end "
                         "score (default: %g)" % ECO_WEIGHT_SECS)
+    p.add_argument("--server", choices=("spectator", "host"), default=DEFAULT_SERVER,
+                   help="spectator: a third, bot-less process hosts, so both bots get the "
+                        "same order latency. host: team 0's process hosts, giving team 1 "
+                        "extra latency (the old behaviour) (default: %(default)s)")
+    p.add_argument("--speed", type=float, default=DEFAULT_SPEED,
+                   help="game speed multiplier requested from the server (default: %(default)g)")
+    p.add_argument("--no-pin-cores", action="store_true",
+                   help="leave main-thread CPU affinity to the engine, which puts every "
+                        "process on the same core")
     p.add_argument("--save-result", metavar="PATH",
                    help="Write result.json to this path after the match")
     args = p.parse_args()
@@ -1238,6 +1457,9 @@ def main() -> None:
         verbose     = True,
         end_frame   = end_frame,
         eco_weight  = args.eco_weight,
+        server      = args.server,
+        speed       = args.speed,
+        pin_cores   = not args.no_pin_cores,
     )
 
     print_result(result)

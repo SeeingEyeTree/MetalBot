@@ -201,14 +201,6 @@ local airLabItem      = nil   -- the queue item for the hand-off lab
 local airLabFrame     = nil   -- frame it was queued, for the watchdog below
 local airLabWarned    = false
 local airLabRetries   = 0
-
--- Vehicle plant (base defence), see "Vehicle plant for base defence" below.  Declared
--- up here because DispatchConBots reserves its builder before that section.
-local vpQueued        = false
-local vpDefID         = nil
-local vpBuilder       = nil   -- a con bot held back from the radar trip to build it
-local vpOrderFrame    = nil
-local vpBuilt         = false
 local airConDefID     = nil
 local gridStates      = {}    -- one single-builder placer state per grid
 local freeAirCons     = {}    -- air cons waiting for a grid
@@ -695,15 +687,8 @@ local function DispatchConBots()
     for i, cid in ipairs(conBots) do
         if spGetUnitDefID(cid) then
             BP_PLACER.RemoveBuilder(distState, cid)
-            -- Keep the first one home for the vehicle plant.  Once these leave for
-            -- radar, nothing is left in the build queue to place it (the queue's
-            -- builders are gone by now), and it would sit there unbuilt.
-            -- (No `goto continue` here: Spring runs Lua 5.1, which has no goto, and a
-            -- syntax error takes the whole macro controller down silently.)
-            local reserve = not vpQueued and not vpBuilder
-            if reserve then vpBuilder = cid end
             local placed = false
-            for r = reserve and 1e9 or 1600, 3200, 400 do   -- reserved: skip the search
+            for r = 1600, 3200, 400 do
                 for a = 0, 7 do
                     local ang = (a + i * 0.5) * math.pi / 4
                     local x = baseX + r * math.cos(ang)
@@ -974,139 +959,6 @@ local function StartHandoff()
     Spring.Echo(string.format(
         "[MC] HAND-OFF frame=%d: %s at (%d, %d), %d nanos in range, %d builders",
         currentFrame, tostring(name), x, z, nanos or 0, #distState.builders))
-end
-
--- ── Vehicle plant for base defence ───────────────────────────────────────────
-
--- The one army-driven change to the economy: a T1 vehicle plant, whose output is the
--- bot's ground defence.  corvp, not the T2 bot lab -- ~16k energy for a T2 lab at
--- ~3 min is out of reach, and the lab is only the start; the defenders still have to
--- be built after it.
---
--- WHEN is derived, not hardcoded.  Raid arrival times measured in one match carry
--- that match's spawn distance: in-line spawns land a ground raid ~28 s sooner than
--- the cross-position runs they were measured on.  So we store the part that does
--- not depend on spawns -- how long an early ground raid spends BUILDING -- and add
--- this match's actual travel time.  From GROUND_RAIDER_BOT's ~6:30 arrival (frame
--- 11700) across 12,968 elmos at corgator speed 85: 11700 - 4577 = ~7120 frames.
-local VP_NAME           = "corvp"
-local GROUND_RAID_BUILD = 7120   -- frames, spawn-independent
-local GROUND_RAID_SPEED = 85     -- elmos/s, the early raider
-local VP_LEAD_FRAMES    = 3600   -- lab + first defenders need this long before arrival
-local VP_WATCHDOG       = 1800   -- ordered but no plant this long later: try again
--- (vpQueued / vpDefID / vpBuilder / vpOrderFrame / vpBuilt are declared with the
---  air-lab state near the top: DispatchConBots needs them, and a second `local`
---  here would silently create separate variables for everything below.)
-
--- Can any builder we actually own place this def?  Queueing one nobody can build
--- sits in the placer forever without a word (the air-lab lesson above).
-local function OwnedBuilderCanBuild(defID)
-    local candidates = {}
-    if commanderID and spGetUnitDefID(commanderID) then candidates[1] = commanderID end
-    for _, b in ipairs((distState and distState.builders) or {}) do
-        candidates[#candidates + 1] = b
-    end
-    for _, uid in ipairs(candidates) do
-        local bd = UnitDefs[spGetUnitDefID(uid) or -1]
-        for _, optID in ipairs((bd and bd.buildOptions) or {}) do
-            if optID == defID then return true end
-        end
-    end
-    return false
-end
-
--- Frame to start the plant by: estimated ground-raid arrival minus the lead needed.
-local function VehicleLabDeadline()
-    local mb   = WG and WG.MetalBot
-    local dist = mb and mb.foeDist
-    if (not dist or dist <= 0) and baseX then
-        -- Symmetric-map mirror, the same fallback map_model uses.
-        local ex, ez = (Game.mapSizeX or 0) - baseX, (Game.mapSizeZ or 0) - baseZ
-        dist = math.sqrt((ex - baseX) ^ 2 + (ez - baseZ) ^ 2)
-    end
-    local arrival = GROUND_RAID_BUILD + ((dist or 0) / GROUND_RAID_SPEED) * 30
-    return arrival - VP_LEAD_FRAMES
-end
-
--- Ground factories need room for what they build to leave, so search further out
--- than the air lab (which spawns aircraft and can sit anywhere) and away from the
--- dense kickstart spiral around the commander.
-local function FindVehicleLabSpot()
-    local half = HalfExtent(vpDefID)
-    for r = 400, 1000, 60 do
-        for a = 0, 11 do
-            local ang = a * math.pi / 6
-            local x, z = BP_PLACER.SnapToBuildGrid(vpDefID,
-                             baseX + r * math.cos(ang), baseZ + r * math.sin(ang))
-            local y  = spGetGroundHeight(x, z) or 0
-            local ok = Spring.TestBuildOrder(vpDefID, x, y, z, 0)
-            if ok and ok ~= 0 and not ClashesWithBuildOrder(x, z, half)
-               and BP_PLACER.SpotReachable(distState, vpDefID, x, z) then
-                return x, z
-            end
-        end
-    end
-    return nil
-end
-
-local function CanBuild(builderID, defID)
-    local bd = builderID and UnitDefs[spGetUnitDefID(builderID) or -1]
-    for _, optID in ipairs((bd and bd.buildOptions) or {}) do
-        if optID == defID then return true end
-    end
-    return false
-end
-
-local function MaybeQueueVehicleLab(frame)
-    if vpBuilt or not distState or not baseX then return end
-    vpDefID = vpDefID or (UnitDefNames[VP_NAME] and UnitDefNames[VP_NAME].id)
-    if not vpDefID then return end
-
-    -- Already ordered: watch for the plant to appear, and retry if it never does
-    -- (builder killed on the way, spot taken, order dropped).
-    if vpQueued then
-        local have = Spring.GetTeamUnitsByDefs and Spring.GetTeamUnitsByDefs(myTeamID, vpDefID)
-        if have and #have > 0 then
-            vpBuilt = true
-        elseif vpOrderFrame and frame - vpOrderFrame > VP_WATCHDOG then
-            Spring.Echo(string.format("[MC] vehicle lab: no plant %d frames after ordering, retrying",
-                frame - vpOrderFrame))
-            vpQueued, vpBuilder = false, nil
-        end
-        return
-    end
-
-    -- Three reasons to start: a ground threat we cannot answer, the derived deadline,
-    -- or a con bot freed by the hand-off.  The last is usually first, and it is the
-    -- right time anyway: hand-off happens BECAUSE metal is banking, so the plant is
-    -- paid for out of surplus, and a ground con left idle among the growing grids
-    -- risks being walled in.
-    local mb      = WG and WG.MetalBot
-    local pulled  = mb and (mb.urgency == "rush" or mb.urgency == "build")
-                    and mb.urgencyChannel ~= "air"
-    local due     = frame >= VehicleLabDeadline()
-    local conFree = vpBuilder and spGetUnitDefID(vpBuilder) and CanBuild(vpBuilder, vpDefID)
-    if not (pulled or due or conFree) then return end
-
-    local x, z = FindVehicleLabSpot()
-    if not x then return end   -- try again next tick
-
-    local how
-    if conFree then
-        local y = spGetGroundHeight(x, z) or 0
-        spGiveOrderToUnit(vpBuilder, -vpDefID, { x, y, z, 0 }, {})
-        how = "reserved con bot"
-    elseif OwnedBuilderCanBuild(vpDefID)
-           and BP_PLACER.InsertPriorityItem(distState, VP_NAME, x, z, 0) then
-        how = "build queue"
-    else
-        return
-    end
-    vpQueued, vpOrderFrame = true, frame
-    Spring.Echo(string.format(
-        "[MC] VEHICLE LAB frame=%d via %s (%s, deadline %d): %s at (%d, %d)",
-        frame, how, pulled and "threat" or (conFree and "hand-off" or "timer"),
-        math.floor(VehicleLabDeadline()), VP_NAME, x, z))
 end
 
 -- ── Nano army/eco balance ────────────────────────────────────────────────────
@@ -1717,7 +1569,6 @@ function widget:GameFrame(frame)
     NANO.Sweep()
 
     UpdateHandoff(frame, resources)
-    MaybeQueueVehicleLab(frame)
     UpdateGrids(frame, resources)
     CheckCapPressure()
     UpdateRetrofits(frame, resources)

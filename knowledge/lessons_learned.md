@@ -5,6 +5,40 @@ New entries go at the top so the most recent observations appear first in the ag
 
 ---
 
+## Team 1's order latency was a harness artifact; fixed without touching bots (2026-09-23)
+
+The client-side latency behind `d5501fd` and the lab-controller grace period was measured
+directly with a harness-only probe (`LATENCY_PROBE_WIDGET` in `bot_testing.py`: a LuaUI message
+to itself every 15 frames, same server path as a unit order). Old layout, DRAGON_BOT mirror:
+**team 0 (host) 32 frames, team 1 (client) 105–225 frames** — team 1 did everything 3–7
+game-seconds late. Causes, from the Recoil source:
+- A UDP client pays ~33 ms each way (`chunksPerSec = 30` hard-coded in `UDPConnection.cpp`; not
+  configurable — `ServerSleepTime`, `NetworkLossFactor`, `UseNetMessageSmoothingBuffer` were
+  already at their lowest-latency values). The host's own client uses an in-process connection
+  and pays none of it. Real-time lag x sim rate = frames, so 100x made it enormous.
+- Every engine process pins its main thread to the same "preferred" core (0x4000 here), so the
+  two headless processes time-sliced one core.
+
+Fix (`bot_testing.py` only): a third, bot-less **spectator process hosts** (`--server
+spectator`, default) so both bots are identical UDP clients; each process gets its own main core
+(`SetCoreAffinity`, `main_core_masks`); default **`--speed 10`**. Rejected: `spring-dedicated`
+as host — it has no local client to pace to, generates frames on the wall clock, and at speed
+100 left both bots 500→16 000 frames behind. A spectator host at speed 100 is also no good: with
+no bot Lua it outruns the players (up to 2000 frames behind).
+
+Verified, 3+ mirror matches per layout (team 1 minus team 0, and team 1 / team 0 metal produced
+at frame 7200):
+
+| layout | latency t0/t1 | first con bot | 10th mex | metal t1/t0 |
+|---|---|---|---|---|
+| old (host, 100x, shared core), 5 runs | 32 / 105–225 | +0 … +96 frames | −215 … +1275 | 0.74, 0.75, 0.76, 0.87, 1.07 |
+| new (spectator, 10x), 4 runs | 20 / 20 | −11 … +9 | −450 … +414 | 0.84, 0.97, 1.04, 1.17 |
+
+Team 1 fell behind in 4 of 5 old runs; the new runs scatter around 1.0 (what's left is ordinary
+noise). **The slot-0 advantage measured before this date includes this effect**, so re-measure it
+before blaming spawn geometry. The bot-side latency guards (grace periods, shift-queued orders)
+are still worth keeping — 20 frames is not zero, and a real game has latency too.
+
 ## ⚠ MEASUREMENT VALIDITY — read this before trusting any result above
 
 **Every result logged before 2026-09-18 ~04:00 is confounded and must not be used to rank
@@ -57,6 +91,187 @@ still weak (team 0 saturates the ~2000 unit cap); prefer the `draw_score` army-m
   enemy (expand away from them, not always west) is the highest-value open improvement** —
   it should roughly halve the mirror-match gap, which is now the cleanest available
   regression metric.
+
+## Unit-control architecture: the commander now survives the ground raid (2026-09-22)
+
+DRAGON_BOT got a real unit-control architecture (see the plan and `bar_framework/`:
+`map_model`, `threat_map`, `army_broker`, `scout_plan`, plus a `corvp` defence plant and a
+production floor). The finish line was the exploiter fixtures, judged on `commander_lost` —
+binary, and far above any noise floor. Real kills only (named killer, before the end-of-match
+self-destruct); runs whose clock stalled were discarded.
+
+Final matrix, **exact final build**, two runs per cell:
+
+| matchup | before (step 4/5) | final build |
+|---|---|---|
+| GROUND_RAIDER_BOT, DRAGON slot 0 | **killed** 7:57, 8:53 (by `corgator`) | **survived 2/2** |
+| GROUND_RAIDER_BOT, DRAGON slot 1 | — | killed 2/2 (6:49, 8:21) |
+| RAIDER_BOT (air), DRAGON slot 0 | survived 2/2 | survived 2/2 |
+| RAIDER_BOT (air), DRAGON slot 1 | — | 1/2 |
+
+Pooling every valid run since steps 6–8 landed (several intermediate builds, so indicative
+only): ground slot 0 survived 5/5, ground slot 1 4/7, air slot 0 4/4, air slot 1 6/10.
+**Slot 0 is solved; slot 1 is roughly a coin toss.**
+An earlier draft of this entry said "slot 1 survived 4/4" — that was an intermediate build and a
+small sample, and the final matrix disproved it.
+
+**Slot 1 is governed by macro timing, not unit control.** Across today's slot-1 runs the macro's
+hand-off (which places the air lab when metal starts banking, and frees the con bot for the
+vehicle plant) landed anywhere from **frame 6,780 to 11,370 — 3:46 to 6:19**. Every defensive
+asset hangs off it, and the slot-1 raid lands ~5:48–6:20. Losses line up with late hand-offs:
+- ground slot 1 loss: hand-off 5:02; the vehicle plant's build-queue order sat unbuilt for 1,810
+  frames, was retried, and the raid destroyed its half-built nanoframe. Army was 0 at 6:00–7:00.
+- air slot 1 loss: the air lab was only queued at 5:14 and never finished before the commander
+  died at 6:33; the bombers landed at 5:27.
+
+**Correction — it is NOT expansion direction.** An earlier draft blamed the spawn-geometry bug
+(macro expanding into the contested middle). A DRAGON-vs-DRAGON mirror disproved that: every grid
+on both sides sat within ~1,000 elmos of home, neither drifted more than ~7% toward the enemy,
+and the two spawns are near-symmetric distances from their map edges. That note dates from an
+older macro.
+
+What the mirror actually shows (tracker `eco`/`units` rows, identical code both sides):
+
+| time | slot 1 metal produced / slot 0 | build power s0 / s1 | mex s0 / s1 |
+|---|---|---|---|
+| 0:00–1:30 | 1.00 | equal until 1:30 | equal |
+| 1:30 | 1.00 | **435 / 235** | 3 / 3 |
+| 3:30 | 0.79 | 1170 / 970 | **14 / 6** |
+| 4:00 | 0.73 | 1170 / 970 | 20 / 12 |
+| 4:00–7:00 | 0.73–0.78, **flat** | | |
+
+**The whole slot-1 deficit is created between ~1:30 and 4:00, then carried forward unchanged** —
+after 4:00 both slots grow at the same rate. At the measured ~1.58 min doubling time, a 27% deficit
+is ~45 s of lag, matching the 44 s hand-off gap in the same match (3:39 vs 4:23). It is not idle
+builders: slot 1 had LESS idle BP (0–200 vs 150–1000). It is build power arriving later — about
+one early builder's worth by 1:30 — i.e. something in the opening completes later on the client.
+That is consistent with the `d5501fd` finding that client-side order latency was sabotaging team
+1's opening; that fix cut skips 26 → 2, and this looks like the residue. **Next thing to
+investigate: the opening's second con bot and first nanos on the client, frame by frame, in a
+mirror match.**
+
+A cheaper partial fix for defence, inside scope: the vehicle plant's fallback path (build queue,
+used when the timer fires before hand-off) is unreliable — the reserved-con-bot path only exists
+after hand-off.
+
+**What each fix bought, in order found:** the vehicle plant was never built at first (the
+build queue had no builders left after hand-off — a con bot is now held back for it); ground
+slot 1 died until production urgency counted threats *approaching* as well as attacks already
+landing (warning from pickets was otherwise wasted); air slot 1 died until the lab controller
+got an order-grace period, front-of-queue insertion for defence, and a stall guard that no
+longer blocks the floor (see the next entry).
+
+## The order-latency bug came back in the lab controller (2026-09-22)
+
+Against RAIDER_BOT from slot 1, DRAGON_BOT's commander died to bombers with **0–1 fighters
+alive by 6:00**, while slot 0 had 4–5. The lab controller logged five scouts and two fighters
+queued in eight seconds (4:56–5:04), yet the tracker showed `in_progress=0 fac_idle=2` at 5:00:
+**both labs idle, nothing being built**.
+
+Same cause as the macro bug fixed in `d5501fd`: reading a factory's queue back
+(`GetFactoryCommands`) **lags on the client process**, and team 1 is the client. `QueueEmpty`
+kept answering "empty" for orders already sent, so the controller re-ordered every tick. Scouts
+were never counted because they did not exist yet (`UnitCreated` had not fired), so it kept
+queueing more — and it only happens from slot 1, because the host sees its own orders
+immediately. The macro got a grace period after each order (`ORDER_GRACE_FRAMES`, 30 → 90); the
+lab controller never did. It now has `LAB_ORDER_GRACE = 120`.
+
+**Rule: any widget that reads a queue back after writing it needs a grace period, or it will
+double-order on the client.** Better, don't read back at all: `bar_framework/army_broker.lua`
+tracks what it last ordered widget-side for exactly this reason. Symptoms to recognise: a unit
+type overproduced from slot 1 only, and factories idle while the log says they were ordered.
+
+Found in the same investigation:
+- **The macro keeps the air lab's queue full of constructors**, so a lab controller that only
+  acts on an empty queue may never get a turn. Defence units now go ahead of the queue via
+  `CMD.INSERT` at position 1 (BAR's own `unit_factory_quota.lua` pattern; position 0 cancels
+  the build in progress).
+- **The stall guard blocked the defence floor**: the economy runs a deliberate stall through
+  the whole growth phase, so "skip production while stalled" meant the floor was never built.
+- **The harness rewrites `local DEBUG = false` to `true`** in bot files, and patches team IDs in
+  bot files only — `bar_framework` modules are copied unpatched, so they must take team/ally IDs
+  through `Init` rather than calling `Spring.GetMyAllyTeamID()`.
+- **In slot 1 the air lab comes up at ~4:57 vs ~4:04 in slot 0** (spawn-geometry bug slowing the
+  bottom-right macro), and bombers land ~5:24. No production priority can fully close a
+  27-second window; that part is a macro problem.
+
+## Army value at frame 14400 cannot see unit-control changes — measure the mechanism (2026-09-22)
+
+The line fixes (width cap, active-span cap, muster pool, and the three lost constants) came
+back `NO DIFFERENCE DEMONSTRATED` from `ab_test.py` against the step-3 bot: army value
+25,215 / 14,819 vs 25,036 / 13,156 (slot 0 / slot 1). Taken at face value that says the
+changes did nothing. They did a great deal — the metric just could not see it.
+
+The same six result files, read for what the change actually targets (tracker `army` rows,
+`n >= 3`, frames <= 18000), with `ab_test`'s own non-overlap bar:
+
+| metric | step 4, slot 0 | step 3, slot 0 | step 4, slot 1 | step 3, slot 1 |
+|---|---|---|---|---|
+| `spread` | 1038–1109 | 2344–2528 | 801–986 | 2231–2515 |
+| `main_share` | 0.87–0.89 | 0.59–0.73 | 0.82–0.90 | 0.58–0.67 |
+
+**All four separated, zero overlap.** The army is ~2.5x more concentrated and went from ~4
+groups to ~1.9. That is a demonstrated effect by the harness's own conservative standard.
+
+**Replicated on independent hardware** (Pi 1, aarch64, its own A/B run): all four separated
+again — spread 747–1029 / 439–711 vs 2305–2508 / 1958–2158, main_share 0.87–0.92 / 0.85–0.93
+vs 0.65–0.70 / 0.48–0.62. Eight of eight comparisons across two machines. Pi 1's army-value
+verdict was also `NO DIFFERENCE` (28,517 / 13,756 vs 26,707 / 13,613), with a 2.66x spread.
+
+**Why army value was blind:** against OK_BOT almost no fighting happens before frame 18000 —
+`pm_deaths` 0–0.33 and `lost_enemy_army_mv` 0–19 metal across all runs. DRAGON_BOT also fields
+no army at all until ~6:00 (broker echo: `units=0` through minute 5). So at frame 14400 its army
+is about two minutes old and has barely engaged, and army value is measuring how much was
+*produced*, not how well it was *used*. Positioning, cohesion and retreat change *losses*, and
+there are none yet to change.
+
+**Rules this gives:**
+- For a unit-control change, the A/B verdict on army value is expected to be `NO DIFFERENCE`
+  and is not evidence either way. Compare the tracker field the change targets, across the
+  same result files (`ab_test` keeps them in `%TEMP%\abtest_*`), using the non-overlap bar.
+- Cohesion: `spread`, `main_share`, `groups`. Engagement quality: `pm_isolated / pm_deaths`,
+  `pm_support_avg` — but only once there is combat to measure, which vs OK_BOT there is not.
+- Threat response needs an opponent that actually attacks early: RAIDER_BOT / GROUND_RAIDER_BOT,
+  judged on `commander_lost`, which is binary and far above any noise floor.
+- Noise was unusually high in both A/Bs this session (worst within-condition spread 1.80x and
+  1.81x vs the documented 1.14x), which is one more reason not to lean on army value here.
+
+## Spring names the RECLAIMING unit as the attacker in UnitDestroyed (2026-09-22)
+
+Building the threat map (`bar_framework/threat_map.lua`), own-unit losses were counted as
+evidence of an attack. That raised a 470-point "respond"-band threat at **2:38** — minutes
+before an Incisor could physically cross the map (`corgator` speed 85 needs ~4577 frames for
+the 12,968-elmo cross-position spawn distance). The loss value 470 is exactly `corlab`'s metal
+cost: it was the bot **reclaiming its own starter lab**, which the build order does by design.
+
+The first fix — "only count a loss if `attackerID` is set, since a reclaim has no attacker" —
+**did not work**, and the reason is the lesson: **Spring passes the reclaiming unit as
+`attackerID`**, so our own nano eating our own lab arrives at `widget:UnitDestroyed` looking
+identical to an enemy kill. The working test is the attacker's *ally team*:
+
+```lua
+if attackerID and Spring.GetUnitAllyTeam(attackerID) == myAllyID then
+    attackerID = nil   -- our own reclaim, not an attack
+end
+```
+
+Generalises: **`attackerID ~= nil` is not "an enemy did this".** This is the mechanism behind
+the already-documented "bot reclaiming its own starter lab logged as an enemy loss" warning in
+CLAUDE.md — that note says the symptom, this is the cause. Anything keying off `UnitDestroyed`
+(loss accounting, threat detection, retreat triggers) needs the ally-team check, because this
+bot reclaims its own buildings constantly: starter lab, grid retrofits, wind recycling.
+
+Second bug found in the same pass: **incident severity must not be allowed to fall.** Threat
+score depends on what is visible *right now*, so a raider stepping out of LOS made one attack
+oscillate respond → watch → respond within seconds. Committing and recalling units on that
+flicker is worse than not responding. Bands now only ever climb, and attacks end by expiring on
+a timer (`INCIDENT_TTL`), not by momentarily looking calmer.
+
+Verified against both exploiters, echo-only: GROUND_RAIDER_BOT registers `ground` at 5:53-6:42
+(known arrival ~6:30-8:00) and RAIDER_BOT registers `air` at 5:29 escalating to alarm at 5:57
+(known arrival ~4:30-5:00, commander kills 6:11-8:39) — i.e. the alarm lands *before* the kill
+window. Bombers are the unseen-attacker case and still resolve to the `air` channel, because
+the channel is inferred from recent nearby contacts when `attackerDefID` is unavailable.
 
 ## Client-side order latency was silently sabotaging team 1's opening (2026-09-22)
 

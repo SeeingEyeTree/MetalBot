@@ -90,28 +90,6 @@ local MUSTER_RALLY_DIST  = 700
 
 local musterPool = {}   -- [unitID] = frame it finished
 
--- Threat response.  Dispatch is absolute (see threat_map): if an attack crosses the
--- respond band, units go, whatever our production state.  These only size it.
-local RESPOND_NEED_MULT   = 2.0   -- commit this multiple of the enemy value present
-local RESPOND_MIN_UNITS   = 3     -- never send a lone unit to die
-local RESPOND_ARMY_CAP    = 0.35  -- never commit more than this share of the army
-local RESPOND_CHASE_RATIO = 1.10  -- an attacker this much faster, leaving, is not chased
-
-local responding = {}   -- [unitID] = incident it was sent to
-
--- Home guard: the vehicle plant exists to defend the base, so its output stays there
--- instead of walking to the front; fighters fly cover over the commander, because
--- losing it ends the game.  Both remain eligible to RESPOND and return afterwards.
-local HOME_GUARD_RADIUS = 1000   -- posts this far out from the base
-local HOME_GUARD_ARC    = 1.05   -- spread across +-60 degrees of the enemy-facing side
-local homeGuards  = {}           -- [unitID] = true
-local commanderID = nil
-
--- The line's thrust window from the last assignment pass.  Response may borrow from
--- the wings but never the thrust: game_mechanics 7.1, "local/reserve reinforcements,
--- not main-army pulls".
-local lineThrustLo, lineThrustHi = 1, 0
-
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 local myTeamID    = nil
@@ -445,13 +423,9 @@ local function AssignUnitPositions()
     -- Units still mustering are not on the line, so they must not widen it: sizing
     -- the front off units that are standing at the rally point spreads the ones who
     -- actually got there.
-    -- Likewise units off responding, retreating or scouting are not on the line: only
-    -- count what the line can actually command.
     local unitList = {}
     for unitID, defID in pairs(combatUnits) do
-        local role = ARMY and ARMY.RoleOf(unitID)
-        if spGetUnitDefID(unitID) and not musterPool[unitID] and not homeGuards[unitID]
-           and (role == nil or role == "LINE") then
+        if spGetUnitDefID(unitID) and not musterPool[unitID] then
             local cost = (UnitDefs[defID] and UnitDefs[defID].metalCost) or 0
             unitList[#unitList + 1] = { id = unitID, value = cost }
         end
@@ -486,7 +460,6 @@ local function AssignUnitPositions()
     -- Thrust window, clipped to the active span.
     local thrustLo = math.max(activeLo, thrustNodeIdx - THRUST_NODE_HALF)
     local thrustHi = math.min(activeHi, thrustNodeIdx + THRUST_NODE_HALF)
-    lineThrustLo, lineThrustHi = thrustLo, thrustHi
 
     -- Wings are the rest of the ACTIVE span, nearest the thrust first, skipping nodes
     -- stuck at the map edge -- those have no room to advance, so units sent there are
@@ -639,173 +612,6 @@ local function UpdateMuster(frame)
     end
 end
 
--- An unattributed attack still has to go to someone.  If only one channel has live
--- threat, it is almost certainly that one: the log showed `unknown` incidents
--- sitting beside `air=1211 gnd=0`, and sending vehicles at a bomber is useless.
-local function ResolveChannel(inc)
-    if inc.channel ~= "unknown" then return inc.channel end
-    -- ApproachScore, not ChannelScore: scouted enemy buildings are all "ground" and
-    -- would otherwise bias every unattributed hit away from air.
-    return (TM.ApproachScore("air") > TM.ApproachScore("ground")) and "air" or "ground"
-end
-
-local function CanAnswer(defID, channel)
-    if channel == "air" then return UQ.can_hit_air(defID) end
-    return UQ.can_hit_ground(defID)
-end
-
--- Send the nearest able units to each live attack.  Ported from bot.lua's
--- UpdateDefenseCoordination (:4286): candidates ranked by ETA, committed until a
--- value budget sized to the attack is met.  Changes from that version: channel
--- matching, the thrust-window exclusion, the army-share cap, and the no-chase rule.
-local function DispatchResponses(frame)
-    if not TM or not ARMY or not UQ then return end
-
-    local live = {}
-    for _, inc in ipairs(TM.Incidents()) do live[inc] = true end
-
-    -- Stand down anyone whose attack is over, or who has been pulled off to retreat.
-    for uid, inc in pairs(responding) do
-        local role = ARMY.RoleOf(uid)
-        if not live[inc] or not spGetUnitDefID(uid) or role == "RETREAT" then
-            if role == "RESPOND" then ARMY.Release(uid) end
-            responding[uid] = nil
-        end
-    end
-
-    local armyValue = 0
-    for uid, defID in pairs(combatUnits) do
-        if spGetUnitDefID(uid) then armyValue = armyValue + TM.Intrinsic(defID) end
-    end
-    local capLeft = armyValue * RESPOND_ARMY_CAP
-    for uid in pairs(responding) do capLeft = capLeft - TM.Intrinsic(combatUnits[uid]) end
-
-    local incs = {}
-    for _, inc in ipairs(TM.Incidents()) do
-        local s = TM.IncidentScore(inc)
-        local band = TM.IncidentBand(inc, s)
-        if band == "respond" or band == "alarm" then incs[#incs + 1] = { inc = inc, s = s } end
-    end
-    table.sort(incs, function(a, b) return a.s > b.s end)
-
-    for _, e in ipairs(incs) do
-        local inc     = e.inc
-        local channel = ResolveChannel(inc)
-
-        local enemyV, fastest = 0, 0
-        for _, c in pairs(TM.Contacts()) do
-            if (c.x - inc.x) ^ 2 + (c.z - inc.z) ^ 2 <= TM.INCIDENT_MERGE ^ 2 then
-                enemyV = enemyV + c.v
-                local sp = UQ.max_speed(c.defID)
-                if sp > fastest then fastest = sp end
-            end
-        end
-        -- An unseen attacker (bomber run) leaves enemyV at zero; the incident's own
-        -- score, which counts what it has already destroyed, stands in for it.
-        local need    = math.max(enemyV * RESPOND_NEED_MULT, e.s)
-        local leaving = TM.IsLeaving(inc)
-        local ourHalf = MM and MM.IsOurHalf(inc.x, inc.z)
-
-        local have, count = 0, 0
-        for uid, i2 in pairs(responding) do
-            if i2 == inc then
-                have, count = have + TM.Intrinsic(combatUnits[uid]), count + 1
-            end
-        end
-
-        local cands = {}
-        for uid, defID in pairs(combatUnits) do
-            if spGetUnitDefID(uid) and not responding[uid] and CanAnswer(defID, channel) then
-                local role = ARMY.RoleOf(uid)
-                local ok = role == nil or role == "MUSTER" or role == "HOME_GUARD"
-                if role == "LINE" then
-                    local slot = ARMY.Slot(uid)
-                    ok = ourHalf and not (slot and slot >= lineThrustLo and slot <= lineThrustHi)
-                end
-                local spd = UQ.max_speed(defID)
-                -- Game doctrine 7.1: a faster raider that is already leaving cannot
-                -- be caught, and chasing it just strips the base.
-                if ok and not (leaving and fastest > spd * RESPOND_CHASE_RATIO) then
-                    local ux, _, uz = spGetUnitPosition(uid)
-                    if ux then
-                        cands[#cands + 1] = {
-                            uid = uid, v = TM.Intrinsic(defID),
-                            eta = math.sqrt((ux - inc.x) ^ 2 + (uz - inc.z) ^ 2) / math.max(1, spd),
-                        }
-                    end
-                end
-            end
-        end
-        table.sort(cands, function(a, b) return a.eta < b.eta end)
-
-        local added = 0
-        for _, c in ipairs(cands) do
-            if (have >= need and count >= RESPOND_MIN_UNITS) or capLeft <= 0 then break end
-            responding[c.uid] = inc
-            musterPool[c.uid] = nil
-            have, count, capLeft = have + c.v, count + 1, capLeft - c.v
-            added = added + 1
-        end
-        if added > 0 then
-            local sec = math.floor(frame / 30)
-            Spring.Echo(string.format(
-                "[UC/respond] %d:%02d %s at %d,%d: +%d units (now %d, value %.0f / need %.0f)%s",
-                math.floor(sec / 60), sec % 60, channel, inc.x, inc.z, added, count,
-                have, need, leaving and " leaving" or ""))
-        end
-    end
-
-    for uid, inc in pairs(responding) do
-        ARMY.Claim(ARMY.PRIO.RESPOND, uid, {
-            role = "RESPOND", cmd = CMD_FIGHT, x = inc.x, z = inc.z,
-        }, frame)
-    end
-end
-
--- Ground guards hold posts on the enemy-facing side of the base; air guards orbit
--- the commander.  Directions come from the real home->foe axis, so the posts face
--- wherever the enemy actually spawned.
-local function UpdateHomeGuard(frame)
-    if not ARMY or not baseX then return end
-
-    local ground, air = {}, {}
-    for uid in pairs(homeGuards) do
-        local defID = spGetUnitDefID(uid)
-        if defID then
-            if UQ.is_air(defID) then air[#air + 1] = uid else ground[#ground + 1] = uid end
-        else
-            homeGuards[uid] = nil
-        end
-    end
-
-    local ax, az = 1, 0
-    if MM and MM.Ready() then ax, az = MM.Axis() end
-    local centre = math.atan2(az, ax)
-    table.sort(ground)   -- stable post assignment
-    local posts = math.max(1, math.min(3, #ground))
-    for i, uid in ipairs(ground) do
-        local k = (i - 1) % posts
-        local t = (posts == 1) and 0 or (k / (posts - 1)) * 2 - 1
-        local a = centre + t * HOME_GUARD_ARC
-        local x, z = baseX + math.cos(a) * HOME_GUARD_RADIUS, baseZ + math.sin(a) * HOME_GUARD_RADIUS
-        if MM then x, z = MM.Clamp(x, z, MAP_MARGIN) end
-        ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, {
-            role = "HOME_GUARD", cmd = CMD_FIGHT, x = x, z = z, minHold = LINE_MIN_HOLD,
-        }, frame)
-    end
-
-    local cx, cz = baseX, baseZ
-    if commanderID then
-        local x, _, z = spGetUnitPosition(commanderID)
-        if x then cx, cz = x, z end
-    end
-    for _, uid in ipairs(air) do
-        ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, {
-            role = "HOME_GUARD", cmd = CMD_FIGHT, x = cx, z = cz,
-        }, frame)
-    end
-end
-
 -- Pull badly damaged units home, and hand them back to the line once repaired.
 -- Without the release a retreated unit would keep its priority-1 duty forever and
 -- never rejoin, because nothing lower may claim it.
@@ -853,11 +659,8 @@ function widget:Initialize()
     SP.Init{ MM = MM, UQ = UQ, TM = TM, allyID = myAllyID }
 end
 
--- The commander is seen here rather than in UnitFinished: commanders are builders,
--- and UnitFinished returns early for builders before its commander branch.
 function widget:UnitCreated(unitID, unitDefID, teamID)
     if teamID ~= myTeamID then return end
-    if IsCommander(unitDefID) then commanderID = unitID end
     if IsCommander(unitDefID) and not baseX then
         local x, _, z = spGetUnitPosition(unitID)
         if x then
@@ -890,14 +693,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         scoutUnits[unitID] = unitDefID
     elseif d.weapons and #d.weapons > 0 then
         combatUnits[unitID] = unitDefID
-        -- Ground units (the vehicle plant's output) and dedicated air-to-air guard
-        -- the base; everything else musters and joins the line.
-        local guard = (not UQ) or (not UQ.is_air(unitDefID)) or UQ.is_dedicated_aa(unitDefID)
-        if UQ and guard then
-            homeGuards[unitID] = true
-        else
-            musterPool[unitID] = Spring.GetGameFrame()
-        end
+        musterPool[unitID]  = Spring.GetGameFrame()
     end
 end
 
@@ -916,9 +712,6 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
     combatUnits[unitID]   = nil
     scoutUnits[unitID]    = nil
     musterPool[unitID]    = nil
-    responding[unitID]    = nil
-    homeGuards[unitID]    = nil
-    if unitID == commanderID then commanderID = nil end
     if SP then SP.Forget(unitID) end
 end
 
@@ -1002,21 +795,7 @@ function widget:GameFrame(frame)
 
     if TM then
         if frame % TM.SCAN_PERIOD == 0 then TM.ScanContacts(frame) end
-        if frame % 30 == 0 then
-            TM.Update(frame)
-            EchoThreat(frame)
-            -- Published for the other widgets: the lab controller decides whether to
-            -- build through the float gate, and the macro whether to pull the
-            -- vehicle plant forward.  Read-only for them; only this widget writes it.
-            if WG then
-                local mb = WG.MetalBot or {}
-                WG.MetalBot = mb
-                local urgency, worst, ch = TM.ProductionUrgency()
-                mb.urgency, mb.urgencyDeficit, mb.urgencyChannel = urgency, worst, ch
-                mb.foeDist = MM and MM.Ready() and MM.Dist() or nil
-                mb.frame = frame
-            end
-        end
+        if frame % 30 == 0 then TM.Update(frame); EchoThreat(frame) end
     end
 
     -- Scan for enemies every ~5s.  Sector freshness is now tracked by scout_plan.
@@ -1034,8 +813,6 @@ function widget:GameFrame(frame)
     if frame % 30 == 0 then
         if ARMY then ARMY.Sweep(frame) end
         UpdateRetreats(frame)
-        DispatchResponses(frame)
-        UpdateHomeGuard(frame)
         UpdateMuster(frame)
     end
 

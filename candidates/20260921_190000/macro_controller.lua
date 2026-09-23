@@ -34,13 +34,11 @@ local spGetMyTeamID     = Spring.GetMyTeamID
 local spGetGroundHeight = Spring.GetGroundHeight
 local spGetUnitCommands = Spring.GetUnitCommands
 local spGetTeamUnits    = Spring.GetTeamUnits
-local spGetFactoryCommands = Spring.GetFactoryCommands
 
 local CMD_GUARD   = (CMD and CMD.GUARD)   or 25
 local CMD_REPAIR  = (CMD and CMD.REPAIR)  or 40
 local CMD_RECLAIM = (CMD and CMD.RECLAIM) or 90
 local CMD_STOP    = 0
-local CMD_STOCKPILE = (CMD and CMD.STOCKPILE) or 117
 
 -- Con bot #2 trails #1 by this much; mirrors CON_GAP in build_order_sim.py.
 local CON_GAP_FRAMES  = 60 * 30
@@ -71,21 +69,6 @@ local AIR_LAB_MIN_NANOS = 2   -- nanos that must cover the air lab's spot
 -- One air con runs a whole grid, so its travel between sites is the bottleneck.
 -- Leave each frame this far along for the grid's nanos to finish, and fly on.
 local GRID_HANDOFF      = 0.30
-
--- CAPSTONE: the one big building a mex grid is crowned with.  The blueprint asks
--- for a T2 air lab; any grid can take something else instead, which is how the
--- bot spends a grid's worth of ground on something other than more air.
---
--- The catch is WHO can build it.  A grid is run by a T1 air con (corca), and that
--- con can only place the T2 air lab -- a nuke needs a T2 con (coraca), a T2 bot
--- lab needs a con bot (corck), and nothing we own can place a T2 vehicle plant.
--- So a capstone the grid's own con cannot build is taken out of the grid's queue
--- and handed to a builder that can, rather than being retried forever.
-local CAPSTONE_DEFAULT = "coraap"    -- T2 air lab, as the blueprint has it
-local CAPSTONE_PLAN = {
-    -- grid number (order assigned) -> what to crown it with
-    [4] = "corsilo",                 -- nuke, to exercise the hand-off path
-}
 
 -- Retrofit: a finished mex grid is upgraded in place to T2 mexes + fusions by a
 -- T2 air con.  The grid's own nanos assist, so build power that would otherwise
@@ -201,14 +184,6 @@ local airLabItem      = nil   -- the queue item for the hand-off lab
 local airLabFrame     = nil   -- frame it was queued, for the watchdog below
 local airLabWarned    = false
 local airLabRetries   = 0
-
--- Vehicle plant (base defence), see "Vehicle plant for base defence" below.  Declared
--- up here because DispatchConBots reserves its builder before that section.
-local vpQueued        = false
-local vpDefID         = nil
-local vpBuilder       = nil   -- a con bot held back from the radar trip to build it
-local vpOrderFrame    = nil
-local vpBuilt         = false
 local airConDefID     = nil
 local gridStates      = {}    -- one single-builder placer state per grid
 local freeAirCons     = {}    -- air cons waiting for a grid
@@ -218,9 +193,6 @@ local completedAnchors = {}   -- {anchorX, anchorZ} list for FindAllValidPlaceme
 local completedKeys   = {}
 local gridRotation    = {}    -- "x,z" -> rotation the grid was placed with
 local allGridAnchors  = {}    -- every grid ever assigned: {anchorX, anchorZ, key}
-local gridsAssigned   = 0     -- how many grids have been handed to a con
-local pendingCapstones = {}   -- capstones the grid's own con could not build
-local capstoneJobs    = {}    -- one-item placer states building those
 local UPGRADE_BP      = nil
 local upgradeStates   = {}    -- retrofit placer states
 local upgradedKeys    = {}    -- grids already assigned a retrofit
@@ -501,81 +473,6 @@ local function QueueAirCon()
     end
 end
 
--- Swap the blueprint's factory entry for this grid's capstone.  Returns nothing;
--- if the grid's con cannot build it, the entry is retired from the grid's queue
--- and queued for a builder that can.
-local function ApplyCapstone(st, gridIndex, conID)
-    local name = CAPSTONE_PLAN[gridIndex] or CAPSTONE_DEFAULT
-    local ud   = UnitDefNames[name]
-    if not ud then return end
-
-    for _, item in ipairs(st.queue) do
-        if item.cls == "factory" then
-            if item.n ~= name then
-                item.n     = name
-                item.defID = ud.id
-                item.wx, item.wz = BP_PLACER.SnapToBuildGrid(ud.id, item.wx, item.wz)
-                -- Keep cls as "factory" whatever the capstone actually is: that is
-                -- what deferFactories keys off, and a capstone should still be the
-                -- last thing a grid builds.
-                item.cls = "factory"
-            end
-            local conDef = spGetUnitDefID(conID)
-            if conDef and BP_PLACER.CanBuild(conDef, ud.id) then
-                if name ~= CAPSTONE_DEFAULT then
-                    Spring.Echo(string.format("[MC] grid %d capstone: %s (own con)",
-                        gridIndex, name))
-                end
-            else
-                -- Not this con's job.  Retire it here so the grid can still finish,
-                -- and hand the position to whoever can place it.
-                item.built  = true
-                item.status = "skipped"
-                pendingCapstones[#pendingCapstones + 1] =
-                    {name = name, x = item.wx, z = item.wz, f = item.f or 0,
-                     gridIndex = gridIndex}
-                Spring.Echo(string.format(
-                    "[MC] grid %d capstone: %s at (%d, %d) needs another builder",
-                    gridIndex, name, item.wx, item.wz))
-            end
-            return
-        end
-    end
-end
-
--- Hand queued capstones to any free builder that can actually place them.
-local function TryAssignCapstones()
-    local i = 1
-    while i <= #pendingCapstones do
-        local job = pendingCapstones[i]
-        local ud  = UnitDefNames[job.name]
-        local taken = false
-        if ud then
-            for ci, conID in ipairs(freeT2Cons) do
-                local cdef = spGetUnitDefID(conID)
-                if not cdef then
-                    table.remove(freeT2Cons, ci)
-                    break
-                elseif BP_PLACER.CanBuild(cdef, ud.id) then
-                    table.remove(freeT2Cons, ci)
-                    table.remove(pendingCapstones, i)
-                    spGiveOrderToUnit(conID, CMD_STOP, {}, {})
-                    local st = BP_PLACER.New(
-                        {layout = {{n = job.name, x = 0, z = 0, f = job.f}}},
-                        conID, job.x, job.z, 0, {})
-                    capstoneJobs[#capstoneJobs + 1] = st
-                    Spring.Echo(string.format(
-                        "[MC] capstone %s started at (%d, %d) by con %d",
-                        job.name, job.x, job.z, conID))
-                    taken = true
-                    break
-                end
-            end
-        end
-        if not taken then i = i + 1 end
-    end
-end
-
 local function TryAssignGrids()
     while #freeAirCons > 0 and #pendingGrids > 0 do
         local conID = table.remove(freeAirCons, 1)
@@ -592,8 +489,6 @@ local function TryAssignGrids()
             -- up unspent -- that is what the "float" interrupt is for.
             st.deferFactories  = true
             st.handoffProgress = GRID_HANDOFF
-            gridsAssigned = gridsAssigned + 1
-            ApplyCapstone(st, gridsAssigned, conID)
             if consolidateOn and windDefID then
                 st.skipDefIDs = {[windDefID] = true}
             end
@@ -695,15 +590,8 @@ local function DispatchConBots()
     for i, cid in ipairs(conBots) do
         if spGetUnitDefID(cid) then
             BP_PLACER.RemoveBuilder(distState, cid)
-            -- Keep the first one home for the vehicle plant.  Once these leave for
-            -- radar, nothing is left in the build queue to place it (the queue's
-            -- builders are gone by now), and it would sit there unbuilt.
-            -- (No `goto continue` here: Spring runs Lua 5.1, which has no goto, and a
-            -- syntax error takes the whole macro controller down silently.)
-            local reserve = not vpQueued and not vpBuilder
-            if reserve then vpBuilder = cid end
             local placed = false
-            for r = reserve and 1e9 or 1600, 3200, 400 do   -- reserved: skip the search
+            for r = 1600, 3200, 400 do
                 for a = 0, 7 do
                     local ang = (a + i * 0.5) * math.pi / 4
                     local x = baseX + r * math.cos(ang)
@@ -976,139 +864,6 @@ local function StartHandoff()
         currentFrame, tostring(name), x, z, nanos or 0, #distState.builders))
 end
 
--- ── Vehicle plant for base defence ───────────────────────────────────────────
-
--- The one army-driven change to the economy: a T1 vehicle plant, whose output is the
--- bot's ground defence.  corvp, not the T2 bot lab -- ~16k energy for a T2 lab at
--- ~3 min is out of reach, and the lab is only the start; the defenders still have to
--- be built after it.
---
--- WHEN is derived, not hardcoded.  Raid arrival times measured in one match carry
--- that match's spawn distance: in-line spawns land a ground raid ~28 s sooner than
--- the cross-position runs they were measured on.  So we store the part that does
--- not depend on spawns -- how long an early ground raid spends BUILDING -- and add
--- this match's actual travel time.  From GROUND_RAIDER_BOT's ~6:30 arrival (frame
--- 11700) across 12,968 elmos at corgator speed 85: 11700 - 4577 = ~7120 frames.
-local VP_NAME           = "corvp"
-local GROUND_RAID_BUILD = 7120   -- frames, spawn-independent
-local GROUND_RAID_SPEED = 85     -- elmos/s, the early raider
-local VP_LEAD_FRAMES    = 3600   -- lab + first defenders need this long before arrival
-local VP_WATCHDOG       = 1800   -- ordered but no plant this long later: try again
--- (vpQueued / vpDefID / vpBuilder / vpOrderFrame / vpBuilt are declared with the
---  air-lab state near the top: DispatchConBots needs them, and a second `local`
---  here would silently create separate variables for everything below.)
-
--- Can any builder we actually own place this def?  Queueing one nobody can build
--- sits in the placer forever without a word (the air-lab lesson above).
-local function OwnedBuilderCanBuild(defID)
-    local candidates = {}
-    if commanderID and spGetUnitDefID(commanderID) then candidates[1] = commanderID end
-    for _, b in ipairs((distState and distState.builders) or {}) do
-        candidates[#candidates + 1] = b
-    end
-    for _, uid in ipairs(candidates) do
-        local bd = UnitDefs[spGetUnitDefID(uid) or -1]
-        for _, optID in ipairs((bd and bd.buildOptions) or {}) do
-            if optID == defID then return true end
-        end
-    end
-    return false
-end
-
--- Frame to start the plant by: estimated ground-raid arrival minus the lead needed.
-local function VehicleLabDeadline()
-    local mb   = WG and WG.MetalBot
-    local dist = mb and mb.foeDist
-    if (not dist or dist <= 0) and baseX then
-        -- Symmetric-map mirror, the same fallback map_model uses.
-        local ex, ez = (Game.mapSizeX or 0) - baseX, (Game.mapSizeZ or 0) - baseZ
-        dist = math.sqrt((ex - baseX) ^ 2 + (ez - baseZ) ^ 2)
-    end
-    local arrival = GROUND_RAID_BUILD + ((dist or 0) / GROUND_RAID_SPEED) * 30
-    return arrival - VP_LEAD_FRAMES
-end
-
--- Ground factories need room for what they build to leave, so search further out
--- than the air lab (which spawns aircraft and can sit anywhere) and away from the
--- dense kickstart spiral around the commander.
-local function FindVehicleLabSpot()
-    local half = HalfExtent(vpDefID)
-    for r = 400, 1000, 60 do
-        for a = 0, 11 do
-            local ang = a * math.pi / 6
-            local x, z = BP_PLACER.SnapToBuildGrid(vpDefID,
-                             baseX + r * math.cos(ang), baseZ + r * math.sin(ang))
-            local y  = spGetGroundHeight(x, z) or 0
-            local ok = Spring.TestBuildOrder(vpDefID, x, y, z, 0)
-            if ok and ok ~= 0 and not ClashesWithBuildOrder(x, z, half)
-               and BP_PLACER.SpotReachable(distState, vpDefID, x, z) then
-                return x, z
-            end
-        end
-    end
-    return nil
-end
-
-local function CanBuild(builderID, defID)
-    local bd = builderID and UnitDefs[spGetUnitDefID(builderID) or -1]
-    for _, optID in ipairs((bd and bd.buildOptions) or {}) do
-        if optID == defID then return true end
-    end
-    return false
-end
-
-local function MaybeQueueVehicleLab(frame)
-    if vpBuilt or not distState or not baseX then return end
-    vpDefID = vpDefID or (UnitDefNames[VP_NAME] and UnitDefNames[VP_NAME].id)
-    if not vpDefID then return end
-
-    -- Already ordered: watch for the plant to appear, and retry if it never does
-    -- (builder killed on the way, spot taken, order dropped).
-    if vpQueued then
-        local have = Spring.GetTeamUnitsByDefs and Spring.GetTeamUnitsByDefs(myTeamID, vpDefID)
-        if have and #have > 0 then
-            vpBuilt = true
-        elseif vpOrderFrame and frame - vpOrderFrame > VP_WATCHDOG then
-            Spring.Echo(string.format("[MC] vehicle lab: no plant %d frames after ordering, retrying",
-                frame - vpOrderFrame))
-            vpQueued, vpBuilder = false, nil
-        end
-        return
-    end
-
-    -- Three reasons to start: a ground threat we cannot answer, the derived deadline,
-    -- or a con bot freed by the hand-off.  The last is usually first, and it is the
-    -- right time anyway: hand-off happens BECAUSE metal is banking, so the plant is
-    -- paid for out of surplus, and a ground con left idle among the growing grids
-    -- risks being walled in.
-    local mb      = WG and WG.MetalBot
-    local pulled  = mb and (mb.urgency == "rush" or mb.urgency == "build")
-                    and mb.urgencyChannel ~= "air"
-    local due     = frame >= VehicleLabDeadline()
-    local conFree = vpBuilder and spGetUnitDefID(vpBuilder) and CanBuild(vpBuilder, vpDefID)
-    if not (pulled or due or conFree) then return end
-
-    local x, z = FindVehicleLabSpot()
-    if not x then return end   -- try again next tick
-
-    local how
-    if conFree then
-        local y = spGetGroundHeight(x, z) or 0
-        spGiveOrderToUnit(vpBuilder, -vpDefID, { x, y, z, 0 }, {})
-        how = "reserved con bot"
-    elseif OwnedBuilderCanBuild(vpDefID)
-           and BP_PLACER.InsertPriorityItem(distState, VP_NAME, x, z, 0) then
-        how = "build queue"
-    else
-        return
-    end
-    vpQueued, vpOrderFrame = true, frame
-    Spring.Echo(string.format(
-        "[MC] VEHICLE LAB frame=%d via %s (%s, deadline %d): %s at (%d, %d)",
-        frame, how, pulled and "threat" or (conFree and "hand-off" or "timer"),
-        math.floor(VehicleLabDeadline()), VP_NAME, x, z))
-end
-
 -- ── Nano army/eco balance ────────────────────────────────────────────────────
 
 -- Effective headroom threshold for this game's unit cap.
@@ -1154,19 +909,7 @@ local function NanoBuildSpeed(defID)
     return (d and d.buildSpeed) or 0
 end
 
--- Does this factory actually have something queued?  Guarding an idle one spends the
--- nano's build power on nothing: GUARD only assists what the factory is CURRENTLY
--- building, and an empty queue means that's nothing.  The bot lab sits idle like this
--- between con #1 and con #2 (and briefly at the very start) -- a nano switched to
--- "army" there just does nothing until the lab is reclaimed and it falls back to eco.
-local function FactoryHasWork(fid)
-    if not spGetFactoryCommands then return true end   -- can't tell; assume yes
-    local cmds = spGetFactoryCommands(fid, -1)
-    return cmds and #cmds > 0
-end
-
--- The nearest factory this nano can physically reach that has something to build;
--- nil if none.
+-- The nearest factory this nano can physically reach; nil if none.
 local function FactoryInReach(uid, defID)
     local reach = (UnitDefs[defID] and UnitDefs[defID].buildDistance) or 380
     local ux, _, uz = spGetUnitPosition(uid)
@@ -1174,13 +917,11 @@ local function FactoryInReach(uid, defID)
     local best, bestD2 = nil, reach * reach
     for fid in pairs(factories) do
         if spGetUnitDefID(fid) then
-            if FactoryHasWork(fid) then
-                local fx, _, fz = spGetUnitPosition(fid)
-                if fx then
-                    local dx, dz = ux - fx, uz - fz
-                    local d2 = dx * dx + dz * dz
-                    if d2 <= bestD2 then best, bestD2 = fid, d2 end
-                end
+            local fx, _, fz = spGetUnitPosition(fid)
+            if fx then
+                local dx, dz = ux - fx, uz - fz
+                local d2 = dx * dx + dz * dz
+                if d2 <= bestD2 then best, bestD2 = fid, d2 end
             end
         else
             factories[fid] = nil
@@ -1434,19 +1175,6 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             BP_PLACER.OnUnitFinished(cs, unitID, unitDefID, x, z)
         end
     end
-    for _, cs in ipairs(capstoneJobs) do
-        if not cs.done then
-            BP_PLACER.OnUnitFinished(cs, unitID, unitDefID, x, z)
-        end
-    end
-    -- A nuke silo is a stockpiling weapon, not a factory, so nothing else will
-    -- ever tell it to build a missile.  Ask for a few; firing them is not wired up.
-    if d and d.canStockpile then
-        for _ = 1, 3 do
-            spGiveOrderToUnit(unitID, CMD_STOCKPILE, {}, {})
-        end
-        Spring.Echo("[MC] " .. (d.name or "?") .. " finished: stockpiling")
-    end
 end
 
 -- Fires when a finished unit actually leaves the factory: the last moment the
@@ -1670,23 +1398,6 @@ local function UpdateConsolidation(frame, resources)
     end
 end
 
-local function UpdateCapstones(frame, resources)
-    if #pendingCapstones > 0 and #freeT2Cons > 0 then TryAssignCapstones() end
-    local i = 1
-    while i <= #capstoneJobs do
-        local cs = capstoneJobs[i]
-        if cs.done then
-            if cs.builderID and spGetUnitDefID(cs.builderID) then
-                freeT2Cons[#freeT2Cons + 1] = cs.builderID
-            end
-            table.remove(capstoneJobs, i)
-        else
-            BP_PLACER.Update(cs, frame, resources)
-            i = i + 1
-        end
-    end
-end
-
 local function ReadResources()
     local _, m,  ms,  mp, mi = pcall(Spring.GetTeamResources, myTeamID, "metal")
     local _, em, ems, _,  ei = pcall(Spring.GetTeamResources, myTeamID, "energy")
@@ -1717,12 +1428,10 @@ function widget:GameFrame(frame)
     NANO.Sweep()
 
     UpdateHandoff(frame, resources)
-    MaybeQueueVehicleLab(frame)
     UpdateGrids(frame, resources)
     CheckCapPressure()
     UpdateRetrofits(frame, resources)
     UpdateConsolidation(frame, resources)
-    UpdateCapstones(frame, resources)
 
     if frame % RECLAIM_EVERY == 0 then UpdateWindReclaim() end
     UpdateSpendPressure(resources)
