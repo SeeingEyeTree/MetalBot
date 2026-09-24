@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threat Map Lab</title>
+<style>
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --surface2:#eef0f4; --line:#d6dae1; --text:#1c2230; --muted:#5d6678;
+  --enemy:#d2402f; --ally:#2f6fe0; --accent:#c26a0a; --ok:#2e8b57;
+  --b-ignore:#8a92a3; --b-watch:#d19a12; --b-respond:#e2701a; --b-alarm:#d2261f;
+  --map:#fbfbfd; --grid:#e3e6ec; --heat:214,110,20;
+  --radius:8px; --shadow:0 1px 2px rgba(20,30,50,.06),0 4px 14px rgba(20,30,50,.05);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#12151c; --surface:#1a1f29; --surface2:#232a37; --line:#2f3847; --text:#e6e9f0; --muted:#98a2b6;
+    --enemy:#ef6a5a; --ally:#5b96ff; --accent:#f0a04b; --ok:#4cc08a;
+    --b-ignore:#7d8699; --b-watch:#e5b530; --b-respond:#f08a3c; --b-alarm:#f0544c;
+    --map:#161b24; --grid:#252d3b; --heat:240,150,60; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12151c; --surface:#1a1f29; --surface2:#232a37; --line:#2f3847; --text:#e6e9f0; --muted:#98a2b6;
+  --enemy:#ef6a5a; --ally:#5b96ff; --accent:#f0a04b; --ok:#4cc08a;
+  --b-ignore:#7d8699; --b-watch:#e5b530; --b-respond:#f08a3c; --b-alarm:#f0544c;
+  --map:#161b24; --grid:#252d3b; --heat:240,150,60; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:14px 16px 6px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
+h1{font-size:18px;margin:0;font-weight:650}
+.sub{color:var(--muted);font-size:12.5px}
+main{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;padding:8px 16px 28px;max-width:1500px;margin:0 auto}
+@media (min-width:1000px){ main{grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);align-items:start} .stage{position:sticky;top:10px} }
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px 14px;margin-bottom:12px}
+.card h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;font-weight:650}
+.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;align-items:center}
+.toolbar .grp{color:var(--muted);font-size:11.5px;margin:0 2px 0 8px;text-transform:uppercase;letter-spacing:.05em}
+button,select,input,textarea{font:inherit;color:inherit}
+button{background:var(--surface2);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--ally);outline-offset:1px}
+button[aria-pressed="true"]{background:var(--ally);border-color:var(--ally);color:#fff}
+button.enemy[aria-pressed="true"]{background:var(--enemy);border-color:var(--enemy)}
+button.evt[aria-pressed="true"]{background:var(--b-respond);border-color:var(--b-respond)}
+button.small{padding:2px 7px;font-size:12px}
+input[type=number],input[type=search],select{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:4px 7px}
+input[type=number]{width:88px}
+.canvaswrap{position:relative;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--map)}
+canvas{display:block;width:100%;aspect-ratio:1/1;touch-action:none;cursor:crosshair}
+.hoverline{font-size:12.5px;color:var(--muted);min-height:2.6em;margin-top:6px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:6px 0}
+.row label{color:var(--muted);font-size:12.5px}
+select[size]{width:100%;min-height:150px}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.chip{border:1px solid var(--line);background:var(--surface2);border-radius:999px;padding:1px 8px;font-size:12px}
+.chip.air{border-color:#6aa9d8}.chip.gnd{border-color:#9b8a5a}.chip.good{border-color:var(--ok);color:var(--ok)}
+.unitname{font-weight:650;font-size:15px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:3px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:600;font-size:12px}
+td.num{font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:1px 10px;border-radius:999px;color:#fff;font-weight:650;font-size:13px}
+.p-none{background:var(--b-ignore)}.p-build{background:var(--b-watch)}.p-rush{background:var(--b-alarm)}
+.p-ignore{background:var(--b-ignore)}.p-watch{background:var(--b-watch)}.p-respond{background:var(--b-respond)}.p-alarm{background:var(--b-alarm)}
+.meter{position:relative;height:12px;border-radius:6px;background:var(--surface2);border:1px solid var(--line);margin:8px 0 2px}
+.meter .fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px}
+.meter .tick{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.55}
+.meterlabels{position:relative;height:14px;font-size:11px;color:var(--muted)}
+.meterlabels span{position:absolute;transform:translateX(-50%)}
+.note{color:var(--muted);font-size:12px;margin:6px 0 0}
+.err{background:#fde8e6;color:#8a1610;border:1px solid #f1b3ae;border-radius:6px;padding:8px 10px;margin-bottom:10px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .err{background:#3a1512;color:#ffb9b2;border-color:#6b2b26}}
+details{margin-bottom:12px}
+details>summary{cursor:pointer;font-weight:650;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"\25B8";display:inline-block;width:1.1em;color:var(--muted)}
+details[open]>summary::before{content:"\25BE"}
+.tun{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;margin-top:8px}
+.tun .k{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.tun input.changed,.bandtbl input.changed{border-color:var(--accent);background:rgba(214,110,20,.12)}
+.bandtbl{margin:10px 0 2px}
+.bandtbl .name{font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-bottom:3px}
+.bandtbl .r{display:flex;gap:6px;align-items:center;margin:2px 0}
+.bandtbl input{width:78px}
+textarea{width:100%;min-height:120px;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;padding:8px}
+.objs{display:flex;flex-wrap:wrap;gap:5px}
+.obj{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:6px;padding:1px 4px 1px 8px;font-size:12px;background:var(--surface2)}
+.obj.e{border-left:3px solid var(--enemy)}.obj.a{border-left:3px solid var(--ally)}.obj.v{border-left:3px solid var(--b-respond)}
+.obj button{border:0;background:none;padding:0 5px;color:var(--muted);font-size:15px;line-height:1}
+#tl{width:100%;height:60px;display:block;border:1px solid var(--line);border-radius:6px;background:var(--surface2);cursor:pointer;touch-action:none}
+#lslider{width:100%;margin:6px 0 2px}
+.cmp{display:grid;grid-template-columns:auto 1fr 1fr;gap:3px 12px;font-size:13px;margin-top:6px}
+.cmp .h{color:var(--muted);font-size:12px}
+.cmp .diff{color:var(--b-alarm);font-weight:650}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px}
+footer{color:var(--muted);font-size:12px;padding:0 16px 20px;max-width:1500px;margin:0 auto}
+</style>
+<!--FENGARI-->
+</head>
+<body>
+<header>
+  <h1>Threat Map Lab</h1>
+  <span class="sub">runs <code>bar_framework/threat_map.lua</code> unmodified &middot; unit stats from the BAR archive &middot; <span id="gen"></span></span>
+</header>
+<main>
+  <section class="stage">
+    <div id="err" class="err" hidden></div>
+    <div class="toolbar" id="tools" role="toolbar" aria-label="Tools"></div>
+    <div class="canvaswrap"><canvas id="map" aria-label="Threat map. Click to place units; drag to move; right-click removes."></canvas></div>
+    <div class="hoverline" id="hover">Hover the map to probe a point.</div>
+    <div class="legend">
+      <span><i style="background:var(--enemy)"></i>enemy (hollow = not counted as approaching)</span>
+      <span><i style="background:var(--ally)"></i>ally (hollow = not a combatant)</span>
+      <span>&#9670; air &middot; &#9679; ground</span>
+      <span>shading = position weight of the chosen channel</span>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card" id="logcard">
+      <h2>Replay a logged game</h2>
+      <div class="row">
+        <input type="file" id="logfile" accept=".json,.txt,.log" aria-label="Load a match result JSON or infolog">
+        <select id="logembed" hidden aria-label="Embedded logs"></select>
+        <select id="lteam" hidden aria-label="Team"></select>
+      </div>
+      <div id="logui" hidden>
+        <canvas id="tl" aria-label="Timeline of logged urgency. Click to jump."></canvas>
+        <input type="range" id="lslider" min="0" max="0" value="0" aria-label="Snapshot">
+        <div class="row" id="lstatus"></div>
+        <div class="row">
+          <button class="small" id="lprev">&#9664; prev</button><button class="small" id="lplay">&#9654; play</button><button class="small" id="lnext">next &#9654;</button>
+          <button class="small" id="lback">&minus;30s</button><button class="small" id="lfwd">+30s</button>
+          <button class="small" id="lnattack">next attack</button><button class="small" id="lnurg">next urgency change</button>
+          <button class="small" id="lexit">Exit replay</button>
+        </div>
+      </div>
+      <p class="note" id="lnote">Load a result JSON from <code>bot_testing.py --save-result</code> (its <code>threat_log</code>), or an infolog containing <code>[TML]</code> rows. Arrow keys step, space plays. You can still place units or edit tunables while paused to ask &ldquo;what if&rdquo;.</p>
+    </div>
+
+    <div class="card">
+      <h2>Unit to place</h2>
+      <div class="row"><input type="search" id="q" placeholder="filter: gator, air, T2, arm..." aria-label="Filter units" style="flex:1;min-width:160px"></div>
+      <select id="ulist" size="8" aria-label="Unit list"></select>
+      <div id="uinfo" style="margin-top:8px"></div>
+      <div class="two" style="margin-top:8px">
+        <div class="row"><label for="qty">Quantity</label><input type="number" id="qty" min="1" max="60" value="1"></div>
+        <div class="row"><label for="dmg">Damage / hit</label><input type="number" id="dmg" min="0" value="100"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Signals</h2>
+      <div id="signals"></div>
+    </div>
+
+    <div class="card">
+      <h2>Scenario</h2>
+      <div class="row">
+        <label for="frame">Game frame</label><input type="number" id="frame" min="0" step="30">
+        <span id="clock" class="sub"></span>
+      </div>
+      <div class="row">
+        <button class="small" data-step="150">+5s</button><button class="small" data-step="600">+20s</button>
+        <button class="small" data-step="1200">+40s</button><button class="small" data-step="-150">&minus;5s</button>
+        <span class="sub">contacts age out after CONTACT_TTL, attacks after INCIDENT_TTL</span>
+      </div>
+      <div class="row">
+        <label for="heat">Shade</label>
+        <select id="heat"><option value="ground">ground weight</option><option value="air">air weight</option><option value="none">off</option></select>
+        <label for="labels">Labels</label>
+        <select id="labels"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>
+        <label for="msize">Map size</label><input type="number" id="msize" min="2048" step="1024">
+      </div>
+      <div class="row"><label>Presets</label><span id="presets" class="objs"></span></div>
+      <div class="row"><button id="clear">Clear units &amp; events</button><button id="resetpos">Reset base positions</button></div>
+      <div id="objs" class="objs" style="margin-top:8px"></div>
+    </div>
+
+    <details class="card" id="tunecard">
+      <summary>Tunables (live &mdash; edited values are highlighted)</summary>
+      <div class="tun" id="tunscalars"></div>
+      <div id="tuntables"></div>
+      <div class="row" style="margin-top:10px"><button id="tunreset">Reset to file values</button><button id="tuncopy">Show changes as Lua</button></div>
+      <textarea id="tunout" readonly hidden></textarea>
+      <p class="note">These edit the in-page copy only. &ldquo;Show changes as Lua&rdquo; prints lines to paste into threat_map.lua, then re-run <code>python threat_map_viz.py</code>.</p>
+    </details>
+  </aside>
+</main>
+<footer>Left-drag moves things (the two base markers too) &middot; right-click or Delete removes &middot; keys 1&ndash;7 switch tools &middot; Esc = select. State is remembered in this browser.</footer>
+
+<script>
+'use strict';
+const P = __PAYLOAD__;
+const CAT = P.catalog;
+const DEF = {};
+CAT.forEach((u, i) => { DEF[u.name] = i + 1; });
+document.getElementById('gen').textContent = 'generated ' + P.generated;
+
+const $ = s => document.querySelector(s);
+const F = fengari, LUA = F.lua, LAUX = F.lauxlib;
+
+// ── Lua bridge ───────────────────────────────────────────────────────────────
+function toLua(v) {
+  if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) return 'nil';
+  if (typeof v === 'number') return v === Infinity ? 'math.huge' : v === -Infinity ? '-math.huge' : String(v);
+  if (typeof v === 'boolean') return String(v);
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (Array.isArray(v)) return '{' + v.map(toLua).join(',') + '}';
+  return '{' + Object.entries(v).map(([k, x]) => '[' + JSON.stringify(k) + ']=' + toLua(x)).join(',') + '}';
+}
+function evalLua(L, src) {
+  if (LAUX.luaL_dostring(L, F.to_luastring(src)) !== 0) {
+    const msg = LUA.lua_tojsstring(L, -1); LUA.lua_settop(L, 0); throw new Error(msg);
+  }
+  const r = LUA.lua_type(L, -1) === LUA.LUA_TSTRING ? LUA.lua_tojsstring(L, -1) : null;
+  LUA.lua_settop(L, 0);
+  return r;
+}
+function setGlobalString(L, name, s) {
+  LUA.lua_pushstring(L, F.to_luastring(s)); LUA.lua_setglobal(L, F.to_luastring(name));
+}
+function catalogLua() {
+  const rows = CAT.map(u => {
+    let w = '{}';
+    if (u.armed) {
+      if (u.hitsAir && !u.hitsGround) w = '{{onlyTargets={vtol=true}}}';
+      else if (u.hitsAir && u.hitsGround) w = '{{weaponDef=1}}';
+      else if (u.hitsGround) w = '{{onlyTargets={surface=true},weaponDef=1}}';
+      else w = '{{onlyTargets={surface=true},weaponDef=2}}';
+    }
+    return '{name=' + JSON.stringify(u.name) + ',metalCost=' + u.metal + ',speed=' + u.speed +
+      ',canFly=' + u.air + ',isBuilder=' + u.builder + ',customParams=' + (u.commander ? '{iscommander="1"}' : '{}') +
+      ',weapons=' + w + '}';
+  });
+  return 'UnitDefs={' + rows.join(',\n') + '}\nWeaponDefs={{canAttackGround=true,range=0},{canAttackGround=false,range=0}}';
+}
+let Lst = null;
+function luaState() {
+  if (Lst) return Lst;
+  const L = LAUX.luaL_newstate(); F.lualib.luaL_openlibs(L);
+  evalLua(L, catalogLua());
+  setGlobalString(L, 'TM_SRC', P.tm); setGlobalString(L, 'UQ_SRC', P.uq);
+  evalLua(L, P.glue);
+  return (Lst = L);
+}
+const callLua = expr => JSON.parse(evalLua(luaState(), 'return ' + expr));
+
+// ── State ────────────────────────────────────────────────────────────────────
+const KEY = 'threatmaplab.v1';
+const BAND_KEYS = ['SPEED_BANDS', 'POS_GROUND', 'POS_AIR'];
+let DEFAULTS = callLua('defaults()');
+BAND_KEYS.forEach(k => { const t = DEFAULTS[k]; t[t.length - 1][0] = Infinity; });
+const clone = o => JSON.parse(JSON.stringify(o, (k, v) => v === Infinity ? '__inf' : v), (k, v) => v === '__inf' ? Infinity : v);
+
+const S = {
+  mapSize: 12288, home: { x: 2000, z: 2000 }, foe: { x: 10288, z: 10288 }, frame: 3000,
+  units: [], events: [], nextId: 1, tun: clone(DEFAULTS), heat: 'ground', labels: 'auto',
+};
+const R = { on: false, data: null, team: null, idx: 0, timer: null, backup: null, snap: null, hist: [], finalIds: new Set(), knownFinal: new Set() };
+let tool = 'select', selDef = DEF['corgator'] || 1, selObj = null, drag = null, hoverW = null;
+let SIG = null, probeData = null;
+
+function save() {
+  if (R.on) return;
+  try {
+    const diff = {};
+    Object.keys(DEFAULTS).forEach(k => { if (JSON.stringify(S.tun[k], infRep) !== JSON.stringify(DEFAULTS[k], infRep)) diff[k] = S.tun[k]; });
+    localStorage.setItem(KEY, JSON.stringify({
+      mapSize: S.mapSize, home: S.home, foe: S.foe, frame: S.frame, units: S.units, events: S.events,
+      nextId: S.nextId, heat: S.heat, labels: S.labels, tun: diff, selDef: CAT[selDef - 1].name, qty: +$('#qty').value, dmg: +$('#dmg').value,
+    }, infRep));
+  } catch (e) { /* storage unavailable: fine */ }
+}
+const infRep = (k, v) => v === Infinity ? '__inf' : v;
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY); if (!raw) return;
+    const d = JSON.parse(raw, (k, v) => v === '__inf' ? Infinity : v);
+    Object.assign(S, { mapSize: d.mapSize || S.mapSize, home: d.home || S.home, foe: d.foe || S.foe, frame: d.frame ?? S.frame,
+      nextId: d.nextId || 1, heat: d.heat || S.heat, labels: d.labels || S.labels });
+    S.units = (d.units || []).filter(u => DEF[u.def]);
+    S.events = (d.events || []).filter(e => !e.def || DEF[e.def]);
+    Object.entries(d.tun || {}).forEach(([k, v]) => { if (k in DEFAULTS) S.tun[k] = v; });
+    if (d.selDef && DEF[d.selDef]) selDef = DEF[d.selDef];
+    if (d.qty) $('#qty').value = d.qty; if (d.dmg != null) $('#dmg').value = d.dmg;
+  } catch (e) { /* ignore corrupt state */ }
+}
+
+// ── Compute ──────────────────────────────────────────────────────────────────
+function scenario() {
+  const sc = scenario0();
+  if (R.on) {
+    // Contacts as they were when earlier hits landed, so channel resolution from contact
+    // memory sees what the bot saw.  Anything not in the final list is removed at the end.
+    const present = new Set(S.units.filter(u => u.side === 'enemy').map(u => u.id));
+    const gone = id => R.knownFinal.has(id) && !present.has(id);
+    R.hist.filter(h => !gone(h.id)).forEach(h => sc.enemies.push(h));
+    const stale = new Set();
+    R.hist.forEach(h => { if (!R.finalIds.has(h.id) || gone(h.id)) stale.add(h.id); });
+    sc.stale = [...stale];
+  }
+  return sc;
+}
+function scenario0() {
+  return {
+    home: [S.home.x, S.home.z], foe: [S.foe.x, S.foe.z], frame: S.frame, tun: S.tun,
+    allies: S.units.filter(u => u.side === 'ally').map(u => ({ id: u.id, def: DEF[u.def], x: u.x, z: u.z })),
+    enemies: S.units.filter(u => u.side === 'enemy').map(u => ({ id: u.id, def: DEF[u.def], x: u.x, z: u.z, frame: u.frame })),
+    events: S.events.map(e => ({ id: e.id, kind: e.kind, x: e.x, z: e.z, frame: e.frame, dmg: e.dmg, def: e.def ? DEF[e.def] : null })),
+  };
+}
+let dirty = false;
+function recompute() {
+  if (dirty) return; dirty = true;
+  requestAnimationFrame(() => {
+    dirty = false;
+    try {
+      $('#err').hidden = true;
+      SIG = callLua('run(' + toLua(scenario()) + ')');
+      if (hoverW) refreshProbe();
+    } catch (e) { SIG = null; showErr(e); }
+    renderSignals(); draw(); renderObjs(); save();
+  });
+}
+function showErr(e) { const b = $('#err'); b.hidden = false; b.textContent = String(e && e.message || e); }
+function refreshProbe() {
+  try { probeData = callLua('probe(' + hoverW.x.toFixed(1) + ',' + hoverW.z.toFixed(1) + ',' + selDef + ')'); } catch (e) { probeData = null; showErr(e); }
+  renderHover();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+const fmt = (n, d = 0) => (n === null || n === undefined) ? '–' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const clock = f => { const s = Math.floor(f / 30); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const axisDist = () => Math.max(1, dist(S.home, S.foe));
+function along(f, lateral = 0) {
+  const d = axisDist(), ax = (S.foe.x - S.home.x) / d, az = (S.foe.z - S.home.z) / d;
+  return { x: S.home.x + ax * f * d - az * lateral, z: S.home.z + az * f * d + ax * lateral };
+}
+const SPREAD = 130;
+const clampMap = p => ({ x: Math.max(0, Math.min(S.mapSize, p.x)), z: Math.max(0, Math.min(S.mapSize, p.z)) });
+const bandColor = b => getComputedStyle(document.documentElement).getPropertyValue('--b-' + b).trim();
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ── Toolbar ──────────────────────────────────────────────────────────────────
+const TOOLS = [
+  { id: 'select', label: '1 Select / move', cls: '' },
+  { id: 'enemy', label: '2 Enemy unit', cls: 'enemy' },
+  { id: 'ally', label: '3 Ally unit', cls: '' },
+  { grp: 'events' },
+  { id: 'hit_unseen', label: '4 Hit, attacker unseen', cls: 'evt' },
+  { id: 'hit_seen', label: '5 Hit, attacker seen', cls: 'evt' },
+  { id: 'loss_killed', label: '6 Our unit killed', cls: 'evt' },
+  { id: 'loss_quiet', label: '7 Our unit lost, no attacker', cls: 'evt' },
+];
+function buildTools() {
+  const el = $('#tools');
+  TOOLS.forEach(t => {
+    if (t.grp) { const s = document.createElement('span'); s.className = 'grp'; s.textContent = t.grp; el.appendChild(s); return; }
+    const b = document.createElement('button'); b.textContent = t.label; b.className = t.cls; b.dataset.tool = t.id;
+    b.addEventListener('click', () => setTool(t.id)); el.appendChild(b);
+  });
+  setTool('select');
+}
+function setTool(id) {
+  tool = id;
+  document.querySelectorAll('#tools button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === id)));
+  cv.style.cursor = id === 'select' ? 'default' : 'crosshair';
+}
+
+// ── Unit picker ──────────────────────────────────────────────────────────────
+function buildList() {
+  const q = $('#q').value.trim().toLowerCase(), sel = $('#ulist');
+  sel.innerHTML = '';
+  const groups = {};
+  CAT.forEach((u, i) => {
+    const hay = (u.name + ' ' + u.sub + ' t' + u.tech + ' ' + (u.air ? 'air' : 'ground') + (u.commander ? ' commander' : '') + (u.builder ? ' builder con' : '')).toLowerCase();
+    if (q && !q.split(/\s+/).every(w => hay.includes(w))) return;
+    const g = (u.air ? 'Air' : 'Land / sea') + ' · T' + u.tech;
+    (groups[g] = groups[g] || []).push([u, i + 1]);
+  });
+  Object.keys(groups).sort().forEach(g => {
+    const og = document.createElement('optgroup'); og.label = g;
+    groups[g].sort((a, b) => a[0].metal - b[0].metal).forEach(([u, id]) => {
+      const o = document.createElement('option'); o.value = id;
+      o.textContent = u.name + '  ·  ' + u.metal + 'm  ·  spd ' + Math.round(u.speed) + (u.builder ? '  ·  builder' : '') + (u.armed ? '' : '  ·  unarmed');
+      if (id === selDef) o.selected = true; og.appendChild(o);
+    }); sel.appendChild(og);
+  });
+}
+function renderUnitInfo() {
+  const u = CAT[selDef - 1], i = callLua('info(' + selDef + ')');
+  const chips = [
+    '<span class="chip ' + (i.channel === 'air' ? 'air' : 'gnd') + '">' + i.channel + ' channel</span>',
+    i.dedicatedAA ? '<span class="chip good">dedicated AA</span>' : '',
+    i.hitsAir && !i.dedicatedAA ? '<span class="chip">may hit air (×NONSPECIALIST)</span>' : '',
+    i.hitsGround ? '<span class="chip">hits ground</span>' : '',
+    i.combatant ? '<span class="chip good">counts as own combatant</span>' : '<span class="chip">not a combatant (builder/unarmed/commander)</span>',
+  ].join('');
+  $('#uinfo').innerHTML = '<div class="unitname">' + u.name + ' <span class="sub">' + u.sub + '</span></div>' +
+    '<div>' + fmt(u.metal) + ' metal × speed factor ' + i.speedFactor + ' (speed ' + fmt(u.speed, 1) + ') = <b>' + fmt(i.intrinsic) + '</b> intrinsic threat</div>' +
+    '<div class="chips">' + chips + '</div>';
+}
+
+// ── Placement ────────────────────────────────────────────────────────────────
+function place(p) {
+  const n = Math.max(1, Math.min(60, +$('#qty').value || 1));
+  const uname = CAT[selDef - 1].name;
+  if (tool === 'enemy' || tool === 'ally') {
+    for (let i = 0; i < n; i++) {
+      const r = i === 0 ? 0 : SPREAD * Math.sqrt(i), a = i * 2.39996;
+      const q = clampMap({ x: p.x + r * Math.cos(a), z: p.z + r * Math.sin(a) });
+      S.units.push({ id: S.nextId++, side: tool, def: uname, x: q.x, z: q.z, frame: S.frame });
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const r = i === 0 ? 0 : SPREAD * Math.sqrt(i), a = i * 2.39996;
+      const q = clampMap({ x: p.x + r * Math.cos(a), z: p.z + r * Math.sin(a) });
+      S.events.push({ id: S.nextId++, kind: tool, x: q.x, z: q.z, frame: S.frame, dmg: +$('#dmg').value || 0,
+        def: (tool === 'hit_seen' || tool.startsWith('loss')) ? uname : null });
+    }
+  }
+  recompute();
+}
+function remove(o) {
+  if (!o) return;
+  S.units = S.units.filter(u => u !== o); S.events = S.events.filter(e => e !== o);
+  if (selObj === o) selObj = null; recompute();
+}
+
+// ── Presets ──────────────────────────────────────────────────────────────────
+const PRESETS = [
+  ['Incisor raid, undefended', () => { unitsAt('enemy', 'corgator', 5, along(0.45, 300)); }],
+  ['…with 4 Incisors home', () => { unitsAt('enemy', 'corgator', 5, along(0.45, 300)); unitsAt('ally', 'corgator', 4, along(0.04)); }],
+  ['Bombers at midline, no AA', () => { unitsAt('enemy', 'corshad', 4, along(0.5, 400)); }],
+  ['…with 3 fighters home', () => { unitsAt('enemy', 'corshad', 4, along(0.5, 400)); unitsAt('ally', 'corveng', 3, along(0.04)); }],
+  ['Bombers in the mex grid', () => { unitsAt('enemy', 'corshad', 4, along(0.15, 250)); unitsAt('ally', 'corveng', 2, along(0.04)); }],
+  ['Scout pair', () => { unitsAt('enemy', 'corfav', 1, along(0.4)); unitsAt('enemy', 'armpeep', 1, along(0.55, 500)); }],
+  ['Raid + bombers + defenders', () => {
+    unitsAt('enemy', 'corgator', 4, along(0.3, -300)); unitsAt('enemy', 'corshad', 3, along(0.55, 300));
+    unitsAt('ally', 'corgator', 3, along(0.05)); unitsAt('ally', 'corveng', 2, along(0.03, 200)); }],
+];
+function unitsAt(side, name, n, p) {
+  if (!DEF[name]) return;
+  for (let i = 0; i < n; i++) {
+    const r = i === 0 ? 0 : SPREAD * Math.sqrt(i), a = i * 2.39996, q = clampMap({ x: p.x + r * Math.cos(a), z: p.z + r * Math.sin(a) });
+    S.units.push({ id: S.nextId++, side, def: name, x: q.x, z: q.z, frame: S.frame });
+  }
+}
+function buildPresets() {
+  const el = $('#presets');
+  PRESETS.forEach(([label, fn]) => {
+    const b = document.createElement('button'); b.className = 'small'; b.textContent = label;
+    b.addEventListener('click', () => { fn(); recompute(); }); el.appendChild(b);
+  });
+}
+
+// ── Canvas ───────────────────────────────────────────────────────────────────
+const cv = $('#map'), ctx = cv.getContext('2d');
+const V = { px: 800, pad: 30, k: 1 };
+function fit() {
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 700;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(w * dpr); V.px = w; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  V.pad = Math.max(18, Math.min(30, w * .04)); V.k = (w - 2 * V.pad) / S.mapSize;
+}
+const w2s = (x, z) => [V.pad + x * V.k, V.pad + z * V.k];
+const s2w = (px, py) => ({ x: (px - V.pad) / V.k, z: (py - V.pad) / V.k });
+function unitR(u) { return 3 + 1.6 * Math.log10(CAT[DEF[u.def] - 1].metal + 1); }
+function isAir(name) { return CAT[DEF[name] - 1].air; }
+function shape(x, y, r, air) {
+  ctx.beginPath();
+  if (air) { ctx.moveTo(x, y - r * 1.25); ctx.lineTo(x + r * 1.25, y); ctx.lineTo(x, y + r * 1.25); ctx.lineTo(x - r * 1.25, y); ctx.closePath(); }
+  else ctx.arc(x, y, r, 0, Math.PI * 2);
+}
+function label(text, x, y, color, align = 'left') {
+  ctx.font = '11px system-ui,sans-serif'; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = cssVar('--map'); ctx.strokeText(text, x, y); ctx.fillStyle = color; ctx.fillText(text, x, y);
+}
+function draw() {
+  fit();
+  const W = V.px, m = S.mapSize, tun = S.tun, text = cssVar('--text'), muted = cssVar('--muted');
+  ctx.clearRect(0, 0, W, W);
+  ctx.fillStyle = cssVar('--map'); ctx.fillRect(0, 0, W, W);
+  const [x0, y0] = w2s(0, 0), [x1, y1] = w2s(m, m);
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+
+  // Position-weight shading.  The table is piecewise-constant in distance from home, so
+  // concentric rings ARE the exact heat map.
+  if (S.heat !== 'none') {
+    const rows = tun[S.heat === 'air' ? 'POS_AIR' : 'POS_GROUND'], D = axisDist(), heat = cssVar('--heat');
+    const [hx, hy] = w2s(S.home.x, S.home.z);
+    ctx.fillStyle = 'rgba(' + heat + ',' + (rows[rows.length - 1][1] * .5) + ')'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    for (let i = rows.length - 2; i >= 0; i--) {
+      ctx.beginPath(); ctx.arc(hx, hy, rows[i][0] * D * V.k, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(' + heat + ',' + (rows[i][1] * .5) + ')'; ctx.fill();
+    }
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(' + heat + ',.7)'; ctx.setLineDash([3, 4]);
+    for (let i = 0; i < rows.length - 1; i++) { ctx.beginPath(); ctx.arc(hx, hy, rows[i][0] * D * V.k, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.setLineDash([]);
+  }
+  // grid
+  ctx.lineWidth = 1; ctx.strokeStyle = cssVar('--grid');
+  const step = m > 8192 ? 2048 : 1024;
+  for (let g = step; g < m; g += step) {
+    const [gx, gy] = w2s(g, g); ctx.beginPath(); ctx.moveTo(gx, y0); ctx.lineTo(gx, y1); ctx.moveTo(x0, gy); ctx.lineTo(x1, gy); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = cssVar('--line'); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.fillStyle = muted; ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let g = 0; g <= m; g += step * 2) { const [gx] = w2s(g, 0); ctx.fillText(g, gx, y1 + 4); }
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let g = step * 2; g <= m; g += step * 2) { const [, gy] = w2s(0, g); ctx.fillText(g, x0 - 4, gy); }
+
+  // ring labels
+  if (S.heat !== 'none') {
+    const rows = tun[S.heat === 'air' ? 'POS_AIR' : 'POS_GROUND'], D = axisDist(), [hx, hy] = w2s(S.home.x, S.home.z);
+    rows.slice(0, -1).forEach(r => label(r[0] + '× → ' + r[1], hx + r[0] * D * V.k * .7071 + 3, hy - r[0] * D * V.k * .7071 + 3, muted));
+  }
+
+  // axis + midline
+  const [ax, ay] = w2s(S.home.x, S.home.z), [bx, by] = w2s(S.foe.x, S.foe.z);
+  ctx.setLineDash([6, 5]); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.setLineDash([]);
+  const mid = along(.5), [mx, my] = w2s(mid.x, mid.z), d = axisDist(), nx = -(S.foe.z - S.home.z) / d, nz = (S.foe.x - S.home.x) / d;
+  ctx.beginPath(); ctx.moveTo(mx - nx * 40, my - nz * 40); ctx.lineTo(mx + nx * 40, my + nz * 40); ctx.stroke();
+  label('midline', mx + 6, my - 8, muted);
+
+  const labelsOn = S.labels === 'on' || (S.labels === 'auto' && S.units.length + S.events.length <= 28);
+  const cont = {}; if (SIG) SIG.contacts.forEach(c => { cont[c.id] = c; });
+
+  // incidents
+  if (SIG) SIG.incidents.forEach(inc => {
+    const [px, py] = w2s(inc.x, inc.z), col = bandColor(inc.band);
+    ctx.setLineDash([5, 4]); ctx.lineWidth = inc.top ? 2.5 : 1.5; ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.arc(px, py, tun.INCIDENT_MERGE * V.k, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    if (Math.hypot(inc.vx, inc.vz) > 0.01) {
+      const ex = px + inc.vx * 300 * V.k, ey = py + inc.vz * 300 * V.k;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(ex, ey); ctx.stroke();
+      const a = Math.atan2(ey - py, ex - px); ctx.beginPath(); ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - 8 * Math.cos(a - .4), ey - 8 * Math.sin(a - .4)); ctx.lineTo(ex - 8 * Math.cos(a + .4), ey - 8 * Math.sin(a + .4)); ctx.closePath(); ctx.fillStyle = col; ctx.fill();
+    }
+    label((inc.top ? '★ ' : '') + inc.band + ' · ' + fmt(inc.score) + (inc.leaving ? ' · leaving' : ''), px, py - tun.INCIDENT_MERGE * V.k - 9, col, 'center');
+  });
+
+  // what the bot itself logged (replay): hollow squares
+  if (R.on && R.snap) R.snap.i.forEach(li => {
+    const [px, py] = w2s(li.x, li.z), col = bandColor(li.band); ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+    ctx.strokeRect(px - 6, py - 6, 12, 12); label('log: ' + li.band + ' ' + li.score, px + 10, py + 14, col);
+  });
+
+  // probe: lines to allies that could arrive in time
+  if (hoverW && probeData && tool !== 'select') {
+    /* (kept minimal while placing) */
+  }
+  if (hoverW && probeData) {
+    const [px, py] = w2s(hoverW.x, hoverW.z);
+    probeData.allies.forEach(a => {
+      const u = S.units.find(o => o.id === a.id); if (!u) return;
+      const on = a.availG > 0 || a.availA > 0; if (!on) return;
+      const [ux, uy] = w2s(u.x, u.z); ctx.strokeStyle = cssVar('--ally'); ctx.globalAlpha = .35; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(ux, uy); ctx.stroke(); ctx.globalAlpha = 1;
+    });
+    ctx.strokeStyle = text; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(px - 8, py); ctx.lineTo(px + 8, py); ctx.moveTo(px, py - 8); ctx.lineTo(px, py + 8); ctx.stroke();
+  }
+
+  // channel centroids
+  if (SIG) ['ground', 'air'].forEach(ch => {
+    const c = SIG.channels[ch]; if (c.cx == null) return;
+    const [px, py] = w2s(c.cx, c.cz); ctx.strokeStyle = cssVar('--enemy'); ctx.lineWidth = 2;
+    ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(px, py, 14, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    label(ch === 'air' ? 'A centroid ' + fmt(c.score) : 'G centroid ' + fmt(c.score), px + 16, py - 12, cssVar('--enemy'));
+  });
+
+  // units
+  const allyRow = {}; if (SIG) SIG.allies.forEach(a => { allyRow[a.id] = a; });
+  const clusters = {};
+  S.units.forEach(u => {
+    const [px, py] = w2s(u.x, u.z), r = unitR(u), air = isAir(u.def), enemy = u.side === 'enemy';
+    const col = cssVar(enemy ? '--enemy' : '--ally');
+    let hollow = false, faded = false, c = null;
+    if (enemy) { c = cont[u.id]; if (!c) faded = true; else hollow = !c.counted; }
+    else { const a = allyRow[u.id]; hollow = !a || (a.ownG === 0 && a.ownA === 0); }
+    ctx.globalAlpha = faded ? .4 : 1; shape(px, py, r, air);
+    if (hollow || faded) { ctx.lineWidth = 2; ctx.strokeStyle = col; if (faded) ctx.setLineDash([2, 2]); ctx.stroke(); ctx.setLineDash([]); }
+    else { ctx.fillStyle = col; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = cssVar('--map'); ctx.stroke(); }
+    if (u === selObj) { ctx.lineWidth = 2; ctx.strokeStyle = text; shape(px, py, r + 4, air); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+    if (u === selObj) label(enemy ? (c ? fmt(c.threat) : 'expired') : u.def, px + r + 4, py, col);
+    else if (enemy && labelsOn) {
+      const key = Math.round(px / 30) + ',' + Math.round(py / 30);
+      const g = clusters[key] || (clusters[key] = { x: px, y: py, n: 0, t: 0, expired: 0, r });
+      g.n++; if (c) g.t += c.threat; else g.expired++;
+    }
+  });
+
+  Object.values(clusters).forEach(g => label((g.n > 1 ? g.n + '× ' : '') + (g.expired === g.n ? 'expired' : fmt(g.t)), g.x + g.r + 4, g.y, cssVar('--enemy')));
+
+  // events
+  S.events.forEach(e => {
+    const [px, py] = w2s(e.x, e.z), col = cssVar('--b-respond');
+    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.fillStyle = col;
+    if (e.kind.startsWith('hit')) {
+      ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke(); ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(e.kind === 'hit_unseen' ? '?' : '!', px, py + .5);
+    } else {
+      const c2 = e.kind === 'loss_killed' ? cssVar('--enemy') : muted; ctx.strokeStyle = c2;
+      ctx.beginPath(); ctx.moveTo(px - 5, py - 5); ctx.lineTo(px + 5, py + 5); ctx.moveTo(px + 5, py - 5); ctx.lineTo(px - 5, py + 5); ctx.stroke();
+    }
+    if (e === selObj) { ctx.strokeStyle = text; ctx.beginPath(); ctx.arc(px, py, 10, 0, Math.PI * 2); ctx.stroke(); }
+    if (labelsOn || e === selObj) label('f' + e.frame, px + 10, py, muted);
+  });
+
+  // bases
+  [['home', S.home, cssVar('--ally'), 'HOME'], ['foe', S.foe, cssVar('--enemy'), 'FOE']].forEach(([k, p, col, name]) => {
+    const [px, py] = w2s(p.x, p.z); ctx.fillStyle = col; ctx.fillRect(px - 7, py - 7, 14, 14);
+    ctx.strokeStyle = cssVar('--map'); ctx.lineWidth = 2; ctx.strokeRect(px - 7, py - 7, 14, 14);
+    label(name, px + 11, py + 1, col);
+  });
+}
+
+// ── Hit testing & interaction ────────────────────────────────────────────────
+function pickAt(px, py) {
+  let best = null, bd = 1e9;
+  const consider = (o, x, z, r) => { const [sx, sy] = w2s(x, z), d = Math.hypot(sx - px, sy - py); if (d <= Math.max(r, 9) && d < bd) { best = o; bd = d; } };
+  S.units.forEach(u => consider(u, u.x, u.z, unitR(u) + 3));
+  S.events.forEach(e => consider(e, e.x, e.z, 9));
+  consider({ base: 'home' }, S.home.x, S.home.z, 11); consider({ base: 'foe' }, S.foe.x, S.foe.z, 11);
+  return best;
+}
+function evPos(ev) { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+cv.addEventListener('pointerdown', ev => {
+  const [px, py] = evPos(ev), w = s2w(px, py);
+  if (ev.button === 2) return;
+  if (tool === 'select') {
+    const o = pickAt(px, py); selObj = o && !o.base ? o : null;
+    if (o) { drag = { o }; try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointer */ } }
+    recompute();
+  } else if (w.x >= 0 && w.z >= 0 && w.x <= S.mapSize && w.z <= S.mapSize) place(w);
+});
+cv.addEventListener('pointermove', ev => {
+  const [px, py] = evPos(ev), w = s2w(px, py);
+  if (drag) {
+    const c = clampMap(w), o = drag.o;
+    if (o.base) S[o.base] = c; else { o.x = c.x; o.z = c.z; }
+    hoverW = c; recompute(); return;
+  }
+  hoverW = w.x < 0 || w.z < 0 || w.x > S.mapSize || w.z > S.mapSize ? null : w;
+  if (hoverW) refreshProbe(); else { probeData = null; renderHover(); }
+  draw();
+});
+cv.addEventListener('pointerup', () => { drag = null; save(); });
+cv.addEventListener('pointerleave', () => { if (!drag) { hoverW = null; probeData = null; renderHover(); draw(); } });
+cv.addEventListener('contextmenu', ev => { ev.preventDefault(); const [px, py] = evPos(ev), o = pickAt(px, py); if (o && !o.base) remove(o); });
+window.addEventListener('keydown', ev => {
+  if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { if (ev.key === 'Escape') document.activeElement.blur(); return; }
+  if (R.on && ev.key === 'ArrowRight') { stepSnap(1); ev.preventDefault(); }
+  else if (R.on && ev.key === 'ArrowLeft') { stepSnap(-1); ev.preventDefault(); }
+  else if (R.on && ev.key === ' ') { togglePlay(); ev.preventDefault(); }
+  else if (ev.key === 'Delete' || ev.key === 'Backspace') { remove(selObj); }
+  else if (ev.key === 'Escape') setTool('select');
+  else if (/^[1-7]$/.test(ev.key)) { const t = TOOLS.filter(x => x.id)[+ev.key - 1]; if (t) setTool(t.id); }
+});
+window.addEventListener('resize', draw);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+
+// ── Panels ───────────────────────────────────────────────────────────────────
+function renderHover() {
+  const el = $('#hover');
+  if (!hoverW) { el.textContent = 'Hover the map to probe a point.'; return; }
+  const p = probeData, D = axisDist(), frac = dist(S.home, hoverW) / D;
+  let s = 'x ' + fmt(hoverW.x) + ', z ' + fmt(hoverW.z) + ' · ' + fmt(frac, 2) + '× of home→foe from home';
+  if (p) {
+    s += '<br>position weight <b>ground ' + p.wG + '</b>, <b>air ' + p.wA + '</b> · defenders that can arrive within ' + S.tun.RESPONSE_HORIZON +
+      ' frames: <b>ground ' + fmt(p.availG) + '</b>, <b>air ' + fmt(p.availA) + '</b>';
+    if (p.what) s += '<br>one more <b>' + CAT[selDef - 1].name + '</b> here → threat ' + fmt(p.what.threat) + ' (' + p.what.channel + '), deficit ' + fmt(p.what.deficit, 2);
+  }
+  el.innerHTML = s;
+}
+function renderSignals() {
+  const el = $('#signals');
+  if (!SIG) { el.innerHTML = '<p class="note">No result (see error above).</p>'; return; }
+  const u = SIG.urgency, T = S.tun, max = 2;
+  const pos = v => Math.min(100, v / max * 100) + '%';
+  const fillCol = u.state === 'rush' ? 'var(--b-alarm)' : u.state === 'build' ? 'var(--b-watch)' : 'var(--b-ignore)';
+  let h = '<div class="row"><b>Production urgency</b> <span class="pill p-' + u.state + '">' + u.state + '</span>' +
+    '<span>worst deficit <b>' + fmt(u.worst, 2) + '</b>' + (u.channel ? ' (' + u.channel + ')' : '') + '</span></div>' +
+    '<div class="meter"><div class="fill" style="width:' + pos(u.worst) + ';background:' + fillCol + '"></div>' +
+    '<div class="tick" style="left:' + pos(T.DEFICIT_BUILD) + '"></div><div class="tick" style="left:' + pos(T.DEFICIT_RUSH) + '"></div></div>' +
+    '<div class="meterlabels"><span style="left:' + pos(T.DEFICIT_BUILD) + '">build ' + T.DEFICIT_BUILD + '</span><span style="left:' + pos(T.DEFICIT_RUSH) + '">rush ' + T.DEFICIT_RUSH + '</span><span style="left:98%">2+</span></div>';
+  h += '<table style="margin-top:10px"><tr><th></th><th>ground</th><th>air</th></tr>' +
+    row('Live threat (all contacts)', c => fmt(c.score), 'ChannelScore: every remembered contact, position-weighted') +
+    row('Approach (mobile + armed)', c => fmt(c.approach), 'ApproachScore: what production urgency reacts to') +
+    row('Can reach home in time', c => fmt(c.avail), 'AvailableStrength at home: own combatants within RESPONSE_HORIZON') +
+    row('Own strength (any distance)', c => fmt(c.own), 'OwnStrength: context only') +
+    row('<b>Deficit at home</b>', c => '<b>' + fmt(c.deficit, 2) + '</b>', 'approach ÷ can-reach-home; ≥ rush threshold means outmatched') + '</table>';
+  function row(name, f, tip) { return '<tr title="' + tip + '"><td>' + name + '</td><td class="num">' + f(SIG.channels.ground) + '</td><td class="num">' + f(SIG.channels.air) + '</td></tr>'; }
+
+  h += '<h2 style="margin-top:14px">Attacks (incidents)</h2>';
+  if (!SIG.incidents.length) h += '<p class="note">None. Add a hit or a kill with tools 4–7.</p>';
+  else {
+    h += '<table><tr><th>band</th><th>chan</th><th>score</th><th>deficit</th><th>hits</th><th>lost</th><th>age</th></tr>';
+    SIG.incidents.slice().sort((a, b) => b.score - a.score).forEach(i => {
+      h += '<tr><td>' + (i.top ? '★ ' : '') + '<span class="pill p-' + i.band + '">' + i.band + '</span>' +
+        (i.band !== i.bandNow ? ' <span class="sub" title="sticky: band never drops while the attack lives">(now ' + i.bandNow + ')</span>' : '') + (i.leaving ? ' <span class="sub">leaving</span>' : '') +
+        '</td><td>' + i.channel + '</td><td class="num">' + fmt(i.score) + '</td><td class="num">' + fmt(i.deficit, 2) + '</td><td class="num">' + i.n + '</td><td class="num">' + fmt(i.valueLost) + '</td><td class="num">' + fmt((S.frame - i.last) / 30) + 's</td></tr>';
+    });
+    h += '</table><p class="note">Bands: ignore &lt; ' + T.BAND_IGNORE + ' ≤ watch &lt; ' + T.BAND_RESPOND + ' ≤ respond &lt; ' + T.BAND_ALARM + ' ≤ alarm. Deficit here is score ÷ defenders that can reach that spot.</p>';
+  }
+
+  const cs = SIG.contacts.slice().sort((a, b) => b.threat - a.threat);
+  h += '<h2 style="margin-top:14px">Contacts (' + cs.length + ')</h2>';
+  if (cs.length) {
+    h += '<table><tr><th>unit</th><th>intrinsic</th><th>pos wt</th><th>threat</th><th>age</th></tr>';
+    cs.slice(0, 12).forEach(c => {
+      h += '<tr><td>' + (CAT[c.def - 1] ? CAT[c.def - 1].name : '?') + (c.counted ? '' : ' <span class="sub">(not counted in approach)</span>') + '</td><td class="num">' + fmt(c.v) + '</td><td class="num">' + c.w + '</td><td class="num">' + fmt(c.threat) + '</td><td class="num">' + fmt((S.frame - c.frame) / 30) + 's</td></tr>';
+    });
+    h += '</table>' + (cs.length > 12 ? '<p class="note">…and ' + (cs.length - 12) + ' more.</p>' : '');
+  }
+  if (R.on && R.snap) {
+    const L = R.snap, ru = SIG.urgency, lu = L.urg;
+    const d1 = ru.state !== lu.state, d2 = Math.abs(ru.worst - lu.worst) > 0.02;
+    h += '<h2 style="margin-top:14px">Bot logged vs re-run</h2><div class="cmp">' +
+      '<span class="h"></span><span class="h">logged by bot</span><span class="h">re-run now</span>' +
+      '<span>urgency</span><span><span class="pill p-' + lu.state + '">' + lu.state + '</span></span><span class="' + (d1 ? 'diff' : '') + '"><span class="pill p-' + ru.state + '">' + ru.state + '</span></span>' +
+      '<span>worst deficit</span><span>' + fmt(lu.worst, 2) + (lu.ch ? ' (' + lu.ch + ')' : '') + '</span><span class="' + (d2 ? 'diff' : '') + '">' + fmt(ru.worst, 2) + (ru.channel ? ' (' + ru.channel + ')' : '') + '</span>' +
+      '<span>attacks</span><span>' + (L.i.length ? L.i.map(i => i.band + ' ' + i.score + ' ' + i.chan).join(', ') : 'none') + '</span><span>' +
+      (SIG.incidents.length ? SIG.incidents.map(i => i.band + ' ' + fmt(i.score) + ' ' + i.channel).join(', ') : 'none') + '</span></div>' +
+      '<p class="note">Differences appear once you change tunables, or from small replay approximations (hit rows are throttled in the log).</p>';
+  }
+  el.innerHTML = h;
+}
+function renderObjs() {
+  const el = $('#objs'); el.innerHTML = '';
+  const groups = {};
+  S.units.forEach(u => { const k = u.side + ' ' + u.def; (groups[k] = groups[k] || []).push(u); });
+  Object.entries(groups).forEach(([k, arr]) => {
+    const s = document.createElement('span'); s.className = 'obj ' + (arr[0].side === 'enemy' ? 'e' : 'a');
+    s.innerHTML = k + ' ×' + arr.length + ' <button title="Remove group" aria-label="Remove ' + k + '">×</button>';
+    s.querySelector('button').addEventListener('click', () => { S.units = S.units.filter(u => !arr.includes(u)); selObj = null; recompute(); });
+    el.appendChild(s);
+  });
+  if (S.events.length > 30) {
+    const s = document.createElement('span'); s.className = 'obj v'; s.textContent = S.events.length + ' logged events in the replay window'; el.appendChild(s);
+  } else S.events.forEach(e => {
+    const s = document.createElement('span'); s.className = 'obj v';
+    s.innerHTML = e.kind.replace('_', ' ') + ' @f' + e.frame + ' <button title="Remove" aria-label="Remove event">×</button>';
+    s.querySelector('button').addEventListener('click', () => remove(e)); el.appendChild(s);
+  });
+  $('#frame').value = S.frame; $('#clock').textContent = clock(S.frame);
+}
+
+// ── Tunables UI ──────────────────────────────────────────────────────────────
+const SCALARS = ['CONTACT_TTL', 'INCIDENT_MERGE', 'INCIDENT_TTL', 'BAND_IGNORE', 'BAND_RESPOND', 'BAND_ALARM', 'DEFICIT_RUSH', 'DEFICIT_BUILD', 'NONSPECIALIST_AA_WEIGHT', 'RESPONSE_HORIZON'];
+const same = (a, b) => JSON.stringify(a, infRep) === JSON.stringify(b, infRep);
+function buildTunables() {
+  const sc = $('#tunscalars'); sc.innerHTML = '';
+  SCALARS.forEach(k => {
+    const l = document.createElement('label'); l.className = 'k'; l.textContent = k; l.htmlFor = 't_' + k;
+    const i = document.createElement('input'); i.type = 'number'; i.step = 'any'; i.id = 't_' + k; i.value = S.tun[k];
+    i.className = same(S.tun[k], DEFAULTS[k]) ? '' : 'changed';
+    i.addEventListener('input', () => { const v = parseFloat(i.value); if (isNaN(v)) return; S.tun[k] = v; i.className = same(v, DEFAULTS[k]) ? '' : 'changed'; recompute(); });
+    sc.append(l, i);
+  });
+  const tb = $('#tuntables'); tb.innerHTML = '';
+  BAND_KEYS.forEach(k => {
+    const box = document.createElement('div'); box.className = 'bandtbl';
+    box.innerHTML = '<div class="name">' + k + '  <span class="sub">(upper bound, value)</span></div>';
+    S.tun[k].forEach((r, ri) => {
+      const last = ri === S.tun[k].length - 1, d = document.createElement('div'); d.className = 'r';
+      const a = document.createElement('input'); a.type = 'number'; a.step = 'any'; a.value = last ? '' : r[0]; a.placeholder = '∞'; a.disabled = last; a.setAttribute('aria-label', k + ' row ' + (ri + 1) + ' bound');
+      const b = document.createElement('input'); b.type = 'number'; b.step = 'any'; b.value = r[1]; b.setAttribute('aria-label', k + ' row ' + (ri + 1) + ' value');
+      const mark = () => { a.className = same(S.tun[k][ri][0], DEFAULTS[k][ri][0]) ? '' : 'changed'; b.className = same(S.tun[k][ri][1], DEFAULTS[k][ri][1]) ? '' : 'changed'; };
+      a.addEventListener('input', () => { const v = parseFloat(a.value); if (!isNaN(v)) { S.tun[k][ri][0] = v; mark(); recompute(); } });
+      b.addEventListener('input', () => { const v = parseFloat(b.value); if (!isNaN(v)) { S.tun[k][ri][1] = v; mark(); recompute(); } });
+      mark(); d.append(a, b); box.appendChild(d);
+    });
+    tb.appendChild(box);
+  });
+}
+function tunAsLua() {
+  const lines = [];
+  const bandLua = (k, rows) => 'M.' + k + ' = {\n' + rows.map(r => '    { ' + (r[0] === Infinity ? 'math.huge' : r[0]) + ', ' + r[1] + ' },').join('\n') + '\n}';
+  Object.keys(DEFAULTS).forEach(k => {
+    if (same(S.tun[k], DEFAULTS[k])) return;
+    lines.push(BAND_KEYS.includes(k) ? bandLua(k, S.tun[k]) : 'M.' + k + ' = ' + S.tun[k]);
+  });
+  return lines.length ? lines.join('\n') : '-- no changes from the values in threat_map.lua';
+}
+
+// ── Replay ───────────────────────────────────────────────────────────────────
+const splitList = (str, fn) => str ? str.split(';').map(fn) : [];
+function parseTML(lines) {
+  const teams = {};
+  for (const line of lines) {
+    const m = /\[TML\] (\w+) f=(-?\d+) team=(-?\d+) ?(.*)$/.exec(line); if (!m) continue;
+    const kind = m[1], f = +m[2], t = m[3], rest = m[4];
+    const T = teams[t] || (teams[t] = { geoms: [], snaps: [], evs: [] });
+    if (kind === 'geom') {
+      const g = /home=(-?\d+),(-?\d+) foe=(-?\d+),(-?\d+) map=(\d+),(\d+)/.exec(rest);
+      if (g) T.geoms.push({ f, home: { x: +g[1], z: +g[2] }, foe: { x: +g[3], z: +g[4] }, map: +g[5] });
+    } else if (kind === 'snap') {
+      const q = /^urg=([^,]*),([^,]*),(\S*) e=(\S*) a=(\S*) i=(\S*)/.exec(rest); if (!q) continue;
+      T.snaps.push({
+        f, urg: { state: q[1], worst: +q[2], ch: q[3] === 'nil' ? null : q[3] },
+        e: splitList(q[4], c => { const a = c.split('/'); return { cid: +a[0], def: a[1], x: +a[2], z: +a[3], frame: +a[4] }; }),
+        a: splitList(q[5], c => { const a = c.split('/'); return { def: a[0], x: +a[1], z: +a[2] }; }),
+        i: splitList(q[6], c => { const a = c.split('/'); return { x: +a[0], z: +a[1], chan: a[7], band: a[10], score: +a[11] }; }),
+      });
+    } else if (kind === 'ev') {
+      const kv = {}; for (const x of rest.matchAll(/(\w+)=(\S+)/g)) kv[x[1]] = x[2];
+      T.evs.push(Object.assign({ f }, kv));
+    }
+  }
+  Object.values(teams).forEach(T => T.snaps.sort((a, b) => a.f - b.f));
+  return teams;
+}
+function linesFromText(text) {
+  const t = text.trim();
+  if (t[0] === '{' || t[0] === '[') {
+    const d = JSON.parse(t); return Array.isArray(d) ? d : (d.threat_log || []);
+  }
+  return t.split(/\r?\n/);
+}
+function openLog(lines, name) {
+  const teams = parseTML(lines), ids = Object.keys(teams).filter(t => teams[t].snaps.length);
+  if (!ids.length) { showErr('No [TML] snapshots found in ' + name + '. Was the game run with threat_log.lua deployed?'); return; }
+  if (!R.on) R.backup = JSON.parse(JSON.stringify({ units: S.units, events: S.events, home: S.home, foe: S.foe, frame: S.frame, mapSize: S.mapSize }));
+  R.on = true; R.data = teams; R.team = ids[0]; $('#err').hidden = true;
+  const sel = $('#lteam'); sel.innerHTML = ids.map(t => '<option value="' + t + '">team ' + t + '</option>').join(''); sel.hidden = ids.length < 2; sel.value = R.team;
+  $('#logui').hidden = false; $('#lnote').hidden = true;
+  setReplayLocks(true); setSnap(0);
+}
+function setReplayLocks(on) {
+  $('#frame').disabled = on; document.querySelectorAll('[data-step]').forEach(b => { b.disabled = on; });
+}
+function setSnap(i) {
+  const T = R.data[R.team]; i = Math.max(0, Math.min(T.snaps.length - 1, i)); R.idx = i;
+  const sn = T.snaps[i]; R.snap = sn;
+  const g = [...T.geoms].reverse().find(x => x.f <= sn.f) || T.geoms[0];
+  if (g) { S.home = { ...g.home }; S.foe = { ...g.foe }; S.mapSize = g.map; $('#msize').value = g.map; }
+  S.frame = sn.f; S.units = []; S.events = []; let id = 1;
+  sn.a.forEach(a => { if (DEF[a.def]) S.units.push({ id: id++, side: 'ally', def: a.def, x: a.x, z: a.z, frame: sn.f }); });
+  R.finalIds = new Set(); R.knownFinal = new Set();
+  sn.e.forEach(c => {
+    R.finalIds.add(1e6 + c.cid);
+    if (DEF[c.def]) { R.knownFinal.add(1e6 + c.cid); S.units.push({ id: 1e6 + c.cid, side: 'enemy', def: c.def, x: c.x, z: c.z, frame: c.frame }); }
+  });
+  const hist = new Map();
+  for (let j = i; j >= 0 && T.snaps[j].f >= sn.f - 6000; j--) {
+    for (const c of T.snaps[j].e) {
+      const k = c.cid + '|' + c.frame;
+      if (!hist.has(k)) hist.set(k, { id: 1e6 + c.cid, def: DEF[c.def] || null, x: c.x, z: c.z, frame: c.frame });
+    }
+  }
+  R.hist = [...hist.values()].filter(h => !(R.knownFinal.has(h.id) && S.units.some(u => u.id === h.id && u.frame === h.frame)));
+  for (const ev of T.evs) {
+    if (ev.f > sn.f || ev.f < sn.f - 6000) continue;
+    if (ev.k === 'hit') {
+      const known = ev.att && ev.att !== '-' && DEF[ev.att];
+      S.events.push({ id: id++, kind: known ? 'hit_known' : 'hit_unseen', x: +ev.x, z: +ev.z, frame: ev.f, dmg: +ev.dmg || 0, def: known ? ev.att : null });
+    } else if (ev.k === 'loss' && DEF[ev.def]) {
+      S.events.push({ id: id++, kind: ev.attally === '1' ? 'loss_killed' : 'loss_quiet', x: +ev.x, z: +ev.z, frame: ev.f, dmg: 0, def: ev.def });
+    }
+  }
+  S.nextId = id; selObj = null;
+  $('#lslider').max = T.snaps.length - 1; $('#lslider').value = i;
+  $('#lstatus').innerHTML = '<b>frame ' + sn.f + '</b> (' + clock(sn.f) + ') &middot; snapshot ' + (i + 1) + '/' + T.snaps.length +
+    ' &middot; ' + sn.a.length + ' own combatants &middot; ' + sn.e.length + ' contacts &middot; ' + sn.i.length + ' logged attack(s)';
+  drawTimeline(); recompute();
+}
+const stepSnap = d => { if (d > 0 && R.idx >= R.data[R.team].snaps.length - 1) { stopPlay(); return; } setSnap(R.idx + d); };
+function stopPlay() { if (R.timer) { clearInterval(R.timer); R.timer = null; } $('#lplay').innerHTML = '&#9654; play'; }
+function togglePlay() {
+  if (R.timer) { stopPlay(); return; }
+  $('#lplay').innerHTML = '&#10074;&#10074; pause'; R.timer = setInterval(() => stepSnap(1), 300);
+}
+function jump(pred) {
+  const sn = R.data[R.team].snaps;
+  for (let i = R.idx + 1; i < sn.length; i++) if (pred(sn[i], sn[i - 1])) { setSnap(i); return; }
+}
+function exitReplay() {
+  stopPlay(); if (!R.on) return; R.on = false; R.snap = null; R.hist = [];
+  const b = R.backup; Object.assign(S, { units: b.units, events: b.events, home: b.home, foe: b.foe, frame: b.frame, mapSize: b.mapSize });
+  $('#msize').value = S.mapSize; $('#logui').hidden = true; $('#lnote').hidden = false; $('#logfile').value = ''; $('#lteam').hidden = true;
+  setReplayLocks(false); recompute();
+}
+function drawTimeline() {
+  const c = $('#tl'), dpr = window.devicePixelRatio || 1, w = c.clientWidth || 400, h = 60;
+  c.width = Math.round(w * dpr); c.height = h * dpr; const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  if (!R.on) return;
+  const sn = R.data[R.team].snaps, n = sn.length, bw = w / n;
+  sn.forEach((s, i) => {
+    const col = s.urg.state === 'rush' ? cssVar('--b-alarm') : s.urg.state === 'build' ? cssVar('--b-watch') : cssVar('--b-ignore');
+    const bh = Math.max(s.urg.state === 'none' ? 1 : 3, Math.min(1, s.urg.worst / 2) * (h - 10));
+    g.fillStyle = col; g.globalAlpha = s.urg.state === 'none' ? .45 : 1; g.fillRect(i * bw, h - bh, Math.max(1, bw - .5), bh); g.globalAlpha = 1;
+    if (s.i.length) { g.fillStyle = cssVar('--b-respond'); g.fillRect(i * bw, 0, Math.max(1, bw - .5), 4); }
+  });
+  g.fillStyle = cssVar('--text'); g.fillRect(R.idx * bw + bw / 2 - 1, 0, 2, h);
+}
+function tlPick(ev) { const r = $('#tl').getBoundingClientRect(), n = R.data[R.team].snaps.length; setSnap(Math.floor((ev.clientX - r.left) / r.width * n)); }
+
+function initReplay() {
+  const readFile = f => {
+    const rd = new FileReader();
+    rd.onload = () => { try { openLog(linesFromText(String(rd.result)), f.name); } catch (err) { showErr('Could not read ' + f.name + ': ' + err.message); } };
+    rd.readAsText(f);
+  };
+  $('#logfile').addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+  if (P.logs && P.logs.length) {
+    const sel = $('#logembed'); sel.hidden = false;
+    sel.innerHTML = '<option value="">embedded log…</option>' + P.logs.map((l, i) => '<option value="' + i + '">' + l.name + '</option>').join('');
+    sel.addEventListener('change', () => { if (sel.value !== '') openLog(P.logs[+sel.value].lines, P.logs[+sel.value].name); });
+  }
+  $('#lteam').addEventListener('change', e => { R.team = e.target.value; setSnap(0); });
+  $('#lslider').addEventListener('input', e => setSnap(+e.target.value));
+  $('#lprev').addEventListener('click', () => stepSnap(-1)); $('#lnext').addEventListener('click', () => stepSnap(1));
+  $('#lback').addEventListener('click', () => setSnap(R.idx - 6)); $('#lfwd').addEventListener('click', () => setSnap(R.idx + 6));
+  $('#lplay').addEventListener('click', togglePlay); $('#lexit').addEventListener('click', exitReplay);
+  $('#lnattack').addEventListener('click', () => jump((s, p) => s.i.length && !p.i.length));
+  $('#lnurg').addEventListener('click', () => jump((s, p) => s.urg.state !== p.urg.state));
+  const tl = $('#tl'); let down = false;
+  tl.addEventListener('pointerdown', e => { down = true; tlPick(e); }); tl.addEventListener('pointermove', e => { if (down) tlPick(e); });
+  window.addEventListener('pointerup', () => { down = false; });
+  window.addEventListener('resize', drawTimeline);
+}
+
+// ── Wire up ──────────────────────────────────────────────────────────────────
+function init() {
+  load();
+  buildTools(); buildList(); buildPresets(); buildTunables(); initReplay();
+  $('#msize').value = S.mapSize; $('#heat').value = S.heat; $('#labels').value = S.labels;
+  renderUnitInfo();
+  $('#q').addEventListener('input', buildList);
+  $('#ulist').addEventListener('change', e => { selDef = +e.target.value; renderUnitInfo(); if (hoverW) refreshProbe(); save(); });
+  $('#frame').addEventListener('input', e => { S.frame = Math.max(0, +e.target.value || 0); recompute(); });
+  document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => { S.frame = Math.max(0, S.frame + +b.dataset.step); recompute(); }));
+  $('#heat').addEventListener('change', e => { S.heat = e.target.value; recompute(); });
+  $('#labels').addEventListener('change', e => { S.labels = e.target.value; recompute(); });
+  $('#msize').addEventListener('change', e => { S.mapSize = Math.max(2048, +e.target.value || 12288); recompute(); });
+  $('#qty').addEventListener('change', save); $('#dmg').addEventListener('change', save);
+  $('#clear').addEventListener('click', () => { S.units = []; S.events = []; selObj = null; recompute(); });
+  $('#resetpos').addEventListener('click', () => { S.home = { x: 2000, z: 2000 }; S.foe = { x: S.mapSize - 2000, z: S.mapSize - 2000 }; recompute(); });
+  $('#tunreset').addEventListener('click', () => { S.tun = clone(DEFAULTS); buildTunables(); $('#tunout').hidden = true; recompute(); });
+  $('#tuncopy').addEventListener('click', () => {
+    const out = $('#tunout'); out.value = tunAsLua(); out.hidden = false; out.select();
+    try { navigator.clipboard.writeText(out.value); } catch (e) { /* select() above is the fallback */ }
+  });
+  const demo = /demo=(\d+)/.exec(location.hash);
+  if (demo && PRESETS[+demo[1]]) {
+    S.units = []; S.events = []; PRESETS[+demo[1]][1]();
+    if (/hits/.test(location.hash)) {
+      const p = along(0.12, 200);
+      S.events.push({ id: S.nextId++, kind: 'hit_unseen', x: p.x, z: p.z, frame: S.frame - 60, dmg: 150, def: null });
+      S.events.push({ id: S.nextId++, kind: 'hit_unseen', x: p.x + 250, z: p.z + 150, frame: S.frame - 20, dmg: 150, def: null });
+      S.events.push({ id: S.nextId++, kind: 'loss_killed', x: p.x + 300, z: p.z + 200, frame: S.frame - 10, dmg: 0, def: 'corak' });
+    }
+  }
+  const rp = /replay=(\d+)/.exec(location.hash);
+  if (rp && P.logs && P.logs.length) { $('#logembed').value = '0'; openLog(P.logs[0].lines, P.logs[0].name); setSnap(+rp[1]); }
+  recompute();
+  window.__ready = true;
+}
+try { init(); } catch (e) { showErr(e); }
+</script>
+</body>
+</html>

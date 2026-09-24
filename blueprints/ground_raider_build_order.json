@@ -1,0 +1,1708 @@
+{
+  "optimization_mode": "raid",
+  "optimization_target": "max m/s at 300 s x share of raid milestones met [('incisor', 4, 200.0, True), ('fighter', 2, 290.0, False), ('incisor', 8, 300.0, False)]",
+  "final_metal_rate": 132.35,
+  "final_energy_rate": 590.0,
+  "final_build_power": 470.0,
+  "final_metal_stored": 3445.9,
+  "final_metal_cap": 3750.0,
+  "final_energy_stored": 0.0,
+  "final_energy_cap": 1000.0,
+  "final_incisor_count": 8,
+  "final_units": {
+    "incisor": 8,
+    "fighter": 2
+  },
+  "raid_milestones": [
+    {
+      "unit": "incisor",
+      "count": 4,
+      "by": 200.0,
+      "required": true,
+      "met": 4,
+      "finish_times": [
+        188.1,
+        192.0,
+        196.0,
+        199.9,
+        292.1,
+        295.6,
+        297.4,
+        299.3
+      ]
+    },
+    {
+      "unit": "fighter",
+      "count": 2,
+      "by": 290.0,
+      "required": false,
+      "met": 2,
+      "finish_times": [
+        283.7,
+        289.9
+      ]
+    },
+    {
+      "unit": "incisor",
+      "count": 8,
+      "by": 300.0,
+      "required": false,
+      "met": 8,
+      "finish_times": [
+        188.1,
+        192.0,
+        196.0,
+        199.9,
+        292.1,
+        295.6,
+        297.4,
+        299.3
+      ]
+    }
+  ],
+  "raid_fraction": 1.0,
+  "final_time": 299.3,
+  "actions": [
+    {
+      "action": "mex",
+      "start_time": 0.0,
+      "end_time": 6.23,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 27.0,
+      "build_power_after": 300.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 4096.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 6.23,
+      "end_time": 11.83,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 52.0,
+      "build_power_after": 300.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 6400.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 11.83,
+      "end_time": 17.43,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 77.0,
+      "build_power_after": 300.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 8704.0,
+      "units_after": {}
+    },
+    {
+      "action": "bot_lab",
+      "start_time": 17.43,
+      "end_time": 34.1,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 77.0,
+      "build_power_after": 300.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 17920.0,
+      "units_after": {}
+    },
+    {
+      "action": "con_bot",
+      "start_time": 34.1,
+      "end_time": 43.84,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 77.0,
+      "build_power_after": 385.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 17920.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 43.84,
+      "end_time": 48.2,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 102.0,
+      "build_power_after": 385.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 20224.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 48.2,
+      "end_time": 52.57,
+      "metal_rate_after": 4.37,
+      "energy_rate_after": 127.0,
+      "build_power_after": 385.0,
+      "metal_cap_after": 1050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 22528.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 52.57,
+      "end_time": 57.42,
+      "metal_rate_after": 6.74,
+      "energy_rate_after": 124.0,
+      "build_power_after": 385.0,
+      "metal_cap_after": 1100.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 0,
+      "built_area_after": 26624.0,
+      "units_after": {}
+    },
+    {
+      "action": "nano",
+      "start_time": 57.42,
+      "end_time": 78.81,
+      "metal_rate_after": 6.74,
+      "energy_rate_after": 124.0,
+      "build_power_after": 585.0,
+      "metal_cap_after": 1100.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 1,
+      "built_area_after": 28928.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 78.81,
+      "end_time": 82.84,
+      "metal_rate_after": 9.11,
+      "energy_rate_after": 121.0,
+      "build_power_after": 585.0,
+      "metal_cap_after": 1150.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 1,
+      "built_area_after": 33024.0,
+      "units_after": {}
+    },
+    {
+      "action": "nano",
+      "start_time": 82.84,
+      "end_time": 109.29,
+      "metal_rate_after": 9.11,
+      "energy_rate_after": 121.0,
+      "build_power_after": 785.0,
+      "metal_cap_after": 1150.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 35328.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 109.29,
+      "end_time": 111.43,
+      "metal_rate_after": 9.11,
+      "energy_rate_after": 146.0,
+      "build_power_after": 785.0,
+      "metal_cap_after": 1150.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 37632.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 111.43,
+      "end_time": 114.28,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 143.0,
+      "build_power_after": 785.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 41728.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 114.28,
+      "end_time": 116.42,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 168.0,
+      "build_power_after": 785.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 44032.0,
+      "units_after": {}
+    },
+    {
+      "action": "con_bot",
+      "start_time": 116.42,
+      "end_time": 126.06,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 168.0,
+      "build_power_after": 870.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 44032.0,
+      "units_after": {}
+    },
+    {
+      "action": "reclaim_lab",
+      "start_time": 126.06,
+      "end_time": 131.8,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 168.0,
+      "build_power_after": 870.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 2,
+      "built_area_after": 34816.0,
+      "units_after": {}
+    },
+    {
+      "action": "nano",
+      "start_time": 131.8,
+      "end_time": 145.1,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 168.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 37120.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 145.1,
+      "end_time": 146.67,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 193.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 39424.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 146.67,
+      "end_time": 148.25,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 218.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 41728.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 148.25,
+      "end_time": 149.82,
+      "metal_rate_after": 11.48,
+      "energy_rate_after": 243.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 44032.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 149.82,
+      "end_time": 151.56,
+      "metal_rate_after": 13.85,
+      "energy_rate_after": 240.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1250.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 48128.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 151.56,
+      "end_time": 153.13,
+      "metal_rate_after": 13.85,
+      "energy_rate_after": 265.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1250.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 50432.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 153.13,
+      "end_time": 154.88,
+      "metal_rate_after": 16.22,
+      "energy_rate_after": 262.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1300.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 54528.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 154.88,
+      "end_time": 156.63,
+      "metal_rate_after": 18.59,
+      "energy_rate_after": 259.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 58624.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 156.63,
+      "end_time": 158.2,
+      "metal_rate_after": 18.59,
+      "energy_rate_after": 284.0,
+      "build_power_after": 1070.0,
+      "metal_cap_after": 1350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 3,
+      "built_area_after": 60928.0,
+      "units_after": {}
+    },
+    {
+      "action": "nano",
+      "start_time": 158.2,
+      "end_time": 167.13,
+      "metal_rate_after": 18.59,
+      "energy_rate_after": 284.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 63232.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 167.13,
+      "end_time": 168.89,
+      "metal_rate_after": 20.96,
+      "energy_rate_after": 281.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1400.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 67328.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 168.89,
+      "end_time": 170.67,
+      "metal_rate_after": 23.33,
+      "energy_rate_after": 278.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1450.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 71424.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 170.67,
+      "end_time": 172.47,
+      "metal_rate_after": 25.7,
+      "energy_rate_after": 275.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1500.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 75520.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 172.47,
+      "end_time": 174.29,
+      "metal_rate_after": 28.07,
+      "energy_rate_after": 272.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1550.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 79616.0,
+      "units_after": {}
+    },
+    {
+      "action": "mex",
+      "start_time": 174.29,
+      "end_time": 176.13,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 269.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 83712.0,
+      "units_after": {}
+    },
+    {
+      "action": "wind",
+      "start_time": 176.13,
+      "end_time": 177.45,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 86016.0,
+      "units_after": {}
+    },
+    {
+      "action": "veh_lab",
+      "start_time": 177.45,
+      "end_time": 184.15,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 0,
+      "nano_count_after": 4,
+      "built_area_after": 95232.0,
+      "units_after": {}
+    },
+    {
+      "action": "incisor",
+      "start_time": 184.15,
+      "end_time": 188.09,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 1,
+      "nano_count_after": 4,
+      "built_area_after": 95232.0,
+      "units_after": {
+        "incisor": 1
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 188.09,
+      "end_time": 192.03,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 2,
+      "nano_count_after": 4,
+      "built_area_after": 95232.0,
+      "units_after": {
+        "incisor": 2
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 192.03,
+      "end_time": 195.98,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 3,
+      "nano_count_after": 4,
+      "built_area_after": 95232.0,
+      "units_after": {
+        "incisor": 3
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 195.98,
+      "end_time": 199.92,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1270.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 4,
+      "built_area_after": 95232.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "nano",
+      "start_time": 199.92,
+      "end_time": 207.96,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 294.0,
+      "build_power_after": 1470.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 5,
+      "built_area_after": 97536.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 207.96,
+      "end_time": 209.1,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 319.0,
+      "build_power_after": 1470.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 5,
+      "built_area_after": 99840.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 209.1,
+      "end_time": 210.3,
+      "metal_rate_after": 30.44,
+      "energy_rate_after": 344.0,
+      "build_power_after": 1470.0,
+      "metal_cap_after": 1600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 5,
+      "built_area_after": 102144.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 210.3,
+      "end_time": 211.94,
+      "metal_rate_after": 32.81,
+      "energy_rate_after": 341.0,
+      "build_power_after": 1470.0,
+      "metal_cap_after": 1650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 5,
+      "built_area_after": 106240.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "nano",
+      "start_time": 211.94,
+      "end_time": 220.05,
+      "metal_rate_after": 32.81,
+      "energy_rate_after": 341.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 108544.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 220.05,
+      "end_time": 221.06,
+      "metal_rate_after": 32.81,
+      "energy_rate_after": 366.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 110848.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 221.06,
+      "end_time": 222.18,
+      "metal_rate_after": 35.18,
+      "energy_rate_after": 363.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1700.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 114944.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 222.18,
+      "end_time": 223.34,
+      "metal_rate_after": 37.55,
+      "energy_rate_after": 360.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 119040.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 223.34,
+      "end_time": 224.73,
+      "metal_rate_after": 39.92,
+      "energy_rate_after": 357.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1800.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 123136.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 224.73,
+      "end_time": 225.74,
+      "metal_rate_after": 39.92,
+      "energy_rate_after": 382.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1800.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 125440.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 225.74,
+      "end_time": 226.91,
+      "metal_rate_after": 42.29,
+      "energy_rate_after": 379.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1850.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 129536.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 226.91,
+      "end_time": 228.09,
+      "metal_rate_after": 44.66,
+      "energy_rate_after": 376.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1900.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 133632.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 228.09,
+      "end_time": 229.21,
+      "metal_rate_after": 47.03,
+      "energy_rate_after": 373.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1950.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 137728.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 229.21,
+      "end_time": 230.22,
+      "metal_rate_after": 47.03,
+      "energy_rate_after": 398.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 1950.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 140032.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 230.22,
+      "end_time": 231.34,
+      "metal_rate_after": 49.4,
+      "energy_rate_after": 395.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2000.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 144128.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 231.34,
+      "end_time": 232.46,
+      "metal_rate_after": 51.77,
+      "energy_rate_after": 392.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 148224.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 232.46,
+      "end_time": 233.58,
+      "metal_rate_after": 54.14,
+      "energy_rate_after": 389.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2100.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 152320.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 233.58,
+      "end_time": 234.59,
+      "metal_rate_after": 54.14,
+      "energy_rate_after": 414.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2100.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 154624.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 234.59,
+      "end_time": 235.71,
+      "metal_rate_after": 56.51,
+      "energy_rate_after": 411.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2150.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 158720.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 235.71,
+      "end_time": 236.82,
+      "metal_rate_after": 58.88,
+      "energy_rate_after": 408.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 162816.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 236.82,
+      "end_time": 237.94,
+      "metal_rate_after": 61.25,
+      "energy_rate_after": 405.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2250.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 166912.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 237.94,
+      "end_time": 239.06,
+      "metal_rate_after": 63.62,
+      "energy_rate_after": 402.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2300.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 171008.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 239.06,
+      "end_time": 240.18,
+      "metal_rate_after": 65.99,
+      "energy_rate_after": 399.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 175104.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 240.18,
+      "end_time": 241.19,
+      "metal_rate_after": 65.99,
+      "energy_rate_after": 424.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 177408.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 241.19,
+      "end_time": 242.31,
+      "metal_rate_after": 68.36,
+      "energy_rate_after": 421.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2400.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 181504.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 242.31,
+      "end_time": 243.43,
+      "metal_rate_after": 70.73,
+      "energy_rate_after": 418.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2450.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 185600.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 243.43,
+      "end_time": 244.55,
+      "metal_rate_after": 73.1,
+      "energy_rate_after": 415.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2500.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 189696.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 244.55,
+      "end_time": 245.67,
+      "metal_rate_after": 75.47,
+      "energy_rate_after": 412.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2550.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 193792.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 245.67,
+      "end_time": 246.79,
+      "metal_rate_after": 77.84,
+      "energy_rate_after": 409.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 197888.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 246.79,
+      "end_time": 247.91,
+      "metal_rate_after": 80.21,
+      "energy_rate_after": 406.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 201984.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 247.91,
+      "end_time": 248.91,
+      "metal_rate_after": 80.21,
+      "energy_rate_after": 431.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 204288.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 248.91,
+      "end_time": 250.03,
+      "metal_rate_after": 82.58,
+      "energy_rate_after": 428.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2700.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 208384.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 250.03,
+      "end_time": 251.15,
+      "metal_rate_after": 84.95,
+      "energy_rate_after": 425.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 212480.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 251.15,
+      "end_time": 252.27,
+      "metal_rate_after": 87.32,
+      "energy_rate_after": 422.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2800.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 216576.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 252.27,
+      "end_time": 253.39,
+      "metal_rate_after": 89.69,
+      "energy_rate_after": 419.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2850.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 220672.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 253.39,
+      "end_time": 254.51,
+      "metal_rate_after": 92.06,
+      "energy_rate_after": 416.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2900.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 224768.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 254.51,
+      "end_time": 255.63,
+      "metal_rate_after": 94.43,
+      "energy_rate_after": 413.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 2950.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 228864.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 255.63,
+      "end_time": 256.75,
+      "metal_rate_after": 96.8,
+      "energy_rate_after": 410.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3000.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 232960.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 256.75,
+      "end_time": 257.76,
+      "metal_rate_after": 96.8,
+      "energy_rate_after": 435.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3000.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 235264.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 257.76,
+      "end_time": 258.88,
+      "metal_rate_after": 99.17,
+      "energy_rate_after": 432.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3050.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 239360.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 258.88,
+      "end_time": 260.0,
+      "metal_rate_after": 101.54,
+      "energy_rate_after": 429.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3100.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 243456.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 260.0,
+      "end_time": 261.12,
+      "metal_rate_after": 103.91,
+      "energy_rate_after": 426.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3150.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 247552.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 261.12,
+      "end_time": 262.24,
+      "metal_rate_after": 106.28,
+      "energy_rate_after": 423.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3200.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 251648.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 262.24,
+      "end_time": 263.36,
+      "metal_rate_after": 108.65,
+      "energy_rate_after": 420.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3250.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 255744.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 263.36,
+      "end_time": 264.48,
+      "metal_rate_after": 111.02,
+      "energy_rate_after": 417.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3300.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 259840.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 264.48,
+      "end_time": 265.6,
+      "metal_rate_after": 113.39,
+      "energy_rate_after": 414.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3350.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 263936.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 265.6,
+      "end_time": 266.72,
+      "metal_rate_after": 115.76,
+      "energy_rate_after": 411.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3400.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 268032.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 266.72,
+      "end_time": 267.84,
+      "metal_rate_after": 118.13,
+      "energy_rate_after": 408.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3450.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 272128.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 267.84,
+      "end_time": 268.96,
+      "metal_rate_after": 120.5,
+      "energy_rate_after": 405.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3500.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 276224.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 268.96,
+      "end_time": 270.08,
+      "metal_rate_after": 122.87,
+      "energy_rate_after": 402.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3550.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 280320.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 270.08,
+      "end_time": 271.08,
+      "metal_rate_after": 122.87,
+      "energy_rate_after": 427.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3550.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 282624.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 271.08,
+      "end_time": 272.2,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 424.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 286720.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 272.2,
+      "end_time": 273.21,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 449.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 289024.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 273.21,
+      "end_time": 274.21,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 474.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 291328.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 274.21,
+      "end_time": 275.22,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 499.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 293632.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 275.22,
+      "end_time": 276.23,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 524.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 295936.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 276.23,
+      "end_time": 277.23,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 549.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 298240.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "air_lab",
+      "start_time": 277.23,
+      "end_time": 280.45,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 549.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 312064.0,
+      "units_after": {
+        "incisor": 4
+      }
+    },
+    {
+      "action": "fighter",
+      "start_time": 280.45,
+      "end_time": 283.73,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 549.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 312064.0,
+      "units_after": {
+        "incisor": 4,
+        "fighter": 1
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 283.73,
+      "end_time": 284.74,
+      "metal_rate_after": 125.24,
+      "energy_rate_after": 574.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3600.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 314368.0,
+      "units_after": {
+        "incisor": 4,
+        "fighter": 1
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 284.74,
+      "end_time": 285.86,
+      "metal_rate_after": 127.61,
+      "energy_rate_after": 571.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 318464.0,
+      "units_after": {
+        "incisor": 4,
+        "fighter": 1
+      }
+    },
+    {
+      "action": "fighter",
+      "start_time": 285.86,
+      "end_time": 289.85,
+      "metal_rate_after": 127.61,
+      "energy_rate_after": 571.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 318464.0,
+      "units_after": {
+        "incisor": 4,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "wind",
+      "start_time": 289.85,
+      "end_time": 290.86,
+      "metal_rate_after": 127.61,
+      "energy_rate_after": 596.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 4,
+      "nano_count_after": 6,
+      "built_area_after": 320768.0,
+      "units_after": {
+        "incisor": 4,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 290.86,
+      "end_time": 292.12,
+      "metal_rate_after": 127.61,
+      "energy_rate_after": 596.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3650.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 5,
+      "nano_count_after": 6,
+      "built_area_after": 320768.0,
+      "units_after": {
+        "incisor": 5,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 292.12,
+      "end_time": 293.24,
+      "metal_rate_after": 129.98,
+      "energy_rate_after": 593.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3700.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 5,
+      "nano_count_after": 6,
+      "built_area_after": 324864.0,
+      "units_after": {
+        "incisor": 5,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "mex",
+      "start_time": 293.24,
+      "end_time": 294.36,
+      "metal_rate_after": 132.35,
+      "energy_rate_after": 590.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 5,
+      "nano_count_after": 6,
+      "built_area_after": 328960.0,
+      "units_after": {
+        "incisor": 5,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 294.36,
+      "end_time": 295.62,
+      "metal_rate_after": 132.35,
+      "energy_rate_after": 590.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 6,
+      "nano_count_after": 6,
+      "built_area_after": 328960.0,
+      "units_after": {
+        "incisor": 6,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 295.62,
+      "end_time": 297.44,
+      "metal_rate_after": 132.35,
+      "energy_rate_after": 590.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 7,
+      "nano_count_after": 6,
+      "built_area_after": 328960.0,
+      "units_after": {
+        "incisor": 7,
+        "fighter": 2
+      }
+    },
+    {
+      "action": "incisor",
+      "start_time": 297.44,
+      "end_time": 299.3,
+      "metal_rate_after": 132.35,
+      "energy_rate_after": 590.0,
+      "build_power_after": 1670.0,
+      "metal_cap_after": 3750.0,
+      "energy_cap_after": 1000.0,
+      "incisor_count_after": 8,
+      "nano_count_after": 6,
+      "built_area_after": 328960.0,
+      "units_after": {
+        "incisor": 8,
+        "fighter": 2
+      }
+    }
+  ]
+}

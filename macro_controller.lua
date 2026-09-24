@@ -1,7 +1,11 @@
 -- macro_controller.lua  ─  mex-grid scaling bot for Beyond All Reason
 -- Commander builds com_starter; bot lab makes 2 con bots (nanos + bot_starter);
 -- air lab expands mex_grids outward using blueprint_placer (one air con per grid).
--- COR only. Expansion blocked east of the bot_starter column.
+-- COR only. The base "spine" (lab -> bot_starter -> VechT1/BotT2) always builds
+-- toward +X in blueprint-local space; mirrorX flips that to -X when the commander
+-- spawns on the east half of the map, so the spine never builds into the map edge.
+-- Expansion is blocked on the far side of the bot_starter column (whichever side
+-- that is once mirrored).
 
 local widget = widget
 local Spring = Spring
@@ -46,6 +50,8 @@ local myTeamID    = nil
 local commanderID = nil
 local baseX, baseZ = nil, nil
 local GRID_SPACING = nil   -- assigned from BP_PLACER after Initialize
+local mirrorX       = false  -- true when commander spawns on east half of map;
+                              -- flips the base spine (lab column) to build -X instead of +X
 
 local botLabID    = nil
 local airLabID    = nil
@@ -102,6 +108,20 @@ end
 
 local function GiveBuild(unitID, defID, x, y, z, facing, shift)
     spGiveOrderToUnit(unitID, -defID, {x, y, z, facing}, shift and {} or {})
+end
+
+-- Sign-flips an X-axis offset/spacing when the base is mirrored (east spawn).
+local function DirX(v)
+    return mirrorX and -v or v
+end
+
+-- Mirroring across the north-south axis swaps east/west facings (1<->3 in this
+-- codebase's convention: 0=south,1=west,2=north,3=east) and leaves south/north as-is.
+local function MirrorFacing(f)
+    if not mirrorX then return f end
+    if f == 1 then return 3
+    elseif f == 3 then return 1
+    else return f end
 end
 
 local function IsCommander(uDefID)
@@ -256,8 +276,13 @@ end
 
 TryExpand = function()
     local results = BP_PLACER.FindAllValidPlacements(MEX_GRID_BP, completedAnchors)
+    local spineBoundX = baseX + DirX(GRID_SPACING)
     for _, result in ipairs(results) do
-        if result.anchorX <= baseX + GRID_SPACING then
+        -- Block expansion past the spine (bot_starter) column, whichever side that's on.
+        local pastSpine
+        if mirrorX then pastSpine = result.anchorX < spineBoundX
+        else             pastSpine = result.anchorX > spineBoundX end
+        if not pastSpine then
             local key = AnchorKey(result.anchorX, result.anchorZ)
             if not assignedAnchors[key] then
                 assignedAnchors[key] = true
@@ -319,11 +344,11 @@ local function QueueComBlueprint(anchorX, anchorZ)
     for _, u in ipairs(COM_STARTER.layout) do
         local ud = UnitDefNames and UnitDefNames[u.n]
         if ud then
-            local wx = anchorX + u.x
+            local wx = anchorX + DirX(u.x)
             local wz = anchorZ + u.z
             local wy = spGetGroundHeight(wx, wz) or 0
             local opts = first and {} or {"shift"}
-            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, u.f}, opts)
+            spGiveOrderToUnit(commanderID, -ud.id, {wx, wy, wz, MirrorFacing(u.f)}, opts)
             first = false
             count = count + 1
         end
@@ -342,7 +367,11 @@ local function StartComBlueprint()
     end
     baseX = math.floor(cx / 16 + 0.5) * 16
     baseZ = math.floor(cz / 16 + 0.5) * 16
-    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ) end
+
+    local mapCenterX = (Game and Game.mapSizeX or 8192) * 0.5
+    mirrorX = baseX > mapCenterX
+    if DEBUG then Spring.Echo("[WE] StartComBlueprint baseX=" .. baseX .. " baseZ=" .. baseZ
+        .. " mirrorX=" .. tostring(mirrorX)) end
 
     -- Block the commander cell so TryExpand never places a mex_grid here.
     -- Not added to completedAnchors: the mex_grid system seeds itself from
@@ -365,10 +394,11 @@ end
 
 local function AssignConBot2()
     if DEBUG then Spring.Echo("[WE] AssignConBot2") end
-    local bsX = baseX + GRID_SPACING
+    local spineDX = DirX(GRID_SPACING)
+    local bsX = baseX + spineDX
     local bsZ = baseZ
-    -- bot_starter is east of com; dx = new_x - existing_x = +GRID_SPACING.
-    local rot = FindCorrlRotation(BOT_STARTER, GRID_SPACING, 0)
+    -- bot_starter sits on the spine side of com (mirrored when spawning east).
+    local rot = FindCorrlRotation(BOT_STARTER, spineDX, 0)
 
     -- Mark assigned so TryExpand doesn't place a mex_grid on top of bot_starter.
     local key = AnchorKey(bsX, bsZ)
@@ -387,9 +417,10 @@ end
 
 local function AssignConBot3()
     if DEBUG then Spring.Echo("[WE] AssignConBot3 (VechT1_and_BotT2 north of bot_starter)") end
-    local bsX = baseX + GRID_SPACING
+    local spineDX = DirX(GRID_SPACING)
+    local bsX = baseX + spineDX
     local bsZ = baseZ - GRID_SPACING   -- north
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot3ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -398,9 +429,10 @@ end
 
 local function AssignConBot4()
     if DEBUG then Spring.Echo("[WE] AssignConBot4 (VechT1_and_BotT2 south of bot_starter)") end
-    local bsX = baseX + GRID_SPACING
+    local spineDX = DirX(GRID_SPACING)
+    local bsX = baseX + spineDX
     local bsZ = baseZ + GRID_SPACING   -- south
-    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, GRID_SPACING, 0)
+    local rot  = FindCorrlRotation(VECH_BOT_T2_BP, spineDX, 0)
     assignedAnchors[AnchorKey(bsX, bsZ)] = true
     local s = BP_PLACER.New(VECH_BOT_T2_BP, conBot4ID, bsX, bsZ, rot)
     prodStates[#prodStates + 1] = s
@@ -415,10 +447,12 @@ local function StartAirExpansion()
     airConsQueued = true
     firstTwoMexDone = true  -- enable energy grid logic
 
+    -- Opposite side from the spine (bot_starter column) — west normally, east when mirrored.
+    local oppositeDX = -DirX(GRID_SPACING)
     local initials = {
-        {ax = baseX - GRID_SPACING, az = baseZ,                dx = -GRID_SPACING, dz = 0},            -- west
-        {ax = baseX,                az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
-        {ax = baseX,                az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
+        {ax = baseX + oppositeDX, az = baseZ,                dx = oppositeDX,    dz = 0},            -- opposite side
+        {ax = baseX,              az = baseZ + GRID_SPACING, dx = 0,             dz =  GRID_SPACING}, -- south
+        {ax = baseX,              az = baseZ - GRID_SPACING, dx = 0,             dz = -GRID_SPACING}, -- north
     }
     for _, init in ipairs(initials) do
         local key = AnchorKey(init.ax, init.az)

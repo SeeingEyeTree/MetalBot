@@ -1,0 +1,3 @@
+Goal: DRAGON_BOT wins fights only 1.88:1 on damage while losing 393 units in the last replay (vs BotB), because its army is spread across a 32-node full-map-width contact line with only 55% of value in the thrust window.
+Change: unit_controller.lua only - THRUST_FRAC 0.55 -> 0.85 and THRUST_NODE_HALF 5 -> 3, so most of the army converges on the most contested spot.
+Expected effect: better damage/loss ratio after first contact (~frame 16000) and fewer stragglers picked off. Caveat: ab_test's army-value metric is mostly economy before contact, so this may show NO DIFFERENCE; judge by damage ratio / units lost in the match logs.
