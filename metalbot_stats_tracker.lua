@@ -20,7 +20,42 @@
 --   [TRK] event  name=<milestone> [extra key=value ...]
 -- All counters are cumulative unless the key says otherwise; diff consecutive rows for
 -- rates. bot_testing.py parses these into result["tracker_timeline"];
--- find_weakness.py reads them.
+-- find_weakness.py and bot_score.py read them.
+--
+-- Ability to act (units row), used by bot_score.py's spendable_rate:
+--   fac_bp          build speed of factories + nanos within reach of a factory
+--   fac_bp_open     the same, only at factories whose units can get out (air labs, ground
+--                   labs with a path; a boxed-in lab counts half if there are air transports)
+--   army_ev / defense_ev / mex_ev / energy_ev   ENERGY cost of the same units as *_mv
+--                   (game_mechanics 2.3 values a unit at metal + energy/70)
+--   fac_bp_useful   fac_bp_open with each lab's support BP capped at what builds its typical
+--                   army unit in 2.5 s (game_mechanics 2.5: more just waits for the exit)
+--   nano_idle_bp    build power of nano turrets with nothing to do (stranded; 2.4)
+--   home_guard_gnd_mv / home_guard_air_mv   armed units + defences within NEAR_BASE of the
+--                   start that can hit ground / air: the local reserve raids meet (7.1)
+--   rez, util_intel units that can resurrect; unarmed mobile radar/jammer units (7)
+--   max_tech        highest tech level among our factories (4)
+-- Economy (eco row): metal_pull_avg / energy_pull_avg / metal_inc_avg / energy_inc_avg
+--                   averaged over the interval's probes: pull is what the builders are
+--                   spending (game_mechanics 1.1); a single reading is too noisy
+--   mob_bp          build speed of mobile builders incl. the commander
+--   army_em         energy per metal of the standing army (else of what the factories offer)
+--   army_m_per_bp   metal per build-power-second of the same (metalCost / buildTime)
+--   build_sites / build_tested   sample points next to builders where a T1 ground factory fits
+--   ground_fac, fac_exit_ok, fac_exit_unknown   ground factories; how many have a path to open
+--                   ground (Spring.RequestPath); unknown = the engine gave no answer
+--   stuck_units     army units >STUCK_AGE after finishing, still at their factory, not moving
+--   air_trans       air transports (can lift units out of a boxed-in factory)
+-- Awareness (intel row):
+--   fresh_home/corridor/enemy/mex   age-weighted knowledge of each zone, 0-1 (-1 = no such zone);
+--                   enemy start from start positions if readable, else mirrored (init foe_src)
+--   believed_n/mv   enemy units seen in the last MEMORY_FRAMES and not seen to die
+--   arrivals_n / arrivals_warned_n / lead_med   armed enemies that reached NEAR_BASE; how many
+--                   had been contacted (LOS or radar) >= WARN_LEAD frames earlier; median lead
+-- Surprise (combat row):
+--   lost_unseen_n/mv   enemy-attributed losses whose killer was not in sight in the last SEEN_RECENT
+--   lost_noattr_n/mv   finished units lost with NO attacker: self-destructs, or kills whose
+--                      attacker the engine hid from this process (diagnostic; see scoring.md)
 --
 -- Events (each fires once unless noted):
 --   first_mex first_energy first_factory first_t2_factory first_con first_army
@@ -32,8 +67,10 @@
 --   first_radar_contact / first_radar_moving   radar-only blip appeared / its speed is known
 --                           (speed=, cands= the unit types moving at that speed: either/or)
 --   first_enemy_nuke first_enemy_lrpc first_enemy_antinuke   strategic weapons seen
+--   first_enemy_t2          first enemy unit of tech level 2+ seen (def=)
 --   mex_10 mex_25 mex_50 commander_lost   (commander_lost carries killer=; "?" = self/unknown)
 --   cons_all_dead / cons_restored   (repeat; cons_restored carries waited=frames)
+--   fac_boxed               (once per factory) a ground lab with no path out (def= x= z= facing= best_path=)
 
 local SAMPLE_EVERY  = 900      -- game frames between full snapshots (30 game-seconds)
 local PROBE_EVERY   = 30       -- game frames between cheap stall/float + threat probes
@@ -53,6 +90,17 @@ local BLIP_TOL      = 0.08     -- candidate unit speeds within this fraction of 
 local BLIP_MIN_DT   = 60       -- frames between position samples used for a speed estimate
 local LRPC_RANGE    = 2000     -- elmos: a static ground-attack weapon this long counts as a "LRPC"
 local WRECK_RADIUS  = 1500     -- elmos round the base within which wreck metal is summed
+local FRESH_TAU     = 1350     -- frames: knowledge of a map cell decays as exp(-age / FRESH_TAU)
+local ZONE_R        = 2500     -- elmos: "home" / "enemy" zone radius round each start
+local CORRIDOR_W    = 1500     -- elmos: half-width of the corridor between the two starts
+local WARN_LEAD     = 600      -- frames: an arrival first contacted this much earlier was "warned"
+local MEMORY_FRAMES = 9000     -- frames: forget an enemy unit not seen for this long
+local SEEN_RECENT   = 300      -- frames: an attacker seen this recently was "seen" when it killed
+local STUCK_AGE     = 1800     -- frames after finishing: an army unit still at its factory door...
+local STUCK_R       = 250      -- ...within this many elmos of it, and not moving, is stuck
+local SITE_BUILDERS = 6        -- builders sampled per snapshot for free factory sites
+local SITE_DIRS     = 8        -- sample points per builder
+local EXIT_FACS     = 8        -- factories path-tested per snapshot
 
 local myTeam, myAlly, startX, startZ = nil, nil, 0, 0
 local firstSeenEnemy = -1
@@ -62,13 +110,15 @@ local disabled = {}            -- name -> true once a sub-tracker has errored
 -- interval probes
 local probes = 0
 local stallM, stallE, floatM, floatE = 0, 0, 0, 0
+local pullM, pullE, incM, incE = 0, 0, 0, 0   -- summed over probes, averaged per snapshot
 
 -- cumulative counters, updated from callbacks
 -- `lost` counts EVERY loss, including our own reclaims and retrofits.  `enemy_*` counts only
 -- losses with a known enemy attacker, which is what "the enemy is killing us" means.
 local lost = {n = 0, mv = 0, army_n = 0, army_mv = 0, eco_n = 0, eco_mv = 0, distSum = 0,
               cons = 0, byAir = 0, enemy_n = 0, enemy_mv = 0, enemy_eco_n = 0, enemy_eco_mv = 0,
-              enemy_army_n = 0, enemy_army_mv = 0}
+              enemy_army_n = 0, enemy_army_mv = 0, unseen_n = 0, unseen_mv = 0,
+              noattr_n = 0, noattr_mv = 0}
 local kills = {n = 0, mv = 0}
 local killers = {}             -- attacker def name -> count of our units it killed
 local finishedByRole = {}
@@ -92,6 +142,19 @@ local pm = {n = 0, iso = 0, support = 0}   -- piecemeal: sampled deaths of our a
 local pmBudget = PIECE_BUDGET
 local speedList = nil          -- mobile unit defs sorted by speed, built lazily
 local cmdrUid = nil
+
+-- awareness
+local foeX, foeZ, foeSrc = nil, nil, "none"   -- enemy start: read if possible, else mirrored
+local lastLos, lastRadar, cellZone = {}, {}, nil   -- cell -> frame last in LOS / radar; zone
+local contact, nContact = {}, 0   -- enemy uid -> first frame of ANY contact (LOS or radar)
+local known = {}                  -- enemy uid -> {mv, last}: what we believe is out there
+local arrived = {}                -- enemy uid -> true once it has reached our base
+local arrivals = {n = 0, warned = 0, leads = {}}
+
+-- ability to act
+local born = {}                   -- own uid -> {fx, fz, f}: factory that built it, finish frame
+local labDefID = nil              -- our ground T1 factory def, for the free-site test
+local siteOffset, exitOffset = 0, 0
 
 local function isCommanderDef(d)
     if d.customParams and (d.customParams.iscommander ~= nil or d.customParams.is_commander ~= nil) then
@@ -367,6 +430,21 @@ local function dumpDefs()
     end
 end
 
+-- The enemy start, for the awareness zones.  Enemy start positions are usually not readable,
+-- so the mirror of our own is the fallback (same rule as bar_framework/map_model.lua).
+local function resolveFoe()
+    if Spring.GetTeamList and Spring.GetTeamInfo then
+        for _, t in ipairs(Spring.GetTeamList() or {}) do
+            local _, _, _, _, _, allyID = Spring.GetTeamInfo(t)
+            if t ~= myTeam and allyID ~= myAlly and t ~= (Spring.GetGaiaTeamID and Spring.GetGaiaTeamID()) then
+                local x, _, z = Spring.GetTeamStartPosition(t)
+                if x and x > 0 and z and z > 0 then return x, z, "start_pos" end
+            end
+        end
+    end
+    return mapX - startX, mapZ - startZ, "mirror"
+end
+
 function widget:GameStart()
     myTeam = Spring.GetMyTeamID()
     myAlly = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
@@ -374,6 +452,7 @@ function widget:GameStart()
     mapZ = (Game and Game.mapSizeZ) or 0
     local sx, _, sz = Spring.GetTeamStartPosition(myTeam)
     startX, startZ = sx or 0, sz or 0
+    foeX, foeZ, foeSrc = resolveFoe()
     -- Ground truth on what this process can see: bot_testing.py sets fullview=1 but
     -- that has not been trusted to work headless. If fullview reads 0 here, believe it.
     local spec, fullview = Spring.GetSpectatingState()
@@ -382,17 +461,29 @@ function widget:GameStart()
     if WG then
         WG.StatsTracker = { DecodeSpeed = decodeSpeed, Blips = blips, GroupStats = groupStats }
     end
-    emit("init", 0, string.format("spec=%d fullview=%d start_x=%.0f start_z=%.0f map_x=%d map_z=%d",
-        spec and 1 or 0, fullview and 1 or 0, startX, startZ, mapX, mapZ))
+    emit("init", 0, string.format("spec=%d fullview=%d start_x=%.0f start_z=%.0f map_x=%d map_z=%d "
+        .. "foe_x=%.0f foe_z=%.0f foe_src=%s",
+        spec and 1 or 0, fullview and 1 or 0, startX, startZ, mapX, mapZ, foeX, foeZ, foeSrc))
 end
 
 -- ── Callbacks that keep cumulative counters ──────────────────────────────────
+
+-- Remember which factory built each unit, for the "stuck at the factory door" test.
+function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
+    if teamID ~= myTeam or not builderID then return end
+    local bd = Spring.GetUnitDefID(builderID)
+    if bd and roleOf(bd) == "factory" then
+        local x, _, z = Spring.GetUnitPosition(builderID)
+        if x then born[unitID] = { fx = x, fz = z } end
+    end
+end
 
 function widget:UnitFinished(unitID, unitDefID, teamID)
     if teamID ~= myTeam then return end
     local role = roleOf(unitDefID)
     finishedByRole[role] = (finishedByRole[role] or 0) + 1
     local f = Spring.GetGameFrame()
+    if born[unitID] then born[unitID].f = f end
     local _, _, aaOnly = capsOf(unitDefID)
     if role == "mex" then
         mexFinished = mexFinished + 1
@@ -436,6 +527,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
     if not myTeam or not unitDefID then return end
     local f = Spring.GetGameFrame()
     if teamID == myTeam then
+        born[unitID] = nil
         local role, mv = roleOf(unitDefID), cost(unitDefID)
         if role == "commander" then
             event(f, "commander_lost", "killer=" .. name(attackerDefID)
@@ -458,6 +550,15 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
             else
                 lost.enemy_eco_n, lost.enemy_eco_mv = lost.enemy_eco_n + 1, lost.enemy_eco_mv + mv
             end
+            -- Surprise: the killer was not in sight in the last SEEN_RECENT frames.
+            local k = attackerID and known[attackerID]
+            if not (k and f - k.last <= SEEN_RECENT) then
+                lost.unseen_n, lost.unseen_mv = lost.unseen_n + 1, lost.unseen_mv + mv
+            end
+        elseif attackerTeamID == nil and wasFinished then
+            -- No attacker at all. Reclaims name the reclaimer, so this is a self-destruct or a
+            -- kill whose attacker the engine hid from this process (knowledge/scoring.md).
+            lost.noattr_n, lost.noattr_mv = lost.noattr_n + 1, lost.noattr_mv + mv
         end
         -- Piecemeal test: when one of our army units is killed, how many of our army were near?
         -- Losing units with almost nobody around means they fought in ones and twos.
@@ -493,10 +594,13 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
         if x then lost.distSum = lost.distSum + dist2d(x, z, startX, startZ) end
         -- Only an enemy kill is a "loss" milestone: the bot reclaims its own buildings.
         if byEnemy then event(f, "first_loss", "def=" .. name(unitDefID)) end
-    elseif attackerTeamID == myTeam and not Spring.AreTeamsAllied(teamID, myTeam) then
-        -- Only fires for kills of units this process could see; it is a lower bound.
-        kills.n, kills.mv = kills.n + 1, kills.mv + cost(unitDefID)
-        event(f, "first_kill")
+    else
+        known[unitID] = nil            -- seen to die: no longer part of the enemy we believe in
+        if attackerTeamID == myTeam and not Spring.AreTeamsAllied(teamID, myTeam) then
+            -- Only fires for kills of units this process could see; it is a lower bound.
+            kills.n, kills.mv = kills.n + 1, kills.mv + cost(unitDefID)
+            event(f, "first_kill")
+        end
     end
 end
 
@@ -511,10 +615,12 @@ local function probeEconomy()
             event(Spring.GetGameFrame(), "first_damage_taken", "source=team_stats")
         end
     end
-    local m, ms = Spring.GetTeamResources(myTeam, "metal")
-    local e, es = Spring.GetTeamResources(myTeam, "energy")
+    local m, ms, mp, mi = Spring.GetTeamResources(myTeam, "metal")
+    local e, es, ep, ei = Spring.GetTeamResources(myTeam, "energy")
     if not m then return end
     probes = probes + 1
+    pullM, pullE = pullM + (mp or 0), pullE + (ep or 0)
+    incM, incE = incM + (mi or 0), incE + (ei or 0)
     if ms and ms > 0 then
         if m < ms * STALL_FRAC then stallM = stallM + 1 end
         if m > ms * FLOAT_FRAC then floatM = floatM + 1 end
@@ -525,20 +631,39 @@ local function probeEconomy()
     end
 end
 
+-- Enemy units this process has in LOS or on radar (radar-only ones have no unit type).
+-- NOT Spring.GetVisibleUnits: that is culled to the CAMERA's view, and a headless process has
+-- no real camera. Every match logged before 2026-09-23 saw at most one enemy per snapshot and
+-- no radar blips at all while losing dozens of units to named killers. Same approach as
+-- bar_framework/threat_map.lua.
+local gaiaTeam = Spring.GetGaiaTeamID and Spring.GetGaiaTeamID()
+local function enemyUnits()
+    local out = {}
+    local all = Spring.GetAllUnits and Spring.GetAllUnits() or {}
+    for i = 1, #all do
+        local uid = all[i]
+        local a = Spring.GetUnitAllyTeam(uid)
+        if a and a ~= myAlly and Spring.GetUnitTeam(uid) ~= gaiaTeam then out[#out + 1] = uid end
+    end
+    return out
+end
+
 -- Watch every visible enemy: when did we FIRST see it and how far away was it, so that
 -- "the first raider reached the base and we had no warning" is a number, not a guess.
 local function scanThreats(f)
-    -- icons=true: include radar-only contacts, which have no unit type (defID == nil).
-    local list = Spring.GetVisibleUnits(Spring.ENEMY_UNITS or -4, nil, true)
-    if not list then return end
+    local list = enemyUnits()
     if nSeen > 4000 then seenEnemy, nSeen = {}, 0 end
+    if nContact > 8000 then contact, arrived, nContact = {}, {}, 0 end
     for i = 1, #list do
         local uid = list[i]
+        if not contact[uid] then contact[uid] = f; nContact = nContact + 1 end
         local defID = Spring.GetUnitDefID(uid)   -- nil for radar-only blips
         if defID then
             local x, _, z = Spring.GetUnitPosition(uid)
             if x then
                 local dd = dist2d(x, z, startX, startZ)
+                local k = known[uid]
+                if k then k.last = f else known[uid] = { mv = cost(defID), last = f } end
                 local s = seenEnemy[uid]
                 if not s then
                     s = { f = f, d = dd }
@@ -552,6 +677,7 @@ local function scanThreats(f)
                     elseif d and d.canMove and d.weapons and #d.weapons > 0 then
                         event(f, "first_enemy_ground", info)
                     end
+                    if techLevel(defID) >= 2 then event(f, "first_enemy_t2", info) end
                     local sk = stratOf(defID)
                     if sk == "nuke" then event(f, "first_enemy_nuke", info)
                     elseif sk == "lrpc" then event(f, "first_enemy_lrpc", info)
@@ -562,6 +688,15 @@ local function scanThreats(f)
                     if d and d.weapons and #d.weapons > 0 then
                         event(f, "first_enemy_near_base", string.format(
                             "def=%s warned_dist=%.0f lead_frames=%d", name(defID), s.d, f - s.f))
+                        -- Every armed arrival, not just the first: how long before it got
+                        -- here did we have ANY contact with it (radar counts)?
+                        if not arrived[uid] then
+                            arrived[uid] = true
+                            local lead = f - (contact[uid] or f)
+                            arrivals.n = arrivals.n + 1
+                            if lead >= WARN_LEAD then arrivals.warned = arrivals.warned + 1 end
+                            if #arrivals.leads < 2000 then arrivals.leads[#arrivals.leads + 1] = lead end
+                        end
                     end
                 end
             end
@@ -593,22 +728,344 @@ end
 
 -- Map awareness: what share of the map is in LOS / radar right now, and what share has
 -- ever been in LOS.  This is the scouting signal: a bot that never looks cannot respond.
-local function scanCoverage()
+-- Zones make coverage mean something: a lit empty corner is worth less than the corridor
+-- raiders use.  home / enemy = within ZONE_R of each start; corridor = within CORRIDOR_W of
+-- the line between them; mex = any other cell with metal in it.  Other cells: no zone.
+local function hasMetal(x0, z0, w, h)
+    if not Spring.GetMetalAmount then return false end
+    for i = 0, 4 do
+        for j = 0, 4 do
+            local mx = math.floor((x0 + (i + 0.5) * w / 5) / 16)
+            local mz = math.floor((z0 + (j + 0.5) * h / 5) / 16)
+            if (Spring.GetMetalAmount(mx, mz) or 0) > 0 then return true end
+        end
+    end
+    return false
+end
+
+local function buildZones()
+    cellZone = {}
+    local cw, ch = mapX / MAP_GRID, mapZ / MAP_GRID
+    local ax, az = foeX - startX, foeZ - startZ
+    local len2 = math.max(ax * ax + az * az, 1)
+    for gz = 0, MAP_GRID - 1 do
+        for gx = 0, MAP_GRID - 1 do
+            local x, z = (gx + 0.5) * cw, (gz + 0.5) * ch
+            local t = math.max(0, math.min(1, ((x - startX) * ax + (z - startZ) * az) / len2))
+            local zone
+            if dist2d(x, z, startX, startZ) <= ZONE_R then zone = "home"
+            elseif dist2d(x, z, foeX, foeZ) <= ZONE_R then zone = "enemy"
+            elseif dist2d(x, z, startX + t * ax, startZ + t * az) <= CORRIDOR_W then zone = "corridor"
+            elseif hasMetal(gx * cw, gz * ch, cw, ch) then zone = "mex" end
+            if zone then cellZone[gz * MAP_GRID + gx] = zone end
+        end
+    end
+end
+
+local function scanCoverage(f)
     if mapX <= 0 or mapZ <= 0 or not Spring.IsPosInLos then return end
+    if not cellZone then buildZones() end
     local los, radar, n = 0, 0, MAP_GRID * MAP_GRID
     for gz = 0, MAP_GRID - 1 do
         local z = (gz + 0.5) * mapZ / MAP_GRID
         for gx = 0, MAP_GRID - 1 do
             local x = (gx + 0.5) * mapX / MAP_GRID
+            local key = gz * MAP_GRID + gx
             if Spring.IsPosInLos(x, 0, z, myAlly) then
                 los = los + 1
-                local key = gz * MAP_GRID + gx
+                lastLos[key] = f
                 if not explored[key] then explored[key] = true; exploredN = exploredN + 1 end
             end
-            if Spring.IsPosInRadar and Spring.IsPosInRadar(x, 0, z, myAlly) then radar = radar + 1 end
+            if Spring.IsPosInRadar and Spring.IsPosInRadar(x, 0, z, myAlly) then
+                radar = radar + 1
+                lastRadar[key] = f
+            end
         end
     end
     losFrac, radarFrac, exploredFrac = los / n, radar / n, exploredN / n
+end
+
+-- Age-weighted knowledge per zone: each cell counts exp(-age / FRESH_TAU) since it was last
+-- in LOS, or half that for radar only (radar shows that something is there, not what).
+-- -1 = the zone has no cells on this map.
+local function freshness(f)
+    local sum, cnt = {}, {}
+    for key, zone in pairs(cellZone or {}) do
+        local a = lastLos[key] and math.exp(-(f - lastLos[key]) / FRESH_TAU) or 0
+        local r = lastRadar[key] and 0.5 * math.exp(-(f - lastRadar[key]) / FRESH_TAU) or 0
+        sum[zone] = (sum[zone] or 0) + math.max(a, r)
+        cnt[zone] = (cnt[zone] or 0) + 1
+    end
+    return function(zone) return cnt[zone] and sum[zone] / cnt[zone] or -1 end
+end
+
+-- ── Ability to act ───────────────────────────────────────────────────────────
+-- Could this team turn income into army right now, and add production if it had to?  Build
+-- power that reaches a factory, the energy/metal cost of what it builds, free ground for a new
+-- factory next to a builder, and whether ground factories have a way out.  bot_score.py turns
+-- these into `spendable_rate` = the scarcest of metal, energy and build power.
+
+local airLabCache, groundOptCache, exitCache, boxedLogged = {}, {}, {}, {}
+local mainBtCache = {}
+
+-- Build time of a factory's typical army unit (median over its armed buildoptions).
+-- game_mechanics 2.5: support BP beyond what builds that unit in ~2.5 s mostly waits for
+-- units to walk out, so it is not production capacity.
+local LAB_ABSORB_S = 2.5
+local function mainBuildTime(defID)
+    local c = mainBtCache[defID]
+    if c then return c end
+    local bts = {}
+    for _, o in ipairs(UnitDefs[defID] and UnitDefs[defID].buildOptions or {}) do
+        if roleOf(o) == "army" and UnitDefs[o].buildTime then bts[#bts + 1] = UnitDefs[o].buildTime end
+    end
+    table.sort(bts)
+    c = #bts > 0 and bts[math.ceil(#bts / 2)] or 0
+    mainBtCache[defID] = c
+    return c
+end
+local FACING = { [0] = { 0, 1 }, [1] = { 1, 0 }, [2] = { 0, -1 }, [3] = { -1, 0 } }
+
+local function isAirLab(defID)
+    local c = airLabCache[defID]
+    if c ~= nil then return c end
+    local opts = UnitDefs[defID] and UnitDefs[defID].buildOptions or {}
+    c = #opts > 0
+    for i = 1, #opts do
+        local o = UnitDefs[opts[i]]
+        if o and not o.canFly then c = false; break end
+    end
+    airLabCache[defID] = c
+    return c
+end
+
+-- The first ground unit a factory makes: its move type is what has to get out of the door.
+local function groundOption(defID)
+    local c = groundOptCache[defID]
+    if c == nil then
+        c = false
+        for _, o in ipairs(UnitDefs[defID] and UnitDefs[defID].buildOptions or {}) do
+            local od = UnitDefs[o]
+            if od and od.canMove and not od.canFly and od.moveDef and od.moveDef.name then c = od; break end
+        end
+        groundOptCache[defID] = c
+    end
+    return c or nil
+end
+
+-- A ground T1 factory one of our builders can make: the footprint for the free-site test.
+local function findLabDef(builderDefs)
+    for defID in pairs(builderDefs) do
+        for _, o in ipairs(UnitDefs[defID].buildOptions or {}) do
+            local od = UnitDefs[o]
+            if od and od.isFactory and techLevel(o) < 2 and not isAirLab(o) then return o end
+        end
+    end
+end
+
+-- Can a unit from this factory reach open ground?  Paths are asked from just outside the
+-- factory door towards three goals 1500 elmos out (map centre, enemy start, straight ahead):
+-- open if any path reaches its goal or gets EXIT_FAR from the door.  Several goals, because
+-- one goal can sit inside our own building field and fail although the door is clear.
+-- Returns true / false, or nil when the engine gives no answer (RequestPath missing or
+-- erroring), which is logged as fac_exit_unknown, never as trapped.  The second value is a
+-- short description of the best attempt, for the fac_boxed event.
+local EXIT_FAR = 1000
+local function exitOK(uid, defID, x, z)
+    if not Spring.RequestPath then return nil end
+    local od = groundOption(defID)
+    if not od then return nil end
+    local fd = UnitDefs[defID]
+    local dir = FACING[(Spring.GetUnitBuildFacing and Spring.GetUnitBuildFacing(uid)) or 0] or FACING[0]
+    local half = ((dir[1] ~= 0) and (fd.xsize or 0) or (fd.zsize or 0)) * 4
+    local sx, sz = x + dir[1] * (half + 24), z + dir[2] * (half + 24)
+    local sy = Spring.GetGroundHeight(sx, sz)
+    local goals = { { mapX / 2 - x, mapZ / 2 - z }, { (foeX or mapX / 2) - x, (foeZ or mapZ / 2) - z },
+                    { dir[1], dir[2] } }
+    local answered, best = false, 0
+    for _, g in ipairs(goals) do
+        local d = math.sqrt(g[1] * g[1] + g[2] * g[2])
+        if d > 1 then
+            local gx = math.max(64, math.min(mapX - 64, x + g[1] / d * 1500))
+            local gz = math.max(64, math.min(mapZ - 64, z + g[2] / d * 1500))
+            local ok, path = pcall(Spring.RequestPath, od.moveDef.name, sx, sy, sz,
+                                   gx, Spring.GetGroundHeight(gx, gz), gz, 64)
+            if ok then
+                answered = true
+                if path then
+                    local ok2, wps = pcall(function() return path:GetPathWayPoints() end)
+                    if ok2 and type(wps) == "table" and #wps > 0 then
+                        local last = wps[#wps]
+                        local out = dist2d(last[1], last[3], sx, sz)
+                        if dist2d(last[1], last[3], gx, gz) <= 400 or out >= EXIT_FAR then
+                            return true
+                        end
+                        if out > best then best = out end
+                    end
+                end
+            end
+        end
+    end
+    if not answered then return nil end
+    return false, string.format("def=%s x=%.0f z=%.0f facing=%d best_path=%.0f",
+        fd.name, x, z, (Spring.GetUnitBuildFacing and Spring.GetUnitBuildFacing(uid)) or -1, best)
+end
+
+local function newAbility()
+    return { mobBp = 0, nanos = {}, facs = {}, builders = {}, builderDefs = {},
+             armyE = 0, armyM = 0, armyBT = 0, airTrans = 0, stuck = 0,
+             nanoIdleBp = 0, guardGnd = 0, guardAir = 0, rez = 0, utilIntel = 0, maxTech = 1 }
+end
+
+-- Called for every finished unit of ours (and the commander) during the units snapshot.
+local function collectOne(ab, uid, defID, role, f)
+    local d = UnitDefs[defID]
+    if role == "con" or role == "commander" then
+        ab.mobBp = ab.mobBp + (d.buildSpeed or 0)
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if x then ab.builders[#ab.builders + 1] = { x, z, d.buildDistance or 128 } end
+        ab.builderDefs[defID] = true
+    elseif role == "nano" or role == "factory" then
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if x then
+            local list = role == "nano" and ab.nanos or ab.facs
+            list[#list + 1] = { x, z, d.buildSpeed or 0, d.buildDistance or 128, uid, defID }
+        end
+        -- Stranded build power: a nano with nothing to do (game_mechanics 2.4: relocate it).
+        if role == "nano" and isIdle(uid, role) then ab.nanoIdleBp = ab.nanoIdleBp + (d.buildSpeed or 0) end
+        if role == "factory" then ab.maxTech = math.max(ab.maxTech, techLevel(defID)) end
+    elseif role == "army" then
+        ab.armyE = ab.armyE + (d.energyCost or 0)
+        ab.armyM = ab.armyM + (d.metalCost or 0)
+        ab.armyBT = ab.armyBT + (d.buildTime or 0)
+        local b = born[uid]
+        if b and b.f and f - b.f >= STUCK_AGE then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            local _, _, _, sp = Spring.GetUnitVelocity(uid)
+            if x and dist2d(x, z, b.fx, b.fz) <= STUCK_R and (sp or 0) < 1 then ab.stuck = ab.stuck + 1 end
+        end
+    end
+    if d.canFly and (d.transportCapacity or 0) > 0 then ab.airTrans = ab.airTrans + 1 end
+    -- Home guard (game_mechanics 7.1: raids are met by a LOCAL reserve): armed units and
+    -- defences near the start, by what they can hit.
+    if role == "army" or role == "defense" then
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if x and dist2d(x, z, startX, startZ) <= NEAR_BASE then
+            local air, gnd = capsOf(defID)
+            if gnd then ab.guardGnd = ab.guardGnd + cost(defID) end
+            if air then ab.guardAir = ab.guardAir + cost(defID) end
+        end
+    end
+    -- Roles game_mechanics 7 calls for that the role classifier does not separate.
+    if d.canResurrect then ab.rez = ab.rez + 1 end
+    if d.canMove and not (d.weapons and #d.weapons > 0) and not d.isBuilder
+       and ((d.radarRadius or 0) > 0 or (d.jammerRadius or 0) > 0) then
+        ab.utilIntel = ab.utilIntel + 1
+    end
+end
+
+-- A bug here must not take the whole units row down with it (safe() would disable it).
+local function abilityCollect(ab, uid, defID, role, f)
+    if ab.err then return end
+    local ok, err = pcall(collectOne, ab, uid, defID, role, f)
+    if not ok then ab.err = err end
+end
+
+local function abilityFields(ab)
+    if ab.err then error(ab.err) end
+    -- Build power that reaches a factory: the factories themselves + nanos in range of one
+    -- (each nano counted once, at the first factory it reaches).  Kept per factory, so a
+    -- boxed-in lab only takes its OWN build power out of fac_bp_open below.
+    local facBp, perFac = 0, {}
+    for i, fa in ipairs(ab.facs) do facBp = facBp + fa[3]; perFac[i] = fa[3] end
+    for _, nn in ipairs(ab.nanos) do
+        for i, fa in ipairs(ab.facs) do
+            local fd = UnitDefs[fa[6]]
+            local half = math.max(fd.xsize or 0, fd.zsize or 0) * 4
+            if dist2d(nn[1], nn[2], fa[1], fa[2]) <= nn[4] + half then
+                facBp, perFac[i] = facBp + nn[3], perFac[i] + nn[3]
+                break
+            end
+        end
+    end
+    -- Energy/metal cost of what we build: the standing army, else what the factories offer.
+    local E, M, BT = ab.armyE, ab.armyM, ab.armyBT
+    if M <= 0 then
+        for _, fa in ipairs(ab.facs) do
+            for _, o in ipairs(UnitDefs[fa[6]].buildOptions or {}) do
+                if roleOf(o) == "army" then
+                    local od = UnitDefs[o]
+                    E, M, BT = E + (od.energyCost or 0), M + (od.metalCost or 0), BT + (od.buildTime or 0)
+                end
+            end
+        end
+    end
+    -- Free ground for a factory next to a builder (a rotating sample of builders).
+    labDefID = labDefID or findLabDef(ab.builderDefs)
+    local sites, tested = 0, 0
+    if labDefID and #ab.builders > 0 and Spring.TestBuildOrder then
+        local ld = UnitDefs[labDefID]
+        local half = math.max(ld.xsize or 0, ld.zsize or 0) * 4
+        local nb = math.min(SITE_BUILDERS, #ab.builders)
+        for i = 1, nb do
+            local b = ab.builders[(siteOffset + i - 1) % #ab.builders + 1]
+            local r = b[3] + half + 32
+            for k = 0, SITE_DIRS - 1 do
+                local a = k * 2 * math.pi / SITE_DIRS
+                local x, z = b[1] + r * math.cos(a), b[2] + r * math.sin(a)
+                if x > half and z > half and x < mapX - half and z < mapZ - half then
+                    tested = tested + 1
+                    local ok = Spring.TestBuildOrder(labDefID, x, Spring.GetGroundHeight(x, z), z, 0)
+                    if ok and ok ~= 0 then sites = sites + 1 end
+                end
+            end
+        end
+        siteOffset = siteOffset + nb
+    end
+    -- Ground factories with a way out.  At most EXIT_FACS path tests per snapshot; the rest
+    -- use their last answer.
+    local groundFac, exitOk, exitUnknown, tests = 0, 0, 0, 0
+    local nf = #ab.facs
+    for i = 1, nf do
+        local fa = ab.facs[(exitOffset + i - 1) % nf + 1]
+        if not isAirLab(fa[6]) then
+            groundFac = groundFac + 1
+            if tests < EXIT_FACS then
+                tests = tests + 1
+                local r, why = exitOK(fa[5], fa[6], fa[1], fa[2])
+                exitCache[fa[5]] = (r == nil) and "?" or r
+                -- First time a lab reads as boxed in: say where, so a replay can confirm it.
+                if r == false and not boxedLogged[fa[5]] then
+                    boxedLogged[fa[5]] = true
+                    emit("event", Spring.GetGameFrame(), "name=fac_boxed " .. (why or ""))
+                end
+            end
+            local r = exitCache[fa[5]]
+            if r == true then exitOk = exitOk + 1 elseif r == nil or r == "?" then exitUnknown = exitUnknown + 1 end
+        end
+    end
+    exitOffset = exitOffset + EXIT_FACS
+    -- fac_bp_open: build power at factories whose units can get out (air labs, ground labs
+    -- with a path or not yet tested).  A boxed lab counts half with air transports around.
+    local facBpOpen, facBpUseful = 0, 0
+    for i, fa in ipairs(ab.facs) do
+        local r = exitCache[fa[5]]
+        local share = (isAirLab(fa[6]) or r ~= false) and 1 or (ab.airTrans > 0 and 0.5 or 0)
+        facBpOpen = facBpOpen + share * perFac[i]
+        -- fac_bp_useful: the same, with support BP capped at what the lab can absorb
+        local bt = mainBuildTime(fa[6])
+        local support = perFac[i] - fa[3]
+        if bt > 0 then support = math.min(support, bt / LAB_ABSORB_S) end
+        facBpUseful = facBpUseful + share * (fa[3] + support)
+    end
+    return string.format(
+        " fac_bp=%.0f fac_bp_open=%.0f fac_bp_useful=%.0f mob_bp=%.0f army_em=%.2f army_m_per_bp=%.4f "
+        .. "build_sites=%d build_tested=%d ground_fac=%d fac_exit_ok=%d fac_exit_unknown=%d "
+        .. "stuck_units=%d air_trans=%d nano_idle_bp=%.0f home_guard_gnd_mv=%.0f home_guard_air_mv=%.0f "
+        .. "rez=%d util_intel=%d max_tech=%d",
+        facBp, facBpOpen, facBpUseful, ab.mobBp, M > 0 and E / M or 0, BT > 0 and M / BT or 0,
+        sites, tested, groundFac, exitOk, exitUnknown, ab.stuck, ab.airTrans,
+        ab.nanoIdleBp, ab.guardGnd, ab.guardAir, ab.rez, ab.utilIntel, ab.maxTech)
 end
 
 -- ── Snapshots ────────────────────────────────────────────────────────────────
@@ -643,15 +1100,19 @@ local function snapshotEco(f)
         .. "energy=%.0f energy_cap=%.0f energy_inc=%.1f energy_pull=%.1f energy_excess=%.0f "
         .. "metal_produced=%.0f metal_used=%.0f energy_produced=%.0f energy_used=%.0f "
         .. "stall_m=%.2f stall_e=%.2f float_m=%.2f float_e=%.2f units_total=%d unit_cap=%d "
-        .. "wreck_metal=%.0f",
+        .. "wreck_metal=%.0f metal_pull_avg=%.2f energy_pull_avg=%.1f metal_inc_avg=%.2f "
+        .. "energy_inc_avg=%.1f",
         m, ms or 0, mi or 0, mp or 0, mx or 0, e or 0, es or 0, ei or 0, ep or 0, ex or 0,
         s.metalProduced or 0, s.metalUsed or 0, s.energyProduced or 0, s.energyUsed or 0,
-        stallM / p, stallE / p, floatM / p, floatE / p, total, cap, wreck))
+        stallM / p, stallE / p, floatM / p, floatE / p, total, cap, wreck,
+        pullM / p, pullE / p, incM / p, incE / p))
     probes, stallM, stallE, floatM, floatE = 0, 0, 0, 0, 0
+    pullM, pullE, incM, incE = 0, 0, 0, 0
 end
 
 local function snapshotUnits(f)
     local count, value, inProgress = {}, {}, 0
+    local evalue = {}   -- energy cost per role (game_mechanics 2.3: value = metal + energy/70)
     local bp, bpIdle, facN, facBusy = 0, 0, 0, 0
     local t2 = 0
     local armyN, armyMv, hpSum, cx, cz = 0, 0, 0, 0, 0
@@ -659,19 +1120,25 @@ local function snapshotUnits(f)
     local armyPos, comp = {}, {}
     local facPos, aaPos, antiPos = {}, {}, {}   -- for coverage of factories / commander
     local fighters, siloN, lrpcN, antiN = 0, 0, 0, 0
+    local ab = newAbility()
     cmdrUid = nil
 
     for _, uid in ipairs(Spring.GetTeamUnits(myTeam) or {}) do
         local defID = Spring.GetUnitDefID(uid)
         if defID then
             local role = roleOf(defID)
-            if role == "commander" then cmdrUid = uid end
+            if role == "commander" then
+                cmdrUid = uid
+                abilityCollect(ab, uid, defID, role, f)
+            end
             if role ~= "commander" then
                 if Spring.GetUnitIsBeingBuilt(uid) then
                     inProgress = inProgress + 1
                 else
                     count[role] = (count[role] or 0) + 1
                     value[role] = (value[role] or 0) + cost(defID)
+                    evalue[role] = (evalue[role] or 0) + (UnitDefs[defID].energyCost or 0)
+                    abilityCollect(ab, uid, defID, role, f)
                     if role == "factory" and techLevel(defID) >= 2 then t2 = t2 + 1 end
 
                     if role == "con" or role == "nano" or role == "factory" then
@@ -752,6 +1219,11 @@ local function snapshotUnits(f)
 
     local function c(r) return count[r] or 0 end
     local function v(r) return value[r] or 0 end
+    local okA, abStr = pcall(abilityFields, ab)
+    if not okA then
+        Spring.Echo("[TRK] error name=ability " .. (tostring(abStr):gsub("%s+", "_")))
+        abStr = ""
+    end
     emit("units", f, string.format(
         "mex=%d mex_mv=%.0f energy=%d energy_mv=%.0f factory=%d factory_t2=%d "
         .. "con=%d nano=%d army=%d army_mv=%.0f defense=%d defense_mv=%.0f utility=%d "
@@ -766,7 +1238,10 @@ local function snapshotUnits(f)
         armyAir, armyGnd, defAir, defGnd, aaDedicated,
         fighters, siloN, lrpcN, antiN, facAA, facAAded, facAnti,
         finishedByRole.mex or 0, finishedByRole.energy or 0, finishedByRole.con or 0,
-        finishedByRole.army or 0, finishedByRole.factory or 0))
+        finishedByRole.army or 0, finishedByRole.factory or 0)
+        .. string.format(" army_ev=%.0f defense_ev=%.0f mex_ev=%.0f energy_ev=%.0f",
+            evalue.army or 0, evalue.defense or 0, evalue.mex or 0, evalue.energy or 0)
+        .. abStr)
 
     -- Army shape: `spread` is mean distance from the army's centroid, the number that
     -- shows a stretched-out army; `dist_base` shows whether it is at home or forward.
@@ -822,7 +1297,7 @@ end
 local function snapshotIntel(f)
     local visN, visMv, visAir, visAirMv, visGnd, near, closest = 0, 0, 0, 0, 0, 0, -1
     local visNuke, visLrpc = 0, 0
-    for _, uid in ipairs(Spring.GetVisibleUnits(Spring.ENEMY_UNITS or -4, nil, false) or {}) do
+    for _, uid in ipairs(enemyUnits()) do
         local defID = Spring.GetUnitDefID(uid)   -- nil for radar-only blips
         if defID then
             local d = UnitDefs[defID]
@@ -851,12 +1326,27 @@ local function snapshotIntel(f)
             end
         end
     end
+    -- What we believe the enemy has: every unit seen in the last MEMORY_FRAMES and not seen
+    -- to die.  bot_score.py divides it by the enemy's own count (privileged, offline only).
+    local belN, belMv = 0, 0
+    for uid, k in pairs(known) do
+        if f - k.last > MEMORY_FRAMES then known[uid] = nil
+        else belN, belMv = belN + 1, belMv + k.mv end
+    end
+    local leads = {}
+    for i = 1, #arrivals.leads do leads[i] = arrivals.leads[i] end
+    table.sort(leads)
+    local fr = freshness(f)
     emit("intel", f, string.format(
         "vis_n=%d vis_mv=%.0f vis_air=%d vis_air_mv=%.0f vis_ground=%d vis_nuke=%d vis_lrpc=%d "
         .. "near_base=%d closest=%.0f first_seen=%d los_frac=%.3f radar_frac=%.3f explored_frac=%.3f "
-        .. "blip_n=%d blip_moving=%d blip_cands_avg=%.1f",
+        .. "blip_n=%d blip_moving=%d blip_cands_avg=%.1f "
+        .. "fresh_home=%.3f fresh_corridor=%.3f fresh_enemy=%.3f fresh_mex=%.3f "
+        .. "believed_n=%d believed_mv=%.0f arrivals_n=%d arrivals_warned_n=%d lead_med=%d",
         visN, visMv, visAir, visAirMv, visGnd, visNuke, visLrpc, near, closest, firstSeenEnemy,
-        losFrac, radarFrac, exploredFrac, bN, bMove, bCandN > 0 and bCand / bCandN or 0))
+        losFrac, radarFrac, exploredFrac, bN, bMove, bCandN > 0 and bCand / bCandN or 0,
+        fr("home"), fr("corridor"), fr("enemy"), fr("mex"),
+        belN, belMv, arrivals.n, arrivals.warned, #leads > 0 and leads[math.ceil(#leads / 2)] or 0))
 end
 
 local function snapshotCombat(f)
@@ -872,13 +1362,15 @@ local function snapshotCombat(f)
         .. "lost_enemy_army_n=%d lost_enemy_army_mv=%.0f "
         .. "lost_dist_base=%.0f lost_cons=%d lost_to_air=%d cons_alive=%d "
         .. "pm_deaths=%d pm_isolated=%d pm_support_avg=%.1f "
-        .. "kills_seen_n=%d kills_seen_mv=%.0f dmg_dealt=%.0f dmg_recv=%.0f killers=%s",
+        .. "kills_seen_n=%d kills_seen_mv=%.0f dmg_dealt=%.0f dmg_recv=%.0f "
+        .. "lost_unseen_n=%d lost_unseen_mv=%.0f lost_noattr_n=%d lost_noattr_mv=%.0f killers=%s",
         lost.n, lost.mv, lost.army_n, lost.army_mv, lost.eco_n, lost.eco_mv,
         lost.enemy_n, lost.enemy_mv, lost.enemy_eco_n, lost.enemy_eco_mv,
         lost.enemy_army_n, lost.enemy_army_mv,
         lost.n > 0 and lost.distSum / lost.n or 0, lost.cons, lost.byAir, conAlive,
         pm.n, pm.iso, pm.n > 0 and pm.support / pm.n or 0,
         kills.n, kills.mv, s.damageDealt or 0, s.damageReceived or 0,
+        lost.unseen_n, lost.unseen_mv, lost.noattr_n, lost.noattr_mv,
         #top > 0 and table.concat(top, ",") or "-"))
 end
 
@@ -895,7 +1387,7 @@ function widget:GameFrame(n)
         safe("probe", probeEconomy)
         safe("threats", scanThreats, n)
     end
-    if n % LOS_EVERY == 0 then safe("coverage", scanCoverage) end
+    if n % LOS_EVERY == 0 then safe("coverage", scanCoverage, n) end
     if n > 0 and n % SAMPLE_EVERY == 0 then
         safe("eco", snapshotEco, n)
         safe("units", snapshotUnits, n)

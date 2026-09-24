@@ -57,8 +57,13 @@ python bot_testing.py --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay
 - `--server spectator|host` — default `spectator`: a third, bot-less headless process hosts so
   both bots get the same order latency. `host` is the old layout (team 0 hosts) and gives team 1
   several game-seconds of extra lag at high speed — see `knowledge/lessons_learned.md`
-- `--speed` — sim speed multiplier (default 10). Order latency in game frames scales with it:
-  ~20 frames at 10x, ~40 at 20x, for both teams. The result prints an `Order latency` block
+- `--speed auto|N` — default `auto`: the spectator host's Speed Governor moves the speed between
+  `--min-speed` (2) and `--max-speed` (40) to hold the bots' order round trip near `--target-lag`
+  (30 frames). In a DRAGON_BOT mirror that is ~11x early, ~7x by 8 min, ~2x by 10 min as the sim
+  gets heavier. A number pins the speed (lag then grows with it: ~20 frames at 10x, ~40 at 20x,
+  and the bots fall behind once the sim can't keep up). The result prints `Order latency` and
+  `Game speed` blocks
+- `--profile` — logs `[PROF]` lines: per-widget Lua milliseconds per game-minute on each bot process
 - `--save-replay` — saves a `.sdfz` replay to BAR's demos folder
 
 ### Via Tailscale (recommended)
@@ -146,7 +151,16 @@ weaknesses:
 - **Threat response:** `first_enemy_seen`, `first_enemy_near_base` (with `warned_dist`/`lead_frames`),
   `first_damage_taken`, `first_army`, `first_defense`, `first_aa` (dedicated AA only), and how much
   of the army/defence can hit air (`*_hits_air`, `aa_dedicated`) or ground.
-- **Awareness:** `los_frac`, `radar_frac`, `explored_frac` (share of the map ever seen).
+- **Awareness:** `los_frac`, `radar_frac`, `explored_frac` (share of the map ever seen);
+  `fresh_home/corridor/enemy/mex` (age-weighted, by zone), `believed_mv` (remembered enemy),
+  `arrivals_n`/`arrivals_warned_n`/`lead_med`, `lost_unseen_*`. Enemies are found with
+  `GetAllUnits()`; `GetVisibleUnits` is camera-culled, so intel in results before 2026-09-23 is blind.
+- **Ability to act:** `fac_bp`, `fac_bp_open`, `fac_bp_useful` (lab support BP capped per
+  game_mechanics 2.5), `mob_bp`, `nano_idle_bp`, `army_em`, `army_m_per_bp`, `build_sites`,
+  `ground_fac`/`fac_exit_ok` (path out of each ground lab), `stuck_units`, `air_trans`, `max_tech`;
+  `fac_boxed` event. Eco row: `metal_pull_avg`/`energy_pull_avg`/`*_inc_avg` (interval averages).
+- **Roles and home defence:** `home_guard_gnd_mv`/`home_guard_air_mv` (armed value near base),
+  `rez`, `util_intel` (mobile radar/jammer).
 - **Attrition:** `cons_alive`, `lost_cons`, `cons_all_dead`/`cons_restored` events, `lost_enemy_*`
   (enemy-attributed losses; `lost_*` also counts the bot's own reclaims), `killers=`, `lost_to_air`.
 - **Engagement shape:** `pm_deaths`/`pm_isolated`/`pm_support_avg` (did our units die alone?),
@@ -185,9 +199,14 @@ is passed as `--bot1` (slot 0) — large enough that a bot beats *itself* from s
 python ab_test.py --bot-a candidates/MY_BOT --bot-b pool/bots/champion_v1
 ```
 
-It runs each slot order three times and only calls a winner when the two bots' runs do not
-overlap at all. **`NO DIFFERENCE DEMONSTRATED` is the normal honest outcome** — log it as
-that, not as a narrow win or regression.
+It runs one match per slot order by default (`--repeat N` for more) and compares the bots
+**within each match** (A value / B value), which cancels match-wide swings; the geometric
+mean over both slot orders cancels the slot bias. A winner must lead in every match and clear
+~2σ of the paired noise: ×1.15 at one match per slot, ×1.08 at three (`PAIR_LOG_SD`,
+re-measure as A/Bs accumulate). One match per slot catches ~15% effects and breakages; raise
+`--repeat` for smaller effects or when ranking several bots. Also check the mechanism directly
+(the log line or tracker field the change should move). **`NO DIFFERENCE DEMONSTRATED` is the
+normal honest outcome** — log it as that, not as a narrow win or regression.
 
 Two separately measured reasons a single match proves nothing: the slot-0 advantage above,
 and run-to-run noise between byte-identical bots.
@@ -207,13 +226,43 @@ a result is ambiguous.
 - Each team's numbers must be read from its own process — team 0 from P0, team 1 from P1.
   `fullview=1` does not give cross-team visibility in headless.
 - If a team built 0 units, the bot crashed or failed to connect.
-- Game runs at 10x by default (300 frames/s real); `--speed 100` was the old setting and reached
-  ~1500-2000 frames/s on this PC, but with one-sided order latency (see `--server`).
+- Game speed is automatic by default (see `--speed`); `--speed 100` was the old setting and reached
+  ~1500-2000 frames/s early on this PC, but with one-sided order latency (see `--server`).
 - Lua errors mentioning `gui_pip.lua` / `CreateShader` are BAR's own stock widget failing
   headless. They appear in every run and are harmless.
 
 Everything in `knowledge/strategy_log.jsonl` logged before 2026-09-18 was measured under a
 broken harness and is void — see the top of `knowledge/lessons_learned.md`.
+
+### State-value score (`bot_score.py`, report only)
+
+`python bot_score.py result.json [--detail FRAME] [--ref other.json:TEAM]` estimates how strong
+each side's position is (phi, in metal-equivalents) at checkpoints. It breaks the score down into
+materiel, economy, **ability to act** (the scarcest of metal, energy and build power, and names
+that binding constraint), exposure and awareness. It is computed from the tracker rows, so old
+results can be re-scored; weights live in `score_config.json`. `bot_testing.py` prints it and saves
+it as `result["phi"]`, and `ab_test.py --metric phi` compares on it. It does **not** decide
+winners yet. `score_eval.py <results...>` checks it against real outcomes and mirror-match noise;
+the rationale and validation log are in `knowledge/scoring.md`. Update that log whenever the
+weights change.
+
+### Replays (`--save-replay` + `replay_analysis.py`)
+
+A saved replay records **both** teams from the engine's own team statistics, so it is the one
+place to see each side's numbers from a single source (each process's logs only see its own
+team). The harness prints the path (`Replay saved: ...data\demos\<name>.sdfz`).
+
+```powershell
+python replay_analysis.py "<path>.sdfz" --no-history        # text report, both teams
+python replay_analysis.py "<path>.sdfz" --no-history --json # full analysis as JSON
+```
+
+Omit `--no-history` to also append a record to `knowledge/replay_history.jsonl`. It reports per team:
+metal/energy produced, energy wasted, peak income, units produced/lost/killed, damage
+dealt/received, first combat contact, and checkpoints at 120/240/450/600 s of game time. Needs
+Node.js and `npm install sdfz-demo-parser` (already installed in this repo), and a match
+that ended cleanly (a killed process leaves a 0-byte `.sdfz`). Its "Duration" line is not the
+game length; use the checkpoints.
 
 ## Deploying changes
 
@@ -232,6 +281,8 @@ MetalBot/
   bot_testing.py       — test harness (single match; rarely what you want directly)
   ab_test.py           — CORRECT way to compare two bots: both slot orders, frame-18000 metric
   find_weakness.py     — ranks likely weaknesses from a result's tracker_timeline
+  bot_score.py         — state value phi per team per checkpoint (config: score_config.json)
+  score_eval.py        — does phi predict winners? noise in mirrors; weight fitting
   replay_analysis.py   — economy/combat telemetry from a .sdfz replay (needs a clean game-end)
   build_order_sim.py   — beam-search opening optimizer; modes incl. max_rate and config-driven
                           `raid` (raid_configs/*.json: unit milestones, required/weight)

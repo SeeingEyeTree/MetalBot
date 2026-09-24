@@ -5,6 +5,83 @@ New entries go at the top so the most recent observations appear first in the ag
 
 ---
 
+## Ground armor needs its own farm and its own orders; the army must attack, not hold (2026-09-24)
+
+27-min DRAGON_BOT vs RAIDER_BOT showed what the <20-min tests could not: the baseline floated
+50-159k metal from 15:00 (structures filled ~1600 of the 2000-unit cap), fielded only air, and
+its one `corvp` was walled in by the mex lattice (16-elmo gaps, a Tiger is 48 wide -- the whole
+lattice is a wall to ground units). It lost the commander at ~26 min to RAIDER's Dragon swarm.
+
+- **`correap` is the "Tiger"** (690 m, from `coravp`, 600 BP). `corftiger` is a scav-boss unit,
+  not buildable. Only `corcv`/`coracv`/`corch`/`cormuskrat` can place a `coravp`; `corca` (air con)
+  can place `corvp` and nanos anywhere, so a farm is: air cons place a seed `corvp` + nanos, the
+  seed makes `corcv`, which place the `coravp`. Farms live outside the lattice beside a reserved
+  lane (`armor_controller.lua`); cells are reserved by writing the macro's `assignedAnchors`.
+- **BAR gives every new constructor a GUARD on its factory.** An "is it idle?" check on such a
+  unit never passes; treat "empty queue or first command GUARD" as idle.
+- **Units made while the eco compounds only slow it** (user): the farms are built early (capacity)
+  but production waits for 15:00 or a >=45% metal bank.
+- **Line units held near home** (nodes freeze whenever an enemy is within 600 elmos). From 6:30
+  every line unit now attack-moves onto a ring around the enemy base. Against RAIDER_BOT this took
+  commander kills from 26:03 (or none) to 13:41 / 15:24, both slot orders.
+- Evidence is single matches vs the air exploiter fixture, not an `ab_test.py` verdict. phi at
+  20:00 ranked the baseline higher (402k vs 178k) while the candidate won: phi rewards a bigger
+  economy and does not see attack tempo.
+
+## Compare bots within a match, not across matches (2026-09-24)
+
+Most run-to-run noise is shared by both teams in a match. In one A/B, match 1 came out ~15%
+richer than match 2 for *both* bots. `ab_test.py` now judges on the within-match ratio
+(A value / B value), takes the geometric mean over both slot orders to cancel the slot bias,
+and defaults to one match per slot. The within-match ratio isn't noise-free: over 8 matches
+with no real effect its log sd was ~0.10 (same condition ranged 0.877–1.208), so the bar is
+~2σ: ×1.15 at one match per slot, ×1.08 at three. Mirrors alone looked tighter (1.2–9.9%,
+slot 0 ahead every time); four mirrors are too few to set a bar with.
+
+Two DRAGON_BOT changes tested this way (energy look-ahead, air-con reserve) both moved their
+mechanism clearly and army value at 8:00 not at all. Details in `knowledge/scoring.md` and
+`strategy_log.jsonl`. Both were kept at the author's decision.
+
+## The stats tracker was blind to enemies: GetVisibleUnits is camera-culled (2026-09-23)
+
+`metalbot_stats_tracker.lua` found enemies with `Spring.GetVisibleUnits`, which returns units
+in the **camera's** view. Headless processes have no real camera. In all 6 saved matches with
+tracker data, a snapshot saw at most 1 enemy and never a radar blip, even while the same
+process lost up to 30 units to named killers. Fixed by using `GetAllUnits()` + an ally check
+(what `threat_map.lua` and the bots already do). A DRAGON mirror now sees up to 28 enemies in a
+snapshot. **Every `vis_*` field and `first_enemy_*` event in older results is close to blind.**
+So are the find_weakness detectors that read them (late_scouting, no_early_warning,
+radar_warning_unused, the sighting half of no_counter_air). Don't use `GetVisibleUnits` for
+game logic.
+
+Found while building the state-value score (`bot_score.py`, `knowledge/scoring.md`). The same
+work showed DRAGON_BOT's only ground lab (`corvp`) walled in by nanos around 8:30–9:00, after
+which build power becomes the bottleneck (`fac_boxed` event, `production_reach` 0.5).
+
+## Speed follows the sim now; where the frame time actually goes (2026-09-23)
+
+A fixed 10x let the bots fall behind once a match got big: at ~600 units a side each bot
+process only sims ~130 frames/s (~4.3x), so latency climbed to 150–450 frames in the last
+minutes. `--speed auto` (default) adds a Speed Governor on the spectator host that steers the
+speed (2x–40x) to hold the bots' order round trip near 30 frames. It reads the latency probe's
+messages every 15 frames and adjusts every 0.25 real seconds; the engine's own speed control
+only runs every 2 real seconds. DRAGON_BOT mirror, 11 min: ~20 frames for both teams the whole
+way, speed ~11x → 7x → 2x.
+
+`--profile` breakdown at ~600 units a side (per sim frame): engine + BAR gadgets ~88%, bot
+widgets ~6% (macro controller ~0.35 ms per 10-frame tick, growing about linearly with unit
+count), **BAR's stock UI widgets ~5%** (AdvPlayersList, Reclaim Field Highlight, Grid menu,
+Top Bar... all running headless for nothing). A static pass over the bot Lua found no
+superlinear hot paths: `blueprint_placer.ComputeBlockers` is O(n³) in name but runs once per
+game over a few dozen items. The worst scaling ones are O(incidents × whole team):
+`threat_map.ProductionUrgency` → `AvailableStrength` walks every owned unit (structures
+included) per incident, every 30 frames, and `OnDamaged` scans all contacts per hit when the
+attacker is unknown. Both are small today; they're the first to fix if the profile ever
+shows `Unit_Controller` climbing.
+
+Stock widgets that give orders — **Auto Repair Idle Builders, Clean Builder Queue** — also run
+on both bot processes and touch the bots' units. Not changed yet.
+
 ## Team 1's order latency was a harness artifact; fixed without touching bots (2026-09-23)
 
 The client-side latency behind `d5501fd` and the lab-controller grace period was measured

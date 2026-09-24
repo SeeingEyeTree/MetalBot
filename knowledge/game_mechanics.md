@@ -1,6 +1,6 @@
 # Beyond All Reason — Game Mechanics Reference
 
-This document exists so that an agent working on MetalBot understands *why* the code does what it does, not just *what* it does. It was compiled by interviewing Tree (the project owner) directly, plus his written notes (`Bar notes.pdf`). Treat it as ground truth over any prior assumptions about RTS games in general — BAR (and the Spring engine it runs on) has specific mechanics that don't match other RTS games.
+This document exists so that an agent working on MetalBot understands *why* the code does what it does, not just *what* it does. It was compiled by interviewing Tree (the project owner) directly, plus Tree's written notes (`Bar notes.pdf`). Treat it as ground truth over any prior assumptions about RTS games in general — BAR (and the Spring engine it runs on) has specific mechanics that don't match other RTS games.
 
 **Scope note:** this bot currently targets one specific map — a flat, symmetric, full metal-plate map, 1v1 only, Cortex faction. Several sections below describe map-specific simplifications (no terrain, no naval, uniform mex value) that would not hold on a different map. Where that matters, it's called out.
 
@@ -72,7 +72,7 @@ There is **no functional difference** between a builder that "owns" a job (place
 
 ### 2.3 Cost-effectiveness reference (Cortex, ballpark)
 
-| Unit | Metal | Energy | BP | Total cost (M + E×70) | BP per cost |
+| Unit | Metal | Energy | BP | Total cost (M + E/70) | BP per cost |
 |---|---:|---:|---:|---:|---:|
 | Nano turret (conturet) | 230 | 3200 | 200 | 276 | 0.725 |
 | Con turret + 0.3× air transport | 252.2 | 3635 | 200 | 304 | 0.658 |
@@ -80,7 +80,7 @@ There is **no functional difference** between a builder that "owns" a job (place
 | Cor vec (mobile vehicle con) | 145 | 2100 | 95 | 175 | 0.543 |
 | Cor air (mobile air con) | 115 | 2200 | 65 | 146 | 0.445 |
 
-"Total cost" here uses the simplified conversion **metal + energy×70** to make M/E comparable in one number. The "+0.3× air transport" row approximates the real cost of a nano once you account for likely needing to relocate it at some point. Nanos are clearly the most BP-efficient, at the cost of needing transport logistics to reposition. Exact numbers for any unit can be pulled from the local Beyond-All-Reason-project repo (`C:\Users\malco\OneDrive\Documents\GitHub\Beyond-All-Reason-project\units`) if more precision is ever needed.
+"Total cost" here uses the simplified conversion **metal + energy/70** to make M/E comparable in one number. The "+0.3× air transport" row approximates the real cost of a nano once you account for likely needing to relocate it at some point. Nanos are clearly the most BP-efficient, at the cost of needing transport logistics to reposition. Exact numbers for any unit can be pulled from the local Beyond-All-Reason-project repo (`C:\Users\malco\OneDrive\Documents\GitHub\Beyond-All-Reason-project\units`) if more precision is ever needed.
 
 ### 2.4 The mex-grid / blueprint system
 
@@ -99,72 +99,6 @@ Factories have their own internal BP for producing units, but need external BP s
 ### 2.6 Build range and line of sight
 
 **Line of sight does not matter for building.** A builder can place or assist construction anywhere within its build range, including in fog of war. (Elevation-based sight-blocking exists in the engine but is irrelevant on this map, since it's flat.)
-
-### 2.7 Issuing build orders from a widget
-
-All three verified in headless test runs on 2026-09-20, each after it had already cost a
-diagnostic match to find:
-
-- **Build orders take the building's CENTRE**, and `UnitDef.xsize` / `zsize` count 8-elmo
-  half-cells, so footprint elmos = `xsize * 8` (`corwin` xsize=6 = 48 elmos = 3 cells;
-  `corlab` xsize=12 = 96 elmos). An odd-footprint building's centre therefore sits at
-  `8 mod 16`, not on the 16-grid — placing it on the grid makes the engine snap it.
-- **While a builder walks to the site, the engine pushes a MOVE (`CMD.MOVE` = 10) command
-  in FRONT of the build order.** So `Spring.GetUnitCommands(uid, 1)` returns the move, not
-  the build. Checking only `cmds[1]` reads as "the order was dropped" for the entire walk —
-  scan the first few commands instead.
-- **An abandoned nanoframe decays and dies**, taking the metal already spent on it with it.
-  Anything that makes a builder walk away from a partly-built frame (a skip, a re-claim, a
-  replaced order) must leave something else able to finish it, or that metal is simply lost.
-- **Build alignment depends on footprint parity.** An even footprint (4x4 mex) centres on a
-  multiple of 16; an odd one (3x3 wind) centres on a multiple of 16 **plus 8**. Snapping
-  everything to a plain multiple of 16 puts odd-footprint buildings half a cell out, which
-  overlaps a neighbour and leaves holes in a grid. `Spring.Pos2BuildPos(defID, x, y, z)` is
-  the engine's own answer and should be preferred to any arithmetic.
-- **A factory's auto-guard order on a new unit arrives AFTER `UnitFinished`.** A single
-  `CMD_STOP` in that callback is overwritten, and the unit sits assisting the factory
-  forever, permanently "busy". Stop it again on a short delay and/or in `UnitFromFactory`.
-- **Lua 5.1 allows a function at most 60 UPVALUES**, and every file-level local a
-  function mentions is one of them. A widget that crosses the line does not error at
-  runtime — it silently fails to load, with only a line in `infolog.txt`:
-  `Failed to load: x.lua (...: function at line N has more than 60 upvalues)`. A big
-  `GameFrame` that touches most of the file's state hits this eventually; the fix is to
-  split it into per-concern functions, since each one then gets its own budget. (The
-  separate 200-*locals*-per-chunk limit is a different ceiling and is rarely the one hit
-  first.) Note `luac`/Lua 5.4+ allow 255 upvalues, so a syntax check on a newer Lua will
-  NOT catch this.
-- **The engine only writes a replay's footer on a clean shutdown.** A match killed by a
-  wall-clock deadline leaves a 0-byte `.sdfz` that no parser can read, and
-  `replay_analysis.py` reports `Duration: 0s`. End matches by a *game frame* trigger (both
-  sides self-destruct their commander symmetrically) and give the process time to quit.
-  Note `os.clock()` in a widget is CPU time, not wall time, so clock-based deadlines drift
-  per process and are not symmetric. This also happens on an ABRUPTLY-CLOSED local client
-  session (not just a headless wall-clock kill): the file need not be near-empty — one
-  observed case was 826 KB with a genuine ~5 MB packet stream inside — but
-  `durationMs`/`numPlayers`/`numTeams`/`teamStatSize` in the footer are all zero, so
-  `replay_analysis.py` has nothing to read even though the game was real. Only a proper
-  end-of-game/quit flow writes usable stats; there is currently no fallback that
-  reconstructs them from the raw packet stream.
-- **`Spring.GetUnitCommands()` can lag well behind an order that has actually landed, and
-  the lag is asymmetric between the match HOST and a connecting CLIENT.** In
-  `bot_testing.py`, team 0 runs as the host and team 1 connects as a player; querying a
-  just-issued order's presence in `Spring.GetUnitCommands()` is near-instant for the host's
-  own units but can take several real seconds on the client side. `blueprint_placer.lua`
-  polls this to confirm a build order landed before trusting it (`ORDER_GRACE_FRAMES`,
-  historically 30 frames / 1s, tuned against host-side behaviour); on the client side the
-  order had genuinely landed — the building completed moments later regardless — but the
-  query still read empty at the 30-frame check, so the code judged it dropped and
-  re-tasked the builder onto a different item, abandoning a real, in-progress structure.
-  Measured on one match: team 0 (host) 0 skips in 4 minutes, team 1 (client) 26, same code,
-  same conditions. Fixed by raising the grace period (90 frames) and, more importantly, by
-  never depending on a single poll being timely at all: every distributed builder is now
-  given a second, shift-queued order the moment the first is issued, refilled every time
-  the active order changes — so a slow confirmation matters far less, since the builder
-  always has real engine-side work queued regardless of what the query currently shows.
-  Post-fix: 2 skips instead of 26. See `knowledge/lessons_learned.md` "Client-side order
-  latency" for the full trace. This is a harness/engine-interaction fact, not specific to
-  any one bot, and headless-localhost latency may understate what a real (non-localhost)
-  multiplayer match would show.
 
 ---
 
@@ -243,88 +177,11 @@ Micro is explicitly **not the current priority** — correct unit composition an
 
 Needs a standing **baseline** at all times (getting caught with zero AA against a bomber run is just an instant loss), scaling up **reactively** once the enemy is seen investing in air. The right baseline/reactive balance is something to tune empirically through actual test games rather than derive analytically.
 
-**There are only two working shapes of air defence, and the choice is forced by speed.** Air moves far faster than ground, so the attacker picks the target and you do not get to reposition ground-speed defences in time. That leaves:
-
-- **Enough static AA to cover everything you care about** — every mex grid, lab and the commander. This scales with the number of things worth protecting, not with the size of the threat, so it gets expensive fast on a spread-out economy.
-- **Enough fighters to respond** — a mobile reserve that can reach any threatened point because it travels at air speed too.
-
-A little of each is the failure case: too few static guns to cover the map and too few fighters to intercept. Pick a lane and fund it properly. (DRAGON_BOT's current answer is fighters — see the plan — because it already has an air lab and no spare build power for a static net.)
-
-Relevant measured speeds (§7.4a): `corveng` fighter **297.6**, `corshad` bomber **234.0**, vs `corgator` ground **85.0**. A ground unit is roughly a third the speed of the thing attacking it.
-
 ### 7.4 Combat model notes
 
-- Combat is mostly HP vs. DPS, range, and speed, with one exception the author has confirmed: **some units do different damage to air targets** (anti-air weapons carry their own air damage). So a unit can be strong or weak against air independent of its ground stats. The exact rules are not verified against the unit definitions.
+- No damage types or armor classes exist in this game — combat is fundamentally HP vs. DPS, range, and speed.
 - **Flanking damage** is real: a unit hit from multiple directions in quick succession takes multiplied damage (roughly up to ~2×, exact values unconfirmed). Not a current priority to model explicitly, but worth knowing it exists.
 - Terrain does not affect combat on this map (see §6).
-
-### 7.4a Measured unit stats (read from UnitDefs, 2026-09-22)
-
-The rest of this document had no unit stats at all, which blocked any "can I catch that raider" or "when does the attack land" reasoning. These are read from `UnitDefs` at runtime by `bar_framework/unit_query.lua` and echoed by DRAGON_BOT at frame 0. **Bots should call the helpers, not copy this table** — it is here so humans can reason about matchups.
-
-| unit | lab | role | speed | hits ground | dedicated AA | scout | max range |
-|---|---|---|---|---|---|---|---|
-| `corveng` | air | fighter | 297.6 | **no** | **yes** | no | 680 |
-| `corbw` | air | Shuriken | 280.5 | yes | no | no | 220 |
-| `corshad` | air | bomber | 234.0 | yes | no | no | 1280 |
-| `corape` | air T2 | Wasp | 159.0 | yes | no | no | 410 |
-| `corfav` | `corvp` | fast vehicle | 153.0 | yes | no | **yes** | 180 |
-| `corgator` | `corvp` | Incisor | 85.0 | yes | no | no | 230 |
-| `corraid` | `corvp` | raider | 72.0 | yes | no | no | 350 |
-| `corgarp` | `corvp` | — | 58.5 | yes | no | no | 305 |
-| `cormist` | `corvp` | AA-ish | 52.0 | yes | **no** | no | 700 |
-| `corwolv` | `corvp` | Wolverine | 48.0 | yes | no | no | 710 |
-| `corlevlr` | `corvp` | Leveler | 40.0 | yes | no | no | 315 |
-| `coraak` | `coralab` T2 | AA bot | **34.5** | no | yes | no | 1300 |
-
-Two things the `corvp` roster settles:
-
-- **`corvp` contains no dedicated AA.** `cormist` looks like the mobile AA option but reads `dedicated AA = no` — it can hit ground, so it is not a specialist. This is consistent with the rule above: a vehicle plant does not solve air, fighters or static guns do.
-- **`corfav` is a proper ground scout** (speed 153, flagged scout, nearly the speed of a Wasp). Before this, scouting depended on whatever the air lab happened to offer.
-
-Within `corvp` there is a clean split by speed and range: `corgator`/`corraid` (85/72 speed, 230/350 range) are fast enough to *respond* to a raid, while `corwolv`/`cormist` (48/52 speed, 710/700 range) are long-range and too slow to chase — picket material, not responders.
-
-Two things this immediately settles:
-
-- **`corveng` is real AA** (hits air, cannot hit ground), so fighters are a genuine answer to a bomber raid.
-- **`coraak`, the T2 AA bot, has speed 34.5 and cannot respond to anything.** It appears as the AA pick in the (dead) T2 bot-lab queue, but at ~40% of an Incisor's speed it is a turret that happens to walk. Do not count it as a mobile responder. The T2 bot lab is not a practical early-defence option anyway: ~16k energy for the lab alone at ~3 min, before a single defender exists. DRAGON_BOT uses a T1 vehicle plant (`corvp`) for ground defence instead.
-
-**`hits air` is permissive and mostly meaningless.** A weapon that sets no `onlyTargets` restriction reads as air-capable, which is why nearly everything says yes. The trustworthy test is `dedicated AA` (`UQ.is_dedicated_aa`) — hits air and *cannot* hit ground. This matches the stats tracker's `aa_dedicated`, deliberately, so bot decisions and `[TRK]` numbers cannot disagree.
-
-**Travel time, and why arrival frames must never be hardcoded.** Measured map is **12288 x 12288**; the repo-wide `Game.mapSizeX or 8192` fallback is wrong by 4096 wherever it fires. Recorded cross-position spawns are ~12,968 elmos apart; in-line spawns are ~10,560. Crossing the full cross-position distance takes `corshad` ~1663 frames, `corgator` ~4577. So the same attack lands meaningfully earlier on in-line spawns — ~10s earlier for bombers, ~28s for Incisors. Store the build-time component (spawn-independent) and add `MM.TravelFrames(speed)` at runtime; see `bar_framework/map_model.lua`.
-
-### 7.5 Threats and mechanics the bots do not yet handle
-
-Confirmed by the author (2026-09-21). None of these has a detector or counter in any bot yet; the
-stats tracker records what it can (see `metalbot_stats_tracker.lua`).
-
-- **Nukes and anti-nukes.** Nuclear silos are a real late-game threat, and a bot banking tens of
-  thousands of metal with a clustered production base is a natural target. The counter is an anti-nuke
-  covering the production cluster. Tracked: own `antinuke`, `silo`, `fac_antinuke_cover`; enemy
-  `first_enemy_nuke` / `first_enemy_antinuke` / `vis_nuke`.
-- **Long-range plasma cannons (LRPCs) and the "lol cannon".** Static long-range guns (LRPC-class and
-  the very-long-range "lol cannon") can hit a base from outside its defences and are especially
-  dangerous to a bot with a low unit count. Tracked as a static ground-attack weapon of very long range
-  (`lrpc`, `first_enemy_lrpc`, `vis_lrpc`). Classification is from weapon data and is unverified: check
-  the `[TRK] def` lines.
-- **Cloaked / stealth units (spy bots, skuttles).** They cannot be detected without counter-intrusion
-  equipment. How realistic it is to build detection across a large front is an open question, so this is
-  a **note only**: it is *not* tracked and *not* modelled. A bot that loses units to something it never
-  saw may be losing them to this.
-- **Air has no repair pads or air bases** (they were removed from the game). **Bombers are one-way**:
-  they should never retreat to heal, and their attrition is not itself a weakness. Do not flag it.
-- **Radar blips can be partly identified by speed.** A radar-only contact has no unit type, but if it
-  moves its speed can be measured, and every unit type has a known speed. Several types share a speed,
-  so the honest answer is a list ("either/or") until the unit is seen. The tracker does this
-  (`first_radar_moving`, `blip_*`, and `WG.StatsTracker.DecodeSpeed(speed)` for a bot to call).
-- **Piecemeal engagement and AA coverage** are measured, not just assumed: `pm_*` (were our units
-  alone when they died?), `groups` / `main_share` (is the army in one group?), `fac_aa_cover` /
-  `fac_aa_ded_cover` (do the factories have air cover?), and the `cmdr` row (is the commander alone?).
-
-Hypotheses not yet confirmed by the author (treat as ideas, not facts): nano turrets healing units in
-range could serve as a free repair network; wrecks near the base are free metal (`wreck_metal`); and
-the unit cap may crowd out the army when most of it is economy structures (compare `units_total`
-against `unit_cap` and the per-role counts).
 
 ---
 

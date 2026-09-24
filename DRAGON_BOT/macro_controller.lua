@@ -71,6 +71,12 @@ local AIR_LAB_MIN_NANOS = 2   -- nanos that must cover the air lab's spot
 -- One air con runs a whole grid, so its travel between sites is the bottleneck.
 -- Leave each frame this far along for the grid's nanos to finish, and fly on.
 local GRID_HANDOFF      = 0.30
+-- Air-con reserve.  A new grid opens the moment a neighbour reaches its nano threshold,
+-- but its air con is only queued then, so every grid waited for a con to be built --
+-- 32-74 s for the first four (queued together at 3:56, assigned 4:28-5:09), and the
+-- growth rate is set by exactly this grid-to-grid latency (lessons_learned, "Scaling").
+-- Keeping a couple of cons ready turns that wait into zero for ~110 metal each.
+local AIR_CON_RESERVE   = 2
 
 -- CAPSTONE: the one big building a mex grid is crowned with.  The blueprint asks
 -- for a T2 air lab; any grid can take something else instead, which is how the
@@ -149,6 +155,19 @@ local ARMY_CAP_SLACK  = 1000   -- unit headroom below this -> everything to army
 local NANO_REBALANCE  = 30     -- frames between rebalances
 local NANO_MOVES_MAX  = 4      -- nanos reassigned per rebalance, to avoid thrash
 
+-- Energy look-ahead for the grids.  blueprint_placer's energy interrupt fires once stored
+-- energy is under 17% of storage.  With a ~6k energy storage up by ~3:30 that is too late:
+-- every grid opens with 12 nano turrets before its first wind, four grids start within a
+-- minute, pull outruns income, the storage hides it, and when the interrupt finally fires
+-- the winds cannot catch up.  Measured in four mirror runs: energy-stalled 60-90% of
+-- 5:00-6:00 while 1.4-2.3k metal sat banked.  So the grids' energy check looks ahead: it
+-- fires when stored energy is PROJECTED to cross the same threshold within
+-- ENERGY_LOOKAHEAD seconds at the current (smoothed) net drain.
+local ENERGY_LOOKAHEAD = 30     -- seconds
+local ENERGY_LOW       = 0.17   -- the placer's own threshold (ENERGY_LOW_FRAC)
+local NET_SMOOTH       = 0.1    -- EMA weight per 10-frame resource read (~3 s)
+local GridInterrupts            -- defined next to ReadResources
+
 function widget:GetInfo()
     return {
         name    = "Macro Controller",
@@ -219,6 +238,10 @@ local completedKeys   = {}
 local gridRotation    = {}    -- "x,z" -> rotation the grid was placed with
 local allGridAnchors  = {}    -- every grid ever assigned: {anchorX, anchorZ, key}
 local gridsAssigned   = 0     -- how many grids have been handed to a con
+local airConsOrdered  = 0     -- T1 air cons ordered from the air lab, not yet finished
+local lastReserveOrder = -1e9
+local pendingSince    = {}    -- grid key -> frame it was queued (for the wait log)
+local gridWaitSum, gridWaitN = 0, 0
 local pendingCapstones = {}   -- capstones the grid's own con could not build
 local capstoneJobs    = {}    -- one-item placer states building those
 local UPGRADE_BP      = nil
@@ -498,6 +521,19 @@ end
 local function QueueAirCon()
     if airLabID and spGetUnitDefID(airLabID) and airConDefID then
         spGiveOrderToUnit(airLabID, -airConDefID, {0}, {})
+        airConsOrdered = airConsOrdered + 1
+    end
+end
+
+-- Keep AIR_CON_RESERVE cons beyond what the pending grids need, ready or on order.
+-- Counted from our own orders, not read back from the factory queue: that read lags on
+-- the client process (lab_controller, LAB_ORDER_GRACE).  Off once the unit cap is tight.
+local function KeepAirConReserve()
+    if consolidateOn or not airLabID or not airConDefID then return end
+    if currentFrame - lastReserveOrder < 90 then return end
+    if #freeAirCons + airConsOrdered < #pendingGrids + AIR_CON_RESERVE then
+        QueueAirCon()
+        lastReserveOrder = currentFrame
     end
 end
 
@@ -583,11 +619,18 @@ local function TryAssignGrids()
             spGiveOrderToUnit(conID, CMD_STOP, {}, {})
             local g  = table.remove(pendingGrids, 1)
             local gkey = AnchorKey(g.anchorX, g.anchorZ)
+            if pendingSince[gkey] then
+                local wait = currentFrame - pendingSince[gkey]
+                gridWaitSum, gridWaitN = gridWaitSum + wait, gridWaitN + 1
+                Spring.Echo(string.format("[MC] grid %d at (%d, %d) waited %.1fs for a con "
+                    .. "(mean %.1fs)", gridsAssigned + 1, g.anchorX, g.anchorZ, wait / 30,
+                    gridWaitSum / gridWaitN / 30))
+            end
             gridRotation[gkey] = g.rotation
             allGridAnchors[#allGridAnchors + 1] =
                 {anchorX = g.anchorX, anchorZ = g.anchorZ, key = gkey}
             local st = BP_PLACER.New(MEX_GRID_BP, conID, g.anchorX, g.anchorZ,
-                                     g.rotation, BP_PLACER.GRID_INTERRUPTS)
+                                     g.rotation, GridInterrupts())
             -- The grid's own factory is the last thing built, unless metal is piling
             -- up unspent -- that is what the "float" interrupt is for.
             st.deferFactories  = true
@@ -646,6 +689,7 @@ TryExpand = function()
         if not assignedAnchors[key] then
             assignedAnchors[key] = true
             pendingGrids[#pendingGrids + 1] = r
+            pendingSince[key] = currentFrame
             QueueAirCon()
         end
     end
@@ -674,6 +718,7 @@ local function StartGridExpansion()
         -- the nanos already standing there and goes up in seconds.
         local rot = BP_PLACER.BestRotation(MEX_GRID_BP, ax, az, baseX, baseZ)
         pendingGrids[#pendingGrids + 1] = {anchorX = ax, anchorZ = az, rotation = rot}
+        pendingSince[AnchorKey(ax, az)] = currentFrame
         QueueAirCon()
     end
     if DEBUG then Spring.Echo("[MC] grid expansion started, " .. #pendingGrids .. " cells") end
@@ -919,7 +964,7 @@ TryAssignUpgrades = function()
             spGiveOrderToUnit(conID, CMD_STOP, {}, {})
             local st = BP_PLACER.New(UPGRADE_BP, conID, best.anchorX, best.anchorZ,
                                      gridRotation[bestKey] or 0,
-                                     BP_PLACER.GRID_INTERRUPTS)
+                                     GridInterrupts())
             st.clearBlockers   = true    -- reclaim the mex/winds the fusions need
             -- A retrofit clears exactly what the upgrade layout sits on top of:
             -- the T1 mex it replaces and the corner winds the fusion needs.
@@ -1398,6 +1443,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             freeT2Cons[#freeT2Cons + 1] = unitID
             TryAssignUpgrades()
         else
+            airConsOrdered = math.max(0, airConsOrdered - 1)
             freeAirCons[#freeAirCons + 1] = unitID
             TryAssignGrids()
         end
@@ -1564,6 +1610,7 @@ local function UpdateGrids(frame, resources)
         end
     end
     if #freeAirCons > 0 and #pendingGrids > 0 then TryAssignGrids() end
+    KeepAirConReserve()
 end
 
 local function CheckCapPressure()
@@ -1687,14 +1734,39 @@ local function UpdateCapstones(frame, resources)
     end
 end
 
+local energyNet = nil   -- smoothed energy income - pull, e/s
+
 local function ReadResources()
     local _, m,  ms,  mp, mi = pcall(Spring.GetTeamResources, myTeamID, "metal")
-    local _, em, ems, _,  ei = pcall(Spring.GetTeamResources, myTeamID, "energy")
+    local _, em, ems, ep, ei = pcall(Spring.GetTeamResources, myTeamID, "energy")
+    local net = (ei or 0) - (ep or 0)
+    energyNet = energyNet and (energyNet + NET_SMOOTH * (net - energyNet)) or net
     return {
         metal  = m  or 0, metalStorage  = ms  or 1000,
         energy = em or 0, energyStorage = ems or 1000,
         metalIncome = mi or 0, metalPull = mp or 0,
-        energyIncome = ei or 0,
+        energyIncome = ei or 0, energyPull = ep or 0,
+        energyNet = energyNet,
+    }
+end
+
+-- Grid interrupts: the placer's metal interrupt, and an energy interrupt that fires on the
+-- projected level instead of the current one (see ENERGY_LOOKAHEAD).  Same name and
+-- priority as the placer's, so interrupt episodes behave exactly as before.
+local earlyEnergyChecks = 0   -- checks that fired only because of the look-ahead
+local function EnergyLookahead(state, res, frame)
+    local st = res.energyStorage
+    if not st or st <= 0 then return false end
+    local projected = res.energy + math.min(0, res.energyNet or 0) * ENERGY_LOOKAHEAD
+    local fires = projected / st < ENERGY_LOW
+    if fires and res.energy / st >= ENERGY_LOW then earlyEnergyChecks = earlyEnergyChecks + 1 end
+    return fires
+end
+
+GridInterrupts = function()
+    return {
+        {name = "energy", priority = 2, buildType = "energy", check = EnergyLookahead},
+        BP_PLACER.GRID_INTERRUPTS[2],          -- metal, unchanged
     }
 end
 
@@ -1711,6 +1783,11 @@ function widget:GameFrame(frame)
     if frame % 10 ~= 0 then return end
 
     local resources = ReadResources()
+    if frame % 1800 == 0 and earlyEnergyChecks > 0 then
+        Spring.Echo(string.format("[MC] energy look-ahead: %d grid checks fired early this minute "
+            .. "(net %.0f e/s, stored %.0f)", earlyEnergyChecks, energyNet or 0, resources.energy))
+        earlyEnergyChecks = 0
+    end
 
     -- Retire finished and dead nano assignments first, so freed nanos are
     -- available to everything that asks for one later in this same tick.

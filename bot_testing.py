@@ -75,10 +75,19 @@ SPECTATOR_HOST_NAME = "MatchHost"              # the bot-less host in --server s
 #   host,      speed 10:              2 / 21        <- still one-sided
 #   spectator, speed 20:             40 / 42
 #   spectator, speed 10:             20 / 20
-# "spectator" puts both bots behind the same UDP link, so neither side is favoured, and
-# speed 10 keeps that shared lag at ~0.7 game-seconds. Raise --speed for faster, laggier runs.
-DEFAULT_SERVER   = "spectator"
-DEFAULT_SPEED    = 10
+# "spectator" puts both bots behind the same UDP link, so neither side is favoured.
+# Speed defaults to "auto": SPEED_GOVERNOR_WIDGET moves it between the min and max to hold
+# the bots' round trip near DEFAULT_TARGET_LAG frames, so it slows when the bots' CPU
+# can't keep up instead of letting them fall behind. A number pins the speed instead.
+DEFAULT_SERVER     = "spectator"
+DEFAULT_SPEED      = "auto"
+# Never slower than this, however far behind the bots are. Measured (--profile, DRAGON_BOT
+# mirror, this PC): at ~600 units a side each bot process only sims ~130 frames/s (~4.3x) --
+# ~88% of that frame time is the engine and BAR's gadgets, ~6% the bot widgets, ~5% BAR's
+# stock UI widgets -- so a 5x floor let the bots fall 450 frames behind by 10 minutes.
+DEFAULT_MIN_SPEED  = 2
+DEFAULT_MAX_SPEED  = 40
+DEFAULT_TARGET_LAG = 30     # frames; the network floor alone is ~2 per 1x, so ~15x when idle
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
@@ -103,6 +112,9 @@ class MatchResult:
     end_reason:         "str | None" = None   # "frame" (full length), "wallclock" (cut short), None
     tracker_timeline:   list = field(default_factory=list)  # [TRK] rows from the stats tracker
     order_latency:      dict = field(default_factory=dict)  # {team: {median,opening,worst,windows}} in frames
+    speed_timeline:     list = field(default_factory=list)  # [{frame,speed,lag}] from the Speed Governor
+    threat_log:         list = field(default_factory=list)  # raw [TML] rows (bar_framework/threat_log.lua), own team per process
+    phi:                dict = field(default_factory=dict)  # bot_score.py state value per team per checkpoint (report only)
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -129,6 +141,9 @@ class MatchResult:
             "end_reason":        self.end_reason,
             "tracker_timeline":  self.tracker_timeline,
             "order_latency":     {str(k): v for k, v in self.order_latency.items()},
+            "speed_timeline":    self.speed_timeline,
+            "threat_log":        self.threat_log,
+            "phi":               self.phi,
         }
 
 
@@ -309,6 +324,8 @@ end
 # LuaUI message every 15 frames and logs the round trip, per 30 game-seconds, as
 #   [LAT] team=T frame=F n=N min=.. med=.. p90=.. max=..
 # A bot on a process with a higher figure acts that many frames late on every order.
+# Each message also carries this process's latest round trip ("mblat:<frame>:<rtt>"), which
+# is what the Speed Governor on the hosting process steers by.
 LATENCY_PROBE_WIDGET = r"""
 function widget:GetInfo()
     return { name="Latency Probe", desc="Order round-trip in game frames", layer=0, enabled=true }
@@ -318,6 +335,7 @@ local PREFIX = "mblat:"
 local WINDOW = 900
 local myPlayer, myTeam
 local samples = {}
+local lastRtt = -1
 
 function widget:Initialize()
     myPlayer = Spring.GetMyPlayerID()
@@ -334,20 +352,167 @@ local function Flush(n)
 end
 
 function widget:GameFrame(n)
-    if n % 15 == 0 then Spring.SendLuaUIMsg(PREFIX .. n) end
+    if n % 15 == 0 then Spring.SendLuaUIMsg(PREFIX .. n .. ":" .. lastRtt) end
     if n % WINDOW == 0 and #samples > 0 then Flush(n) end
 end
 
+-- Never returns true: the governor on the same (host) process reads these messages too.
 function widget:RecvLuaMsg(msg, playerID)
     if playerID ~= myPlayer or msg:sub(1, #PREFIX) ~= PREFIX then return end
-    local sent = tonumber(msg:sub(#PREFIX + 1))
-    if sent then samples[#samples + 1] = Spring.GetGameFrame() - sent end
-    return true
+    local sent = tonumber(msg:match("^mblat:(%d+)"))
+    if sent then
+        lastRtt = Spring.GetGameFrame() - sent
+        samples[#samples + 1] = lastRtt
+    end
 end
 """
 
 
-def make_game_end_widget(target_secs: int, do_selfd: bool, speed: float = 100) -> str:
+# --profile: times every other widget's callins on a bot process and logs, per game-minute,
+#   [PROF] frame=F team=T wall_ms=W units=U | <widget>=<ms>/<calls> ...
+# wall_ms is the real time the minute took, so ms/wall_ms is that widget's share of it.
+# Wraps callins on first GameFrame, once every widget has loaded.
+PROFILER_WIDGET = r"""
+function widget:GetInfo()
+    return { name="Harness Profiler", desc="Per-widget callin time", layer=-100000,
+             enabled=true, handler=true }
+end
+
+local CALLINS = { "GameFrame", "Update", "UnitCreated", "UnitFinished", "UnitDestroyed",
+    "UnitDamaged", "UnitIdle", "UnitCommand", "UnitCmdDone", "UnitFromFactory", "UnitGiven",
+    "UnitTaken", "UnitEnteredLos", "UnitLeftLos", "UnitEnteredRadar", "UnitLeftRadar",
+    "RecvLuaMsg", "FeatureCreated", "FeatureDestroyed" }
+local WINDOW = 1800
+local stats = {}          -- name -> {ms, calls}
+local wrapped = false
+local winTimer
+
+local function Wrap()
+    wrapped = true
+    local list = widgetHandler and widgetHandler.widgets or {}
+    for _, w in ipairs(list) do
+        local name = (w.whInfo and w.whInfo.name) or (w.GetInfo and w:GetInfo().name) or "?"
+        if w ~= widget and name ~= "Harness Profiler" then
+            local s = { ms = 0, calls = 0 }
+            stats[name] = s
+            for _, ci in ipairs(CALLINS) do
+                local f = w[ci]
+                if type(f) == "function" then
+                    w[ci] = function(...)
+                        local t = Spring.GetTimer()
+                        local a, b, c, d = f(...)
+                        s.ms = s.ms + Spring.DiffTimers(Spring.GetTimer(), t, true)
+                        s.calls = s.calls + 1
+                        return a, b, c, d
+                    end
+                end
+            end
+        end
+    end
+end
+
+function widget:GameFrame(n)
+    if not wrapped then Wrap(); winTimer = Spring.GetTimer() end
+    if n % WINDOW ~= 0 or n == 0 then return end
+    local now = Spring.GetTimer()
+    local wall = Spring.DiffTimers(now, winTimer, true)
+    winTimer = now
+    local names = {}
+    for name in pairs(stats) do names[#names + 1] = name end
+    table.sort(names, function(a, b) return stats[a].ms > stats[b].ms end)
+    local parts = {}
+    for i = 1, math.min(8, #names) do
+        local s = stats[names[i]]
+        if s.calls > 0 then
+            parts[#parts + 1] = string.format("%s=%.0f/%d", (names[i]:gsub("%s", "_")), s.ms, s.calls)
+        end
+    end
+    local team = Spring.GetMyTeamID()
+    Spring.Echo(string.format("[PROF] frame=%d team=%d wall_ms=%.0f units=%d | %s", n, team,
+        wall, #(Spring.GetTeamUnits(team) or {}), table.concat(parts, " ")))
+    for _, s in pairs(stats) do s.ms, s.calls = 0, 0 end
+end
+"""
+
+
+# Runs on the HOSTING process only (--speed auto). Keeps the bots' order round trip near
+# TARGET frames by moving the game speed between MIN and MAX: every 0.25 real seconds it
+# takes the worst lag any bot reported (its latest round trip, or how far behind the host
+# its latest probe message was sent, whichever is larger) and
+#   - lag > 1.25 x TARGET: cuts speed in proportion (at most halving it per step),
+#   - lag < 0.8 x TARGET: raises it 10%.
+# The lag has a floor of ~2 frames per 1x of speed (the engine's fixed ~33 ms each-way UDP
+# delay, see DEFAULT_SERVER), so TARGET effectively caps the speed even when idle; above
+# that floor, it is the bots' own CPU load that slows the game. The engine's built-in speed
+# control still runs too (every 2 real seconds, CPU-based) and can only slow it further.
+# Logs "[GOV] frame=F speed=S lag=L" every 300 game frames.
+SPEED_GOVERNOR_WIDGET = r"""
+function widget:GetInfo()
+    return { name="Speed Governor", desc="Game speed follows bot lag", layer=0, enabled=true }
+end
+
+local MIN_SPEED, MAX_SPEED, TARGET = __MIN__, __MAX__, __TARGET__
+local INTERVAL = 0.25
+local speed = MIN_SPEED
+local worst = 0
+local bots = {}
+local timer
+local lastLog = -1e9
+
+local function SetSpeed(s)
+    -- Order matters: the server raises setmaxspeed to at least the current minimum and
+    -- lowers setminspeed to at most the current maximum. Pinning both = the speed.
+    if s < speed then
+        Spring.SendCommands("setminspeed " .. s, "setmaxspeed " .. s)
+    else
+        Spring.SendCommands("setmaxspeed " .. s, "setminspeed " .. s)
+    end
+    speed = s
+end
+
+function widget:GameStart()
+    for _, pid in ipairs(Spring.GetPlayerList() or {}) do
+        local _, _, spec = Spring.GetPlayerInfo(pid, false)
+        if not spec then bots[pid] = true end
+    end
+    SetSpeed(MIN_SPEED)
+    timer = Spring.GetTimer()
+end
+
+function widget:RecvLuaMsg(msg, playerID)
+    if not bots[playerID] then return end
+    local sent, rtt = msg:match("^mblat:(%d+):(%-?%d+)")
+    if not sent then return end
+    local lag = math.max(Spring.GetGameFrame() - tonumber(sent), tonumber(rtt))
+    if lag > worst then worst = lag end
+end
+
+function widget:GameFrame(n)
+    if not timer then return end
+    local now = Spring.GetTimer()
+    if Spring.DiffTimers(now, timer) < INTERVAL then return end
+    timer = now
+    if worst > 0 then
+        local new = speed
+        if worst > TARGET * 1.25 then
+            new = speed * math.max(0.5, TARGET / worst)
+        elseif worst < TARGET * 0.8 then
+            new = speed * 1.1
+        end
+        new = math.floor(math.max(MIN_SPEED, math.min(MAX_SPEED, new)) * 10 + 0.5) / 10
+        if new ~= speed then SetSpeed(new) end
+    end
+    if n - lastLog >= 300 then
+        lastLog = n
+        Spring.Echo(string.format("[GOV] frame=%d speed=%.1f lag=%d", n, speed, worst))
+    end
+    worst = 0
+end
+"""
+
+
+def make_game_end_widget(target_secs: int, do_selfd: bool,
+                         speed: "float | None" = None) -> str:
     """Widget that sets max speed, optionally self-ds the commander, and quits on game over.
 
     target_secs is wall-clock seconds (os.clock), not game-time seconds.
@@ -382,9 +547,10 @@ def make_game_end_widget(target_secs: int, do_selfd: bool, speed: float = 100) -
         "\n"
         "function widget:GameStart()\n"
         "    startTime = os.clock()\n"
-        # Redundant with the minspeed/maxspeed modoptions (see _common_script_body), kept as
-        # a backstop. Only the hosting process is allowed to run these.
-        f"    Spring.SendCommands('setmaxspeed {speed:g}', 'setminspeed {speed:g}')\n"
+        # A fixed speed, sent by the hosting process only (clients are refused). Redundant
+        # with the minspeed/maxspeed modoptions (see _common_script_body); kept as a backstop.
+        + (f"    Spring.SendCommands('setmaxspeed {speed:g}', 'setminspeed {speed:g}')\n"
+           if speed is not None else "") +
         "end\n"
         + selfd +
         "\nfunction widget:GameOver(winners)\n"
@@ -522,11 +688,15 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
 def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
                  include_stats: bool, game_end_target: int, do_selfd: bool,
                  spring_data: str, end_frame: int = END_FRAME,
-                 eco_weight: float = ECO_WEIGHT_SECS, speed: float = 100,
-                 main_core_mask: int = 0) -> list:
+                 eco_weight: float = ECO_WEIGHT_SECS, main_core_mask: int = 0,
+                 fixed_speed: "float | None" = None, governor: "dict | None" = None,
+                 profile: bool = False) -> list:
     """
     Populate one player's write_dir with bot widgets, shared deps, shadow stubs,
     BYAR config, and springsettings.cfg.  Returns list of active widget names.
+
+    Speed control belongs to the hosting process only: pass it fixed_speed (a pinned
+    speed) or governor ({"min", "max", "target"} for SPEED_GOVERNOR_WIDGET), never both.
     """
     widgets_dir = write_dir / "LuaUI" / "Widgets"
     widgets_dir.mkdir(parents=True, exist_ok=True)
@@ -534,7 +704,7 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
     active: list = []
     skip:  set   = set()
 
-    game_end = make_game_end_widget(game_end_target, do_selfd, speed)
+    game_end = make_game_end_widget(game_end_target, do_selfd, fixed_speed)
     (widgets_dir / "headless_game_end.lua").write_text(game_end, encoding="utf-8")
     skip.add("headless_game_end.lua")
     active.append("Game Ender")
@@ -542,6 +712,20 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
     (widgets_dir / "headless_latency_probe.lua").write_text(LATENCY_PROBE_WIDGET, encoding="utf-8")
     skip.add("headless_latency_probe.lua")
     active.append("Latency Probe")
+
+    if governor:
+        (widgets_dir / "headless_speed_governor.lua").write_text(
+            SPEED_GOVERNOR_WIDGET.replace("__MIN__", f"{governor['min']:g}")
+                                 .replace("__MAX__", f"{governor['max']:g}")
+                                 .replace("__TARGET__", f"{governor['target']:g}"),
+            encoding="utf-8")
+        skip.add("headless_speed_governor.lua")
+        active.append("Speed Governor")
+
+    if profile:
+        (widgets_dir / "headless_profiler.lua").write_text(PROFILER_WIDGET, encoding="utf-8")
+        skip.add("headless_profiler.lua")
+        active.append("Harness Profiler")
 
     if include_stats:
         (widgets_dir / "headless_stats.lua").write_text(
@@ -668,9 +852,9 @@ def bot_player_name(bot_dir, slot: int) -> str:
 def render_host_script(player_name: str, game_type: str, map_name: str,
                        save_replay: bool, host_port: int,
                        name0: str = "BotCtrl", name1: str = "BotB",
-                       speed: float = 100, spectator: "str | None" = None) -> str:
+                       speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
     """Start script for the hosting process: P0, or the bot-less spectator host."""
-    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed,
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speeds,
                                spectator)
     return (
         "[GAME]\n{\n"
@@ -681,7 +865,7 @@ def render_host_script(player_name: str, game_type: str, map_name: str,
 
 def _common_script_body(game_type, map_name, save_replay,
                         name0: str = "BotCtrl", name1: str = "BotB",
-                        speed: float = 100, spectator: "str | None" = None) -> str:
+                        speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
     record = "1" if save_replay else "0"
     spec = (f"    [PLAYER2]\n    {{\n        name={spectator};\n        team=0;\n"
             "        spectator=1;\n    }\n") if spectator else ""
@@ -691,11 +875,11 @@ def _common_script_body(game_type, map_name, save_replay,
         f"    RecordDemo={record};\n    GameStartDelay=0;\n"
         "    NoHelperAIs=0;\n\n"
         "    [MODOPTIONS]\n    {\n"
-        # minspeed=maxspeed pins the requested speed: the server clamps its starting speed
-        # into this range, the only way to set it on a dedicated server (which refuses
-        # setminspeed from a non-host client). Speed control can still slow the sim below
-        # it when a client cannot keep up -- it ignores minspeed.
-        f"        deathmode=com;\n        maxspeed={speed:g};\n        minspeed={speed:g};\n"
+        # speeds = (min, max). The server clamps its starting speed into this range, and
+        # the hosting process's setminspeed/setmaxspeed (Game Ender or Speed Governor) move
+        # it within that. Equal values pin the speed. Engine speed control can still slow
+        # the sim below minspeed when a client cannot keep up -- it ignores minspeed.
+        f"        deathmode=com;\n        maxspeed={speeds[1]:g};\n        minspeed={speeds[0]:g};\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"
         "    [ALLYTEAM0] { numallies=0; }\n    [ALLYTEAM1] { numallies=0; }\n\n"
@@ -717,9 +901,9 @@ def _common_script_body(game_type, map_name, save_replay,
 
 def render_dedicated_script(game_type, map_name, save_replay, host_port,
                             name0: str = "BotCtrl", name1: str = "BotB",
-                            speed: float = 100) -> str:
+                            speeds: tuple = (100, 100)) -> str:
     """Startscript for spring-dedicated: the authoritative server, no local player."""
-    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed)
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speeds)
     return (
         "[GAME]\n{\n"
         f"    IsHost=1;\n    HostPort={host_port};\n"
@@ -729,9 +913,9 @@ def render_dedicated_script(game_type, map_name, save_replay, host_port,
 
 def render_player_script(player_name, game_type, map_name, save_replay, host_port,
                          name0: str = "BotCtrl", name1: str = "BotB",
-                         speed: float = 100, spectator: "str | None" = None) -> str:
+                         speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
     """Startscript for a spring-headless client connecting to the host or dedicated server."""
-    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speed,
+    body = _common_script_body(game_type, map_name, save_replay, name0, name1, speeds,
                                spectator)
     return (
         "[GAME]\n{\n"
@@ -853,6 +1037,16 @@ def _parse_tracker(text: str, team: int) -> list:
     return rows
 
 
+def _parse_threat_log(text: str, team: int) -> list:
+    """Raw `[TML] ...` rows for one team, in order, de-duplicated (_read_log doubles lines)."""
+    rows = []
+    for line in text.splitlines():
+        i = line.find("[TML] ")
+        if i >= 0 and f" team={team} " in line:
+            rows.append(line[i:].rstrip())
+    return list(dict.fromkeys(rows))
+
+
 def _parse_sanity(text: str) -> dict:
     result: dict = {}
     for line in text.splitlines():
@@ -925,7 +1119,7 @@ def _dedupe(rows: list) -> list:
 
 
 def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
-                duration_secs: float) -> MatchResult:
+                duration_secs: float, host_text: str = "") -> MatchResult:
     """Build a MatchResult from the raw log text of both headless processes."""
     nc_p0 = _extract_nc(p0_text)
     nc_p1 = _extract_nc(p1_text)
@@ -1011,7 +1205,7 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
                            "finished loading", "[WINNER]", "[END_SCORE]", "[TRK] init", "[SANITY]")
     )]
 
-    return MatchResult(
+    result = MatchResult(
         winner            = game_winner,
         winner_method     = game_method,
         units_built       = nc,
@@ -1037,7 +1231,27 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         # Own-team rows only, each from the process that controls that team.
         tracker_timeline  = _dedupe(_parse_tracker(p0_text, 0) + _parse_tracker(p1_text, 1)),
         order_latency     = {0: _parse_latency(p0_text, 0), 1: _parse_latency(p1_text, 1)},
+        speed_timeline    = _parse_speed(host_text),
+        threat_log        = _parse_threat_log(p0_text, 0) + _parse_threat_log(p1_text, 1),
     )
+    # State value (bot_score.py). Report only: it does NOT decide the winner until it has
+    # been validated against real outcomes (score_eval.py, knowledge/scoring.md).
+    try:
+        import bot_score
+        result.phi = bot_score.phi_summary(result.to_dict())
+    except Exception as ex:          # scoring must never cost a match result
+        result.phi = {"error": repr(ex)}
+    return result
+
+
+_GOV_RE = re.compile(r"\[GOV\] frame=(\d+) speed=([\d.]+) lag=(-?\d+)")
+
+
+def _parse_speed(text: str) -> list:
+    """The Speed Governor's log from the hosting process: [{frame, speed, lag}]."""
+    rows = {int(f): {"frame": int(f), "speed": float(s), "lag": int(l)}
+            for f, s, l in _GOV_RE.findall(text)}   # keyed: _read_log doubles lines
+    return [rows[f] for f in sorted(rows)]
 
 
 _LAT_RE = re.compile(r"\[LAT\] team=(\d+) frame=(\d+) n=\d+ min=-?\d+ med=(-?\d+) "
@@ -1074,8 +1288,12 @@ def run_match(
     end_frame: int = END_FRAME,
     eco_weight: float = ECO_WEIGHT_SECS,
     server: str = DEFAULT_SERVER,
-    speed: float = DEFAULT_SPEED,
+    speed: "float | str" = DEFAULT_SPEED,
     pin_cores: bool = True,
+    min_speed: float = DEFAULT_MIN_SPEED,
+    max_speed: float = DEFAULT_MAX_SPEED,
+    target_lag: float = DEFAULT_TARGET_LAG,
+    profile: bool = False,
 ) -> MatchResult:
     """
     Run a headless bot-vs-bot match and return a structured MatchResult.
@@ -1131,10 +1349,19 @@ def run_match(
     # shutdown (quit + demo write + process exit, up to graceful_stop's 15s wait).
     game_end_target = max(30, duration - 150)
     masks = main_core_masks(3) if pin_cores else [0, 0, 0]
+    # Speed control lives on whichever process hosts (see setup_player).
+    if speed == "auto":
+        speeds = (min_speed, max_speed)
+        host_speed = {"governor": {"min": min_speed, "max": max_speed, "target": target_lag}}
+    else:
+        speeds = (float(speed), float(speed))
+        host_speed = {"fixed_speed": float(speed)}
+    separate = server == "spectator"
     setup_player(p0_dir, bot0_files, 0, "T0", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 eco_weight=eco_weight, spring_data=spring_data, speed=speed,
-                 main_core_mask=masks[0])
+                 eco_weight=eco_weight, spring_data=spring_data,
+                 main_core_mask=masks[0], profile=profile,
+                 **({} if separate else host_speed))
     # do_selfd=False on BOTH players. It used to be True for P1 only, which meant team 1
     # self-destructed its own commander at game_end_target while team 0 never did --
     # with deathmode=com that handed team 0 an automatic "game_over" win in every match
@@ -1143,8 +1370,8 @@ def run_match(
     # The stats widget now ends the match symmetrically at the same deadline instead.
     setup_player(p1_dir, bot1_files, 1, "T1", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                 eco_weight=eco_weight, spring_data=spring_data, speed=speed,
-                 main_core_mask=masks[1])
+                 eco_weight=eco_weight, spring_data=spring_data,
+                 main_core_mask=masks[1], profile=profile)
 
     name0 = bot_player_name(bot0_dir, 0)
     name1 = bot_player_name(bot1_dir, 1)
@@ -1153,27 +1380,26 @@ def run_match(
     # spring-dedicated because the host paces frame creation to its own local client;
     # spring-dedicated has no local client, creates frames on the wall clock, and (tested
     # at speed 100) left both bots thousands of frames behind with nothing to rein it in.
-    separate = server == "spectator"
     spec = SPECTATOR_HOST_NAME if separate else None
     spec_dir = test_dir / "server"
     if separate:
         setup_player(spec_dir, [], 0, "SPEC", include_stats=False,
                      game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
-                     eco_weight=eco_weight, spring_data=spring_data, speed=speed,
-                     main_core_mask=masks[2])
+                     eco_weight=eco_weight, spring_data=spring_data,
+                     main_core_mask=masks[2], **host_speed)
         write_script(spec_dir / "startscript.txt",
             render_host_script(spec, game_type, map_name, save_replay, host_port,
-                               name0, name1, speed, spec))
+                               name0, name1, speeds, spec))
         write_script(p0_dir / "startscript.txt",
             render_player_script(name0, game_type, map_name, save_replay, host_port,
-                                 name0, name1, speed, spec))
+                                 name0, name1, speeds, spec))
     else:
         write_script(p0_dir / "startscript.txt",
             render_host_script(name0, game_type, map_name, save_replay, host_port,
-                               name0, name1, speed))
+                               name0, name1, speeds))
     write_script(p1_dir / "startscript.txt",
         render_player_script(name1, game_type, map_name, save_replay, host_port,
-                             name0, name1, speed, spec))
+                             name0, name1, speeds, spec))
 
     if verbose:
         print("Scripts written.\n")
@@ -1296,10 +1522,12 @@ def run_match(
         elif verbose:
             print("\nWARNING: --save-replay set but no non-empty .sdfz was found.")
 
+    p0_text = _read_log(p0_log)
     return _parse_logs(
-        _read_log(p0_log), _read_log(p1_log),
+        p0_text, _read_log(p1_log),
         Path(bot0_dir).name, Path(bot1_dir).name,
         duration_secs,
+        host_text=_read_log(spec_dir / "headless.log") if separate else p0_text,
     )
 
 
@@ -1338,6 +1566,16 @@ def print_result(result: MatchResult) -> None:
                   f"({ds[f'nc{t}']} units) + eco {ds[f'eco_mv{t}']:.0f} "
                   f"(metal income {ds[f'metal_inc{t}']:.1f}/s)")
 
+    if result.phi and "error" not in result.phi:
+        frames = list(result.phi.get("0", {}))
+        print(f"\nState value phi (bot_score.py v{result.phi.get('config_version')}, report only) "
+              f"at frames {', '.join(frames)}:")
+        for t in (0, 1):
+            vals = ["-" if v is None else f"{v:,}" for v in result.phi.get(str(t), {}).values()]
+            print(f"  Team {t}: " + "  ".join(f"{v:>8}" for v in vals))
+    elif result.phi:
+        print(f"\nState value phi: failed ({result.phi['error']})")
+
     if any(result.order_latency.values()):
         print(f"\nOrder latency (game frames, 30 = 1 game-second; opening = first 4 min):")
         for t in (0, 1):
@@ -1349,6 +1587,11 @@ def print_result(result: MatchResult) -> None:
         if None not in lats and abs(lats[0] - lats[1]) > 10:
             print(f"  WARNING: teams differ by {abs(lats[0] - lats[1])} frames -- "
                   f"the slower side acts later on every order")
+
+    if result.speed_timeline:
+        sp = sorted(r["speed"] for r in result.speed_timeline)
+        print(f"\nGame speed (auto): min {sp[0]:g}x  median {sp[len(sp) // 2]:g}x  "
+              f"max {sp[-1]:g}x")
 
     print(f"\nSanity check (1 game-minute):")
     for t in (0, 1):
@@ -1431,8 +1674,19 @@ def main() -> None:
                    help="spectator: a third, bot-less process hosts, so both bots get the "
                         "same order latency. host: team 0's process hosts, giving team 1 "
                         "extra latency (the old behaviour) (default: %(default)s)")
-    p.add_argument("--speed", type=float, default=DEFAULT_SPEED,
-                   help="game speed multiplier requested from the server (default: %(default)g)")
+    p.add_argument("--speed", default=DEFAULT_SPEED,
+                   type=lambda v: v if v == "auto" else float(v),
+                   help="'auto' (speed follows bot lag, see --target-lag) or a fixed game "
+                        "speed multiplier (default: %(default)s)")
+    p.add_argument("--min-speed", type=float, default=DEFAULT_MIN_SPEED,
+                   help="auto speed never goes below this (default: %(default)g)")
+    p.add_argument("--max-speed", type=float, default=DEFAULT_MAX_SPEED,
+                   help="auto speed never goes above this (default: %(default)g)")
+    p.add_argument("--target-lag", type=float, default=DEFAULT_TARGET_LAG,
+                   help="auto speed aims for this order round trip, in game frames; lower "
+                        "= less lag but slower runs (default: %(default)g)")
+    p.add_argument("--profile", action="store_true",
+                   help="log per-widget Lua time ([PROF] lines) on both bot processes")
     p.add_argument("--no-pin-cores", action="store_true",
                    help="leave main-thread CPU affinity to the engine, which puts every "
                         "process on the same core")
@@ -1460,6 +1714,10 @@ def main() -> None:
         server      = args.server,
         speed       = args.speed,
         pin_cores   = not args.no_pin_cores,
+        min_speed   = args.min_speed,
+        max_speed   = args.max_speed,
+        target_lag  = args.target_lag,
+        profile     = args.profile,
     )
 
     print_result(result)

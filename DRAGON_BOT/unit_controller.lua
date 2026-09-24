@@ -77,6 +77,7 @@ local UQ   = nil   -- bar_framework/unit_query.lua
 local TM   = nil   -- bar_framework/threat_map.lua
 local ARMY = nil   -- bar_framework/army_broker.lua
 local SP   = nil   -- bar_framework/scout_plan.lua
+local TL   = nil   -- bar_framework/threat_log.lua (optional: [TML] rows for threat_map_viz)
 
 -- Frames a unit keeps its node before the line may move it to a different one.
 local LINE_MIN_HOLD  = 300
@@ -851,6 +852,11 @@ function widget:Initialize()
     MM.Init(myTeamID, myAllyID)
     TM.Init{ MM = MM, UQ = UQ, teamID = myTeamID, allyID = myAllyID }
     SP.Init{ MM = MM, UQ = UQ, TM = TM, allyID = myAllyID }
+    local okL, rL = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/threat_log.lua")
+    if okL and rL then
+        TL = rL
+        TL.Init{ TM = TM, UQ = UQ, MM = MM, teamID = myTeamID, allyID = myAllyID }
+    end
 end
 
 -- The commander is seen here rather than in UnitFinished: commanders are builders,
@@ -904,12 +910,16 @@ end
 function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer,
                             weaponDefID, projectileID, attackerID, attackerDefID)
     if not TM or unitTeam ~= myTeamID then return end
+    if TL then TL.OnDamaged(unitID, unitDefID, damage, weaponDefID, projectileID,
+                            attackerID, attackerDefID, Spring.GetGameFrame()) end
     TM.OnDamaged(unitID, unitDefID, damage, weaponDefID, projectileID,
                  attackerID, attackerDefID, Spring.GetGameFrame())
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
     if TM then
+        if TL then TL.OnUnitDestroyed(unitID, unitDefID, teamID == myTeamID,
+                                      Spring.GetGameFrame(), attackerID) end
         TM.OnUnitDestroyed(unitID, unitDefID, teamID == myTeamID,
                            Spring.GetGameFrame(), attackerID)
     end
@@ -1005,6 +1015,7 @@ function widget:GameFrame(frame)
         if frame % 30 == 0 then
             TM.Update(frame)
             EchoThreat(frame)
+            if TL then TL.Frame(frame) end
             -- Published for the other widgets: the lab controller decides whether to
             -- build through the float gate, and the macro whether to pull the
             -- vehicle plant forward.  Read-only for them; only this widget writes it.
