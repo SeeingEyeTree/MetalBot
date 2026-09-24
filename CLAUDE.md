@@ -21,6 +21,10 @@ opening, executed distributed via `blueprint_placer.lua`, then mex-grid scaling 
 (no AA, no ground defence) as early as possible, so `find_bot_weakness` can test threat response
 on demand instead of waiting for an opponent that might raid. Copy `DRAGON_BOT/` as a starting
 point for a new bot; keep exploiter variants in their own folders rather than merging them.
+`MECH_BOT/` is DRAGON_BOT plus the units-and-scouting parts of `knowledge/game_mechanics.md`
+(recon, raiders, rez bots, reactive AA, commander safety, endgame hunt); its new logic lives in
+MECH-only `bar_framework/` modules, so DRAGON_BOT is unchanged. See `MECH_BOT/GOAL.md` for what
+changed and which tracker fields measure it. It has not been run in a real match yet.
 
 ### Key Lua API calls used by bots
 
@@ -292,11 +296,15 @@ MetalBot/
   DRAGON_BOT/          — current main bot: sim-derived opening + mex-grid scaling
   RAIDER_BOT/          — exploiter: air raid (bombers) on an early timer
   GROUND_RAIDER_BOT/   — exploiter: ground raid (Incisors + fighter escort) on an early timer
+  MECH_BOT/            — DRAGON_BOT + game_mechanics units/scouting (see MECH_BOT/GOAL.md)
     macro_controller.lua
     lab_controller.lua
     unit_controller.lua
   blueprint_placer.lua — shared helper (distributed build orders, mex grid expansion)
-  bar_framework/       — shared widgets loaded via VFS.Include (escape_guard, nano_broker, ...)
+  bar_framework/       — shared widgets loaded via VFS.Include (escape_guard, nano_broker, ...);
+                          MECH_BOT only: enemy_intel, recon_plan, raid_group, rez_crew,
+                          endgame, commander_guard
+  tests/               — plain-Lua tests: spring_stub.lua + test_mech_bot.lua (LUA_TESTING.md)
   blueprints/          — blueprint .lua files + the build_order_sim.py results they came from
   raid_configs/        — build_order_sim.py `raid` mode configs
   knowledge/raid_runs/ — saved exploiter-bot match results and analysis

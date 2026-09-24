@@ -45,7 +45,13 @@ $files = @(
     "bar_framework\army_broker.lua",
     "bar_framework\scout_plan.lua",
     "bar_framework\map_model.lua",
-    "bar_framework\threat_log.lua"
+    "bar_framework\threat_log.lua",
+    "bar_framework\enemy_intel.lua",
+    "bar_framework\recon_plan.lua",
+    "bar_framework\raid_group.lua",
+    "bar_framework\rez_crew.lua",
+    "bar_framework\endgame.lua",
+    "bar_framework\commander_guard.lua"
 )
 
 # The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).

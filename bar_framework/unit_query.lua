@@ -122,6 +122,29 @@ function M.max_weapon_range(defID)
     return r
 end
 
+-- A bomber: flies and drops bombs.  Read from the weapon type, with the Cortex/Armada
+-- names as a fallback in case a def reports something unexpected.  Bombers are one-way
+-- strike units -- no repair pads exist in BAR -- so planners treat them apart from the
+-- line and never retreat them.
+local BOMBER_NAMES = { corshad = true, corhurc = true, armthund = true, armpnix = true }
+local bomberCache = {}
+function M.is_bomber(defID)
+    local b = bomberCache[defID]
+    if b ~= nil then return b end
+    b = false
+    local d = defID and UnitDefs[defID]
+    if d and d.canFly then
+        if BOMBER_NAMES[d.name] then b = true end
+        for i = 1, #(d.weapons or {}) do
+            local w  = d.weapons[i]
+            local wd = w and w.weaponDef and WeaponDefs and WeaponDefs[w.weaponDef]
+            if wd and wd.type == "AircraftBomb" then b = true end
+        end
+    end
+    if defID then bomberCache[defID] = b end
+    return b
+end
+
 -- Is this def a scout?  Category and name tests first, then the fallback that
 -- catches anything fast and unarmed.
 function M.is_scout(defID)
