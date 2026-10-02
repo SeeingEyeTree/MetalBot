@@ -2,3 +2,5 @@
 .claude/
 server-hosting/
 __pycache__/
+node_modules/
+candidates/ 

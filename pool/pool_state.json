@@ -1,0 +1,46 @@
+{
+  "max_pool_size": 10,
+  "bots": {
+    "baseline_001": {
+      "elo": 1200.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "matches_played": 0,
+      "created_at": "2026-09-15T00:00:00Z",
+      "parent_id": null,
+      "notes": "Original OK_BOT \u00e2\u20ac\u201d Cortex faction, Full Metal Plate 1.7"
+    },
+    "20260915_143222": {
+      "elo": 1200.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "matches_played": 0,
+      "created_at": "2026-09-16T02:35:57.860066+00:00",
+      "parent_id": null,
+      "notes": ""
+    },
+    "20260915_221208": {
+      "elo": 1200.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "matches_played": 0,
+      "created_at": "2026-09-16T03:07:47.365556+00:00",
+      "parent_id": null,
+      "notes": ""
+    },
+    "20260916_040755": {
+      "elo": 1200.0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "matches_played": 0,
+      "created_at": "2026-09-18T08:17:02.699572+00:00",
+      "parent_id": null,
+      "notes": ""
+    }
+  },
+  "match_history": []
+}

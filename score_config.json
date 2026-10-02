@@ -1,0 +1,63 @@
+{
+  "_doc": "Weights and parameters for bot_score.py. Bump `version` on every change and log why in knowledge/scoring.md: a scored result records the version that produced it. Weight 0 = computed and reported, but not part of phi.",
+  "version": 3,
+  "horizon_s": 60,
+  "checkpoints": [
+    7200,
+    10800,
+    14400,
+    18000
+  ],
+  "signals": {
+    "army_value": {
+      "weight": 1.0
+    },
+    "defense_value": {
+      "weight": 0.5
+    },
+    "army_coherence": {
+      "weight": 1.0
+    },
+    "counter_coverage": {
+      "weight": 1.0
+    },
+    "income_capital": {
+      "weight": 1.0
+    },
+    "energy_stall": {
+      "weight": 0.0
+    },
+    "value_at_risk": {
+      "weight": 1.0
+    }
+  },
+  "params": {
+    "_doc_ability": "Used only when neither the tracker (army_em, army_m_per_bp) nor the team army mix priced from unit_catalog.json gives the figure. Defaults = median T1 ground unit in the catalog.",
+    "army_em_default": 11.5,
+    "m_per_bp_default": 0.064,
+    "surplus_value": 0.25,
+    "cap_ramp": 0.1,
+    "cap_floor": 0.2,
+    "stall_penalty": 0.5,
+    "coherence_floor": 0.7,
+    "coherence_min_army": 10,
+    "coverage_floor": 0.3,
+    "fac_t1_mv": 600,
+    "fac_t2_mv": 3000,
+    "warn_discount": 0.5,
+    "warned_prior": 0.5,
+    "warned_lead_s": 20,
+    "foresight_window_s": 120,
+    "fresh_zone_weights": {
+      "home": 0.4,
+      "corridor": 0.3,
+      "enemy": 0.2,
+      "mex": 0.1
+    },
+    "commander_exposed_p": 0.3,
+    "air_prior": 0.3,
+    "energy_per_metal": 70,
+    "_doc_v2": "v2 (2026-09-24, checked against knowledge/game_mechanics.md): energy_stall weight 0 (1.2: a controlled stall is ideal); income usable = spend_capacity (1.1: all spending is BP x cost/buildtime = pull); army rate caps lab support BP (2.5); AA risk has a prior before enemy air is seen (7.3); commander risk stakes the rest of phi (1.5, 9). See knowledge/scoring.md.",
+    "_doc_v3": "v3 (2026-09-24): everything valued at metal + energy/70 (game_mechanics 2.3): army and defence at full cost; income capital adds the energy the builders use alongside their metal spending (their own E/M mix) / 70. Energy nothing can use counts only at surplus_value."
+  }
+}

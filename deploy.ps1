@@ -1,3 +1,5 @@
+param([string]$Bot = "DRAGON_BOT")
+
 $src = "$PSScriptRoot"
 
 # Locate the BAR data directory, checking common install locations.
@@ -17,7 +19,6 @@ $dst = "$barBase\data\LuaUI\Widgets"
 Write-Host "Deploying to: $dst"
 # do not add new_bot.lua and bot.lua
 $files = @(
-    "macro_controller.lua",
     "blueprint_placer.lua",
     "blueprints_data.lua",
     "blueprints\general\com_starter.lua",
@@ -29,15 +30,49 @@ $files = @(
     "blueprints\general\4AirT2.lua",
     "blueprints\general\fussion_grid_60x60.lua",
     "blueprints\general\mex_grid_t2.lua",
-    "lab_controller.lua",
-    "unit_controller.lua"
+    "blueprints\general\prod_grid_vp.lua",
+    "blueprints\general\build_order_blueprint.lua",
+    "blueprints\general\mex_grid_alab.lua",
+    "blueprints\general\upgrade.lua",
+    "blueprints\general\raider_blueprint.lua",
+    "blueprints\general\ground_raider_blueprint.lua",
+    "metalbot_stats_tracker.lua",
+    "bar_framework\escape_guard.lua",
+    "bar_framework\nano_broker.lua",
+    "bar_framework\resource_utils.lua",
+    "bar_framework\unit_query.lua",
+    "bar_framework\threat_map.lua",
+    "bar_framework\army_broker.lua",
+    "bar_framework\scout_plan.lua",
+    "bar_framework\map_model.lua",
+    "bar_framework\threat_log.lua",
+    "bar_framework\enemy_intel.lua",
+    "bar_framework\recon_plan.lua",
+    "bar_framework\raid_group.lua",
+    "bar_framework\rez_crew.lua",
+    "bar_framework\endgame.lua",
+    "bar_framework\commander_guard.lua"
 )
+
+# The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).
+# An absolute path also works. Shared files above always come from the repo root.
+$botDir = if ([System.IO.Path]::IsPathRooted($Bot)) { $Bot } else { Join-Path $src $Bot }
+if (-not (Test-Path $botDir)) {
+    Write-Error "Bot folder not found: $botDir"
+    exit 1
+}
+Write-Host "Bot: $botDir"
 
 foreach ($f in $files) {
     $target = Join-Path $dst $f
     New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
     Copy-Item (Join-Path $src $f) $target -Force
     Write-Host "Copied $f"
+}
+
+foreach ($f in @("macro_controller.lua", "lab_controller.lua", "unit_controller.lua")) {
+    Copy-Item (Join-Path $botDir $f) (Join-Path $dst $f) -Force
+    Write-Host "Copied $Bot\$f"
 }
 
 Write-Host "`nDone."
