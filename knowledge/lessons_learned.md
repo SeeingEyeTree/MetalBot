@@ -973,3 +973,28 @@ weaknesses of `baseline_001`.
 6. **"Units built" is a weak proxy for quality** — better signals: metal wasted over the
    storage cap, time spent stalled, and actual win/loss by commander kill. Prefer real
    win/loss data as the admission criterion.
+
+
+## Sim "spend" mode: 30k metal spent + 5k army by 7:30 (2026-10-04)
+
+Prompted by a human game vs BARb: 29.0k metal produced / 28.5k used at 7:00 with ~10k m of army,
+against 18.7k produced for SPINE_BOT. `build_order_sim.py --mode spend` asks what the sim's own
+mechanics allow: most metal spent by `--end-time` with at least `--army-metal` of Incisors.
+
+    python build_order_sim.py --mode spend --end-time 450 --beam-width 1000 --spend-switch 90
+
+Result (saved in `blueprints/spend_30k_7m30.json`): **30k spent at 402 s, 5k army at 354 s**, 41k spent
+and 27k army at 450 s. Milestones (time: m/s, spent, produced): 120 s 28 m/s; 240 s 78 m/s, 5.7k spent;
+300 s 135 m/s, 10k; 360 s 189 m/s, 20k spent, 6.4k army; 420 s 34k spent, 35k produced. It uses 79 mex,
+93 wind, 20 nano, 1 bot lab (2 cons, then straight to a vehicle plant), 226 Incisors. The human game's 29k
+produced by 420 s is ~83% of the sim's 34.7k, so the sim is a tight, not wildly optimistic, target.
+
+How it searches: phase 1 is the usual max_rate beam up to `--spend-switch` seconds (income bounds
+spending), phase 2 continues those states ranked by projected spend. A single-score beam did far worse
+(6-15k spent): it never built economy. The switch matters: 60 s -> 18k spent, 90 s -> 41k, 120 s -> 51k
+(but 5k army only at 429 s), 180 s -> 32k, 240 s -> 24k. Choose it by what you need, not by "best".
+
+Caveats: no cap on mex spots (the sim never had one); metal spent is net of reclaim refunds; actions are
+serial with pooled build power, so real parallel factories can do better than the sim's Incisor sink.
+**Sim bug fixed along the way:** `reclaim_vp` never removed the vehicle plant, so it refunded 570 m
+forever; max_units/balanced results before this date were inflated by it.

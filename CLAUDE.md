@@ -288,7 +288,8 @@ MetalBot/
   bot_score.py         — state value phi per team per checkpoint (config: score_config.json)
   score_eval.py        — does phi predict winners? noise in mirrors; weight fitting
   replay_analysis.py   — economy/combat telemetry from a .sdfz replay (needs a clean game-end)
-  build_order_sim.py   — beam-search opening optimizer; modes incl. max_rate and config-driven
+  build_order_sim.py   — beam-search opening optimizer; modes incl. max_rate, `spend` (most metal spent
+                          with an army floor by a deadline) and config-driven
                           `raid` (raid_configs/*.json: unit milestones, required/weight)
   blueprint_gen.py     — turns a build_order_sim.py result into a blueprint .lua + layout image;
                           reserves an exit corridor (M.keepout) for ground-unit factories

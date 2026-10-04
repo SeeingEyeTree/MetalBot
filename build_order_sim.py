@@ -115,6 +115,7 @@ ACTIONS: dict[str, dict] = {
                        req_lab=False, gives_lab=False, gives_con=False,
                        removes_lab=False, metal_refund=570,
                        req_veh_lab=True,  gives_veh_lab=False, gives_incisor=False,
+                       removes_veh_lab=True,
                        area=-(6*6*_U)),  # removes corvp
     'incisor':    dict(metal=120, energy=1100, bp=2300, dm=0.0,  de=0.0,  dbp=0,
                        dmetal_cap=0,   denergy_cap=0,
@@ -152,6 +153,8 @@ ACTIONS.update({
 RAID_MILESTONES: list = []      # [(kind, count, by_seconds, required), ...]
 RAID_MAX: dict = {}             # kind -> most the sim will build (default: largest milestone)
 RAID_WEIGHT = [1.0]             # score = raid_fraction ** weight x metal rate (list: mutable global)
+SPEND_GROWTH = 0.0              # spend mode: credit for mexes still to be built after the switch
+SPEND_SWITCH = [300.0]          # spend mode: before this game-second rank by economy, after by projected spend
 RAID_UNIT_M   = {'scout': 51, 'fighter': 73, 'bomber': 150, 'incisor': 120}
 RAID_UNIT_KINDS = ('scout', 'fighter', 'bomber', 'incisor')
 # The lab action each raid unit needs before it can be built: the air lab makes scouts,
@@ -245,6 +248,8 @@ class GameState:
     built_area:    float = 0.0      # cumulative building footprint in elmos²
     has_air_lab:   bool  = False
     has_air_con:   bool  = False
+    metal_spent:   float = 0.0      # metal committed to finished actions, net of reclaim refunds
+    metal_produced:float = 0.0      # metal income integrated over the run (excludes the 1000 start)
     n_units:       dict  = field(default_factory=dict)   # raid units built, by kind
     unit_times:    dict  = field(default_factory=dict)   # kind -> tuple of finish times
     history:       list  = field(default_factory=list)
@@ -258,6 +263,11 @@ class GameState:
         full_nanos   = int(self.built_area / NANO_COVERAGE)
         active_nanos = max(0, self.nano_count - full_nanos)
         return self.build_power + active_nanos * 200
+
+    @property
+    def army_metal(self) -> int:
+        """Metal value of the mobile, armed units built so far (Incisors only here)."""
+        return self.incisor_count * RAID_UNIT_M['incisor']
 
     # ------------------------------------------------------------------
     def valid_actions(self, mode: str = 'max_rate') -> list[str]:
@@ -293,7 +303,7 @@ class GameState:
                 acts.append('air_con')
             if self.has_veh_lab and self.n_units.get('incisor', 0) < RAID_MAX.get('incisor', 0):
                 acts.append('incisor')
-        if mode in ('max_units', 'balanced'):
+        if mode in ('max_units', 'balanced', 'spend'):
             if not self.has_veh_lab:
                 acts.append('veh_lab')
             if self.has_veh_lab:
@@ -361,6 +371,11 @@ class GameState:
         if new_m < -0.001 or new_e < -0.001:
             return None
 
+        # Bookkeeping for the spend mode: income earned while this action ran, and
+        # the metal it consumed net of reclaim refunds (a reclaimed lab is not spending).
+        s.metal_produced += s.metal_rate * build_time
+        s.metal_spent    += m_cost - a['metal_refund']
+
         # Apply completion effects
         s.time        = end_t
         s.metal_rate  += a['dm']
@@ -413,6 +428,9 @@ class GameState:
             'nano_count_after':     s.nano_count,
             'built_area_after':     round(s.built_area,    0),
             'units_after':          dict(s.n_units),
+            'metal_spent_after':    round(s.metal_spent,   0),
+            'metal_produced_after': round(s.metal_produced, 0),
+            'army_metal_after':     s.army_metal,
         })
 
         return s
@@ -521,6 +539,32 @@ class GameState:
     def score_raid(self, end_time: float, em_ratio: float = 0.0) -> float:
         """Projected metal rate, scaled by how much of the raid force is on time."""
         return (self.raid_fraction(True) ** RAID_WEIGHT[0]) * self.score_max_rate(end_time, em_ratio)
+
+    # ------------------------------------------------------------------
+    def score_spend(self, end_time: float, army_metal: float) -> float:
+        """Projected metal spent by end_time, scaled by how much of the army goal is on track.
+
+        Future spending is assumed to go into Incisors (the sink the sim has), limited by
+        whichever is scarcest: metal available (stored + income, with half credit for
+        mexes yet to be built), build power, or energy."""
+        remaining = max(0.0, end_time - self.time)
+        m_rate = max(self.metal_rate,  0.001)
+        e_rate = max(self.energy_rate, 0.001)
+        bp = self.effective_bp
+        if not self.has_veh_lab:
+            eff_m = min(self.metal, self.metal_cap)
+            eff_e = min(self.energy, self.energy_cap)
+            lab_t = max(570 - eff_m, 0.0) / m_rate
+            lab_t = max(lab_t, max(0.0, 1550 - eff_e) / e_rate, 5650.0 / bp)
+            remaining = max(0.0, remaining - lab_t)
+        mex_time = 1870.0 / bp
+        avail = min(self.metal, self.metal_cap) + m_rate * remaining \
+            + SPEND_GROWTH * 2.37 * remaining ** 2 / (2 * mex_time)
+        cap_bp = remaining * 120.0 * (bp + 150) / 2300.0
+        cap_e  = remaining * e_rate * 120.0 / 1100.0
+        future = min(avail, cap_bp, cap_e)
+        army_frac = min(1.0, (self.army_metal + future) / max(army_metal, 1.0))
+        return (self.metal_spent + future) * (0.5 + 0.5 * army_frac)
 
     # ------------------------------------------------------------------
     def score_time_to_target(self, target_rate: float) -> float:
@@ -652,6 +696,57 @@ class GameState:
 # Beam search
 # ---------------------------------------------------------------------------
 
+def _run_beam(starts, end_time, beam_width, mode, key, freeze_at=None):
+    """Generic beam loop for the spend search.  States whose time reaches `freeze_at` are
+    not expanded further and are returned in the second list (the hand-off pool)."""
+    beam, done, frozen = list(starts), [], []
+    for _ in range(600):
+        cand = []
+        for st in beam:
+            grew = False
+            for act in st.valid_actions(mode=mode):
+                ns = st.apply_action(act)
+                if ns is None or ns.time > end_time:
+                    continue
+                grew = True
+                if freeze_at is not None and ns.time >= freeze_at:
+                    frozen.append(ns)
+                else:
+                    cand.append(ns)
+            if not grew:
+                done.append(st)
+        if not cand:
+            break
+        cand.sort(key=key, reverse=True)
+        beam = cand[:beam_width]
+        if len(frozen) > 4 * beam_width:
+            frozen.sort(key=key, reverse=True)
+            frozen = frozen[:beam_width]
+    frozen.sort(key=key, reverse=True)
+    return done, frozen[:beam_width]
+
+
+def spend_search(end_time: float, beam_width: int, army_metal: float) -> GameState:
+    """Two phases.  (1) Economy: the usual max_rate beam up to SPEND_SWITCH seconds, because
+    income is what bounds how much can be spent by the deadline.  (2) Spend: continue the best
+    of those states with labs, nanos and Incisors, ranked by projected metal spent, and pick the
+    state that has the army goal and the most metal spent (earliest on ties)."""
+    switch = min(SPEND_SWITCH[0], end_time)
+    eco_key = lambda x: x.score_max_rate(end_time) + x.metal_produced / max(end_time, 1.0)
+    done_a, pool = _run_beam([GameState()], switch, beam_width, 'max_rate', eco_key, freeze_at=switch)
+    pool = pool + done_a
+    print(f'  economy phase -> {len(pool)} states at {switch:.0f} s; best '
+          f'{max(x.metal_rate for x in pool):.0f} m/s')
+    spend_key = lambda x: x.score_spend(end_time, army_metal)
+    done_b, last = _run_beam(pool, end_time, beam_width, 'spend', spend_key)
+    all_states = done_b + last + pool
+    ok = [x for x in all_states if x.army_metal >= army_metal]
+    if not ok:
+        print(f'WARNING: no build order reached {army_metal:.0f} m of army; showing the closest.')
+        ok = [max(all_states, key=lambda x: x.army_metal)]
+    return max(ok, key=lambda x: (x.metal_spent, -x.time))
+
+
 def beam_search(
     end_time:    float = SIM_END,
     beam_width:  int   = BEAM_WIDTH,
@@ -659,6 +754,7 @@ def beam_search(
     target_rate: float = 80.0,
     army_target: int   = 35,
     em_ratio:    float = 10.0,
+    army_metal:  float = 5000.0,
 ) -> GameState:
     """
     mode='max_rate':
@@ -674,6 +770,9 @@ def beam_search(
     """
     MAX_SEARCH = 600.0
 
+    if mode == 'spend':
+        return spend_search(end_time, beam_width, army_metal)
+
     beam: list[GameState] = [GameState()]
     completed: list[GameState] = []
 
@@ -688,7 +787,7 @@ def beam_search(
                 if ns is None:
                     continue
 
-                if mode in ('max_rate', 'max_units', 'balanced', 'raid'):
+                if mode in ('max_rate', 'max_units', 'balanced', 'raid', 'spend'):
                     if ns.time > end_time:
                         continue
                     if mode == 'raid' and not ns.raid_required_ok():
@@ -717,6 +816,8 @@ def beam_search(
             candidates.sort(key=lambda s: s.score_max_units(end_time), reverse=True)
         elif mode == 'balanced':
             candidates.sort(key=lambda s: s.score_balanced(end_time, army_target, em_ratio), reverse=True)
+        elif mode == 'spend':
+            candidates.sort(key=lambda s: s.score_spend(end_time, army_metal), reverse=True)
         elif mode == 'raid':
             candidates.sort(key=lambda s: s.score_raid(end_time, em_ratio), reverse=True)
         else:  # time_to_target
@@ -737,6 +838,12 @@ def beam_search(
         if not best.raid_required_ok() or any(r['required'] and r['met'] < r['count'] for r in best.raid_report()):
             print('WARNING: no build order met every required milestone; showing the closest.')
         return best
+    elif mode == 'spend':
+        ok = [x for x in all_states if x.army_metal >= army_metal]
+        if not ok:
+            print(f'WARNING: no build order reached {army_metal:.0f} m of army; showing the closest.')
+            ok = [max(all_states, key=lambda x: x.army_metal)]
+        return max(ok, key=lambda x: (x.metal_spent, -x.time))
     elif mode == 'max_units':
         return max(all_states, key=lambda s: s.incisor_count)
     elif mode == 'balanced':
@@ -757,13 +864,35 @@ def beam_search(
 # CLI output
 # ---------------------------------------------------------------------------
 
+def print_spend_summary(state: GameState, spend_target: float, army_metal: float,
+                        end_time: float) -> None:
+    """When the spend target and the army goal were met, from the action history."""
+    print()
+    print(f'SPEND SUMMARY (deadline {end_time:.0f} s)')
+    cross = next((h for h in state.history if h['metal_spent_after'] >= spend_target), None)
+    army = next((h for h in state.history if h['army_metal_after'] >= army_metal), None)
+    print(f"  {spend_target:,.0f} m spent at : {cross['end_time']:.1f} s" if cross
+          else f'  {spend_target:,.0f} m spent       : NOT REACHED')
+    print(f"  {army_metal:,.0f} m army at   : {army['end_time']:.1f} s" if army
+          else f'  {army_metal:,.0f} m army         : NOT REACHED')
+    for t in (240, 300, 360, 420, 450):
+        if t > end_time:
+            continue
+        prev = [h for h in state.history if h['end_time'] <= t]
+        if prev:
+            h = prev[-1]
+            print(f"  by {t:>3} s: spent {h['metal_spent_after']:>7,.0f}  produced {h['metal_produced_after']:>7,.0f}  "
+                  f"army {h['army_metal_after']:>6,}  {h['metal_rate_after']:.0f} m/s")
+    print(f'  final: spent {state.metal_spent:,.0f}, produced {state.metal_produced:,.0f}, '
+          f'army {state.army_metal:,}')
+
 def print_result(state: GameState,
                  mode: str = 'max_rate',
                  target_rate: float = 80.0,
                  end_time: float = SIM_END,
                  em_ratio: float = 10.0) -> None:
     h = state.history
-    show_incisors = mode in ('max_units', 'balanced')
+    show_incisors = mode in ('max_units', 'balanced', 'spend')
     print()
     print('=' * 88)
     if mode == 'raid':
@@ -773,6 +902,8 @@ def print_result(state: GameState,
         for r in state.raid_report():
             print(f"    {r['unit']:<8} {r['count']} by {r['by']:.0f} s{' (required)' if r['required'] else ''} -> {r['met']} on time; "
                   f"finished at {r['finish_times']}")
+    elif mode == 'spend':
+        print(f'  MAX SPEND  --  {state.metal_spent:,.0f} m spent, {state.army_metal:,} m army by {end_time:.0f} s')
     elif mode == 'max_rate':
         print(f'  OPTIMAL BUILD ORDER  --  {state.metal_rate:.3f} m/s at {end_time:.0f} s')
     elif mode == 'max_units':
@@ -827,7 +958,7 @@ def print_result(state: GameState,
               f"-- {active_nanos}/{state.nano_count} nanos active")
     print(f"  Metal stored      : {state.metal:.1f} / {state.metal_cap:.0f} m")
     print(f"  Energy stored     : {state.energy:.1f} / {state.energy_cap:.0f} e")
-    if mode in ('max_units', 'balanced'):
+    if mode in ('max_units', 'balanced', 'spend'):
         print(f"  Incisors built    : {state.incisor_count}")
     if mode == 'balanced' and em_ratio > 0:
         actual_ratio = state.energy_rate / max(state.metal_rate, 0.001)
@@ -992,6 +1123,8 @@ def save_result(state: GameState,
                     f'{[(k, c, b, r) for k, c, b, r in RAID_MILESTONES]}')
     elif mode == 'max_rate':
         opt_desc = f'max metal_rate (m/s) at {end_time:.0f} s'
+    elif mode == 'spend':
+        opt_desc = f'max metal spent by {end_time:.0f} s with >= army_metal of Incisors'
     elif mode == 'max_units':
         opt_desc = f'max Incisors built in {end_time:.0f} s'
     elif mode == 'balanced':
@@ -1027,7 +1160,7 @@ def save_result(state: GameState,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='BAR build-order optimizer')
     parser.add_argument(
-        '--mode', choices=['max_rate', 'time_to_target', 'max_units', 'balanced', 'raid'],
+        '--mode', choices=['max_rate', 'time_to_target', 'max_units', 'balanced', 'raid', 'spend'],
         default='max_rate',
         help='max_rate: maximize m/s at end-time; '
              'time_to_target: reach --target m/s as fast as possible; '
@@ -1042,6 +1175,15 @@ if __name__ == '__main__':
     parser.add_argument(
         '--army-target', type=int, default=35,
         help='Minimum Incisor count for balanced mode (default: 35)')
+    parser.add_argument(
+        '--spend-target', type=float, default=30000.0,
+        help='spend mode: metal spent to report the crossing time of (default: 30000)')
+    parser.add_argument(
+        '--army-metal', type=float, default=5000.0,
+        help='spend mode: Incisor metal value that must exist by end-time (default: 5000)')
+    parser.add_argument(
+        '--spend-switch', type=float, default=300.0,
+        help='spend mode: game-second at which ranking switches from economy to projected spend')
     parser.add_argument(
         '--em-ratio', type=float, default=0.0,
         help='Target energy:metal rate ratio (default: 0 = disabled). '
@@ -1070,6 +1212,7 @@ if __name__ == '__main__':
         parser.set_defaults(**{k: v for k, v in cfg.items() if k in known})
     args = parser.parse_args()
     configure_raid(cfg.get('raid', {}))
+    SPEND_SWITCH[0] = args.spend_switch
     if args.mode == 'raid' and not RAID_MILESTONES:
         raise SystemExit('raid mode needs a --config file with a "raid" section of milestones')
 
@@ -1077,6 +1220,8 @@ if __name__ == '__main__':
         print(f'Mode: max_rate  |  end_time={args.end_time:.0f} s  |  beam_width={args.beam_width}')
     elif args.mode == 'max_units':
         print(f'Mode: max_units  |  end_time={args.end_time:.0f} s  |  beam_width={args.beam_width}')
+    elif args.mode == 'spend':
+        print(f'Mode: spend  |  army_metal={args.army_metal:.0f}  |  end_time={args.end_time:.0f} s  |  beam_width={args.beam_width}')
     elif args.mode == 'raid':
         print(f'Mode: raid  |  milestones={RAID_MILESTONES}  |  em_ratio={args.em_ratio}  |  end_time={args.end_time:.0f} s  |  beam_width={args.beam_width}')
     elif args.mode == 'balanced':
@@ -1091,7 +1236,10 @@ if __name__ == '__main__':
         target_rate=args.target,
         army_target=args.army_target,
         em_ratio=args.em_ratio,
+        army_metal=args.army_metal,
     )
+    if args.mode == 'spend':
+        print_spend_summary(best, args.spend_target, args.army_metal, args.end_time)
     print_result(best, mode=args.mode, target_rate=args.target,
                  end_time=args.end_time, em_ratio=args.em_ratio)
     save_result(best, save_path=args.out + '.json', mode=args.mode, target_rate=args.target, end_time=args.end_time)
