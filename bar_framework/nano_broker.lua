@@ -35,11 +35,13 @@ local M = {}
 M.PRIO = {
     WIND_RECLAIM = 1,
     HANDOFF      = 2,
+    SPINE        = 2.5,   -- spine lab guard/park: beats CLEAR/BALANCE, yields to hand-offs
     CLEAR        = 3,
     BALANCE      = 4,
 }
 
 local CMD_STOP    = 0
+local CMD_WAIT    = 5
 local CMD_GUARD   = 25
 local CMD_REPAIR  = 40
 local CMD_RECLAIM = 90
@@ -53,6 +55,7 @@ end
 
 -- Has this assignment finished on its own?
 local function Expired(a)
+    if a.mode == "park" then return false end   -- a park has no target
     if not Alive(a.target) then return true end
     -- An assist ends when the thing stops being a nanoframe; the unitID lives on as
     -- the finished building, so "target still exists" is not enough to tell.
@@ -86,6 +89,19 @@ end
 
 function M.Guard(prio, nanoID, target)
     return Claim(nanoID, prio, CMD_GUARD, target, "guard")
+end
+
+-- Stop the nano auto-assisting: a queued WAIT.  Held until Release (or a higher-priority claim).
+function M.Park(prio, nanoID)
+    if not Alive(nanoID) then return false end
+    local cur = assign[nanoID]
+    if cur and not Expired(cur) then
+        if cur.mode == "park" then return true end
+        if cur.prio <= prio then return false end
+    end
+    Spring.GiveOrderToUnit(nanoID, CMD_WAIT, {}, {})
+    assign[nanoID] = {prio = prio, cmd = CMD_WAIT, target = nil, mode = "park"}
+    return true
 end
 
 -- Hand the nano back to the engine's auto-assist behaviour.

@@ -440,6 +440,24 @@
       "height": 1,
       "category": "util",
       "color": "#555544"
+    },
+    {
+      "id": "5b1616ae-cbb7-41b5-bc2b-9ea300792a11",
+      "displayName": "com_start",
+      "unitDef": "com",
+      "width": 2,
+      "height": 2,
+      "category": "General",
+      "color": "#4a8f6b"
+    },
+    {
+      "id": "f1a57761-f41b-4c96-8166-d960f512de1b",
+      "displayName": "con_bot",
+      "unitDef": "con_bot",
+      "width": 2,
+      "height": 2,
+      "category": "General",
+      "color": "#242386"
     }
   ]
 }

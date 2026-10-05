@@ -41,7 +41,8 @@ M.registry = {}
 local GRID_SPACING       = M.GRID_SPACING
 local ENEMY_ALERT_RADIUS = M.ENEMY_ALERT_RADIUS
 local ENEMY_CLEAR_RADIUS = M.ENEMY_CLEAR_RADIUS
-local METAL_LOW_FRAC     = 0.17   -- metal interrupt threshold
+local METAL_LOW_FRAC     = 0.17   -- metal interrupt threshold (share of storage)...
+local METAL_LOW_ABS      = 150    -- ...capped at this much metal in the bank
 local ENERGY_LOW_FRAC    = 0.17   -- energy interrupt threshold
 local CORRL_UNIT         = "corrl"
 local LLT_NAMES          = {"corhllt", "corlt", "armhllt", "armlt"}  -- LLT candidates
@@ -147,6 +148,15 @@ local function RotateOffset(x, z, r)
     return x, z
 end
 
+-- The facing that goes with RotateOffset.  Facing 0=south(+z) 1=east(+x) 2=north 3=west,
+-- and RotateOffset turns clockwise on screen (east -> south), so a facing turns the
+-- other way round the numbering: (f - r).  This used to be (f + r), which is the same
+-- for r = 0 and 2 but sent a factory's exit the opposite way at r = 1 and 3.
+local function RotateFacing(f, r)
+    return ((f or 0) - (r or 0)) % 4
+end
+M.RotateFacing = RotateFacing
+
 -- ── Blueprint helpers ─────────────────────────────────────────────────────────
 
 -- Find the corrl entry in a blueprint layout.  Returns corrX, corrZ (offsets).
@@ -174,16 +184,20 @@ end
 -- wrong by 8 elmos puts a building half a cell out, which overlaps its neighbour
 -- and leaves a hole in the grid where the placer gives up on a blocked spot.
 -- Spring.Pos2BuildPos is the engine's own answer, so prefer it.
-local function SnapToBuildGrid(defID, wx, wz)
+-- facing (optional): a non-square building at facing 1/3 has its footprint turned, which
+-- swaps which axis needs the +8 offset.  Without it the snap is for facing 0.
+local function SnapToBuildGrid(defID, wx, wz, facing)
     if not defID then return wx, wz end
     local wy = Spring.GetGroundHeight(wx, wz) or 0
     if Spring.Pos2BuildPos then
-        local sx, _, sz = Spring.Pos2BuildPos(defID, wx, wy, wz)
+        local sx, _, sz = Spring.Pos2BuildPos(defID, wx, wy, wz, facing or 0)
         if sx then return sx, sz end
     end
     local ud = UnitDefs and UnitDefs[defID]
-    local xo = (ud and (ud.xsize or 0) % 4 == 2) and 8 or 0     -- xsize 6 => 3 cells
-    local zo = (ud and ((ud.zsize or ud.ysize or 0) % 4 == 2)) and 8 or 0
+    local xs, zs = (ud and ud.xsize or 0), (ud and (ud.zsize or ud.ysize) or 0)
+    if facing == 1 or facing == 3 then xs, zs = zs, xs end
+    local xo = (xs % 4 == 2) and 8 or 0     -- xsize 6 => 3 cells
+    local zo = (zs % 4 == 2) and 8 or 0
     return math.floor((wx - xo) / 16 + 0.5) * 16 + xo,
            math.floor((wz - zo) / 16 + 0.5) * 16 + zo
 end
@@ -195,10 +209,10 @@ local function BuildQueue(blueprint, anchorX, anchorZ, rotation)
     local queue = {}
     for _, u in ipairs(blueprint.layout) do
         local rx, rz = RotateOffset(u.x, u.z, rotation)
-        local rf = (u.f + rotation) % 4
+        local rf = RotateFacing(u.f, rotation)
         local ud = UnitDefNames and UnitDefNames[u.n]
         local defID = ud and ud.id
-        local wx, wz = SnapToBuildGrid(defID, anchorX + rx, anchorZ + rz)
+        local wx, wz = SnapToBuildGrid(defID, anchorX + rx, anchorZ + rz, rf)
         queue[#queue+1] = {
             n       = u.n,
             defID   = defID,
@@ -253,9 +267,12 @@ M.DEFAULT_INTERRUPTS = {
         name      = "metal",
         priority  = 1,
         buildType = "metal",
+        -- Low means a real stall: under METAL_LOW_ABS metal (or METAL_LOW_FRAC of a small
+        -- early storage, whichever is lower).  A pure 17%-of-storage test meant ~1000
+        -- metal once storage reaches 6k, so it fired whenever the bot was spending well.
         check     = function(state, res, frame)
             if not res.metalStorage or res.metalStorage <= 0 then return false end
-            return (res.metal / res.metalStorage) < METAL_LOW_FRAC
+            return res.metal < math.min(METAL_LOW_ABS, res.metalStorage * METAL_LOW_FRAC)
         end,
     },
 }
@@ -538,7 +555,7 @@ local function AdvanceQueue(state, res, frame)
         end
 
         local task = FindNextOfClass(state.queue, intr.buildType)
-        if task and CountNanosInRange(task.wx, task.wz) >= 2 then
+        if task and CountNanosInRange(task.wx, task.wz) >= (state.interruptMinNanos or 2) then
             IssueBuildTask(builderID, task)
             state.currentTask = task
             return
@@ -677,6 +694,11 @@ end
 --   clearOnlyDefIDs  set of defIDs clearBlockers may reclaim.  Without it any
 --                    friendly structure in the footprint is fair game, which is
 --                    rarely what you want.
+--   interruptMinNanos  finished nanos that must reach an interrupt's target before
+--                    the interrupt may redirect the builder (default 2).  0 for a
+--                    builder that works alone, e.g. TILE_BOT's con-bot tiles.
+-- An interrupt entry may set noPreempt = true: it then only picks the builder's next
+-- job and never pulls it off one it is already building.
 function M.New(blueprint, builderID, anchorX, anchorZ, rotation, interrupts)
     rotation = rotation or 0
     local queue = BuildQueue(blueprint, anchorX, anchorZ, rotation)
@@ -798,27 +820,31 @@ function M.Update(state, frame, resources)
             state.activeInterrupt = intr.name
             -- currentTask was cancelled; it will be retried when idle
             return
-        elseif state.activeInterrupt ~= intr.name then
-            -- A resource interrupt fired while the builder is mid-job.  Waiting for
-            -- it to go idle can take a whole fly-out-and-build cycle, by which time
-            -- the stall it was meant to answer is long over — so switch now.  Once
-            -- per episode: activeInterrupt keeps it from re-targeting every tick.
+        elseif state.allowPreempt and state.activeInterrupt ~= intr.name and not intr.noPreempt then
+            -- Preemption: a resource interrupt fired while the builder is mid-job, so it
+            -- abandons the frame and goes to the interrupt's item.  OFF unless a caller
+            -- sets state.allowPreempt.  The metal/energy interrupts fire almost all the
+            -- time and flip between each other, and every flip counted as a new episode:
+            -- builders placed a frame, left it at 20%, placed another, left that, and the
+            -- base filled with half-built frames.  Interrupts now only choose the NEXT job.
+            -- (noPreempt interrupts never abandon a job even when this is on.)
             local task = FindNextOfClass(state.queue, intr.buildType)
-            if task and CountNanosInRange(task.wx, task.wz) >= 2 then
-                local cur = state.currentTask
-                if cur and not cur.built and not cur.released then
-                    -- Don't strand a part-built frame: hand it to the nanos if any
-                    -- can reach it, otherwise leave it to be reclaimed as a task
-                    -- later (AdvanceQueue revives items whose frame has gone).
-                    local frameID = FindFrameAt(cur)
-                    if frameID then
-                        local nanos = NanosInRange(cur.wx, cur.wz, builderID)
-                        for i = 1, #nanos do
-                            NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID)
-                        end
-                        cur.released = true
+            local cur  = state.currentTask
+            local leave = task and task ~= cur
+                          and CountNanosInRange(task.wx, task.wz) >= (state.interruptMinNanos or 2)
+            if leave and cur and not cur.built and not cur.released then
+                -- Leave a part-built frame only if a nano actually takes it over.
+                local frameID = FindFrameAt(cur)
+                if frameID then
+                    local nanos = NanosInRange(cur.wx, cur.wz, builderID)
+                    local took = 0
+                    for i = 1, #nanos do
+                        if NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID) then took = took + 1 end
                     end
+                    if took > 0 then cur.released = true else leave = false end
                 end
+            end
+            if leave then
                 IssueBuildTask(builderID, task)
                 state.currentTask     = task
                 state.activeInterrupt = intr.name
@@ -845,11 +871,15 @@ function M.Update(state, frame, resources)
             local frameID = (not starved) and FindFrameAt(task) or nil
             local prog    = frameID and GetProgress(frameID)
             if prog and prog >= state.handoffProgress then
+                -- Leave only if a nano actually TOOK it.  Nanos in range that are busy
+                -- with equal or better work refuse, and a frame "handed" to nobody just
+                -- stands there unfinished while the builder opens another one.
                 local nanos = NanosInRange(task.wx, task.wz, builderID)
-                if #nanos > 0 then
-                    for i = 1, #nanos do
-                        NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID)
-                    end
+                local took = 0
+                for i = 1, #nanos do
+                    if NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], frameID) then took = took + 1 end
+                end
+                if took > 0 then
                     task.released     = true
                     state.currentTask = nil
                     AdvanceQueue(state, resources, frame)   -- straight to the next site
@@ -1020,7 +1050,7 @@ local function ProbeAnchor(blueprint, anchorX, anchorZ, rotation)
                 local wx, wz = anchorX + rx, anchorZ + rz
                 local wy  = Spring.GetGroundHeight(wx, wz) or 0
                 local res = Spring.TestBuildOrder(ud.id, wx, wy, wz,
-                                                  ((u.f or 0) + (rotation or 0)) % 4)
+                                                  RotateFacing(u.f, rotation))
                 return res and res ~= 0
             end
         end
@@ -1524,11 +1554,13 @@ local function ServiceBuilder(state, builderID, frame, res)
            and (item.idx or 0) > OPENING_ITEMS
            and #state.nanoUnitIDs >= HANDOFF_MIN_NANOS
            and not starved then
+            -- Only if a nano actually took it (see the single-builder handoff).
             local nanos = NanosInRange(item.wx, item.wz, builderID)
-            if #nanos > 0 then
-                for i = 1, #nanos do
-                    NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], item.frameID)
-                end
+            local took = 0
+            for i = 1, #nanos do
+                if NANO.Assist(NANO.PRIO.HANDOFF, nanos[i], item.frameID) then took = took + 1 end
+            end
+            if took > 0 then
                 DropClaim(state, item, "released")
                 return false   -- free to place the next item on this same tick
             end
@@ -1855,7 +1887,7 @@ function M.InsertPriorityItem(state, unitName, wx, wz, facing)
     if not state.distributed then return nil end
     local ud = UnitDefNames and UnitDefNames[unitName]
     if not ud then return nil end
-    local sx, sz = SnapToBuildGrid(ud.id, wx, wz)
+    local sx, sz = SnapToBuildGrid(ud.id, wx, wz, facing)
     local item = {
         n       = unitName,
         defID   = ud.id,

@@ -25,6 +25,11 @@ point for a new bot; keep exploiter variants in their own folders rather than me
 (recon, raiders, rez bots, reactive AA, commander safety, endgame hunt); its new logic lives in
 MECH-only `bar_framework/` modules, so DRAGON_BOT is unchanged. See `MECH_BOT/GOAL.md` for what
 changed and which tracker fields measure it. It has not been run in a real match yet.
+`TILE_BOT/` is DRAGON_BOT's macro with the spiral opening replaced by a human player's con-bot tile
+opening: the commander builds `bad_com_start`, up to 4 con bots each build a row of a 4x4 block of
+`con_bot_grid` tiles (`bar_framework/tile_crew.lua`), then an air lab hands off to the mex grids.
+Its lab and unit controllers, and the spine (`bar_framework/spine.lua`), are SPINE_BOT's (origin/main).
+See `TILE_BOT/GOAL.md`; `tests/test_tile_bot.lua` checks the block geometry and runs a stub smoke test.
 
 ### Key Lua API calls used by bots
 
@@ -69,63 +74,6 @@ python bot_testing.py --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay
   `Game speed` blocks
 - `--profile` — logs `[PROF]` lines: per-widget Lua milliseconds per game-minute on each bot process
 - `--save-replay` — saves a `.sdfz` replay to BAR's demos folder
-
-### Via Tailscale (recommended)
-
-Both Pis are accessible via Tailscale. This method works from anywhere and automatically handles results:
-
-**Pi 1** (dme43@100.68.112.80, local 192.168.1.170) — has `~/MetalBot` and `~/bar_data`; runs matches
-**Pi 2** (iamtree@100.86.20.115, local 192.168.1.172) — has the USB flash drive AND `~/MetalBot`/`~/bar_data` (provisioned 2026-09-15 via a direct Pi-to-Pi tar transfer from Pi 1); runs matches too
-
-```powershell
-python remote_testing.py --bot1 OK_BOT --bot2 MY_BOT --pi-host 100.68.112.80 --save-replay
-```
-
-Options:
-- `--pi-host 100.68.112.80` — Tailscale IP for Pi 1 (dme43)
-- `--pi-host 100.86.20.115` — Tailscale IP for Pi 2 (iamtree)
-- `--usb-mount /mnt/usb` — USB drive mount path (auto-detected; the drive currently actually sits at `/media/iamtree/USB321FD`, not `/mnt/usb`)
-- `--result-dir metalbot_results` — Relative path on USB for saving results
-
-All results/replays are archived to iamtree's USB regardless of which Pi ran the match — see `remote_testing.archive_to_iamtree()`.
-- `--skip-deploy` — Skip syncing bot files (faster for iterative tests)
-
-Results are automatically saved to USB flash drive and synced back if available.
-
-### Direct SSH (legacy method)
-
-For direct SSH without Tailscale:
-
-```bash
-ssh -i ~/.ssh/id_ed25519_nopass dme43@192.168.1.170 \
-  "cd ~/MetalBot && BAR_DATA_DIR=/home/dme43/bar_data python3 bot_testing.py \
-   --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay"
-```
-
-Copy replays back:
-```powershell
-scp -i ~/.ssh/id_ed25519_nopass `
-  "dme43@192.168.1.170:/home/dme43/bar_data/demos/*.sdfz" `
-  "C:\Users\malco\AppData\Local\Programs\Beyond-All-Reason\data\demos\"
-```
-
-### Pi Setup (for new Pi provisioning)
-
-Both Pi 1 and Pi 2 have `~/MetalBot` as a real git clone (branch `bot-testing-v2`) and
-`~/bar_data` with the engine + game content (aarch64 Debian 12 build). To update either
-Pi with newly committed code:
-```bash
-ssh -i ~/.ssh/id_ed25519_nopass dme43@100.68.112.80   "cd ~/MetalBot && git pull"
-ssh -i ~/.ssh/id_ed25519_nopass iamtree@100.86.20.115 "cd ~/MetalBot && git pull"
-```
-`git pull` only picks up committed + pushed changes — uncommitted local edits still need
-manual scp. `bar_data/` is not part of the git repo.
-
-For provisioning a brand-new Pi: install git (`sudo apt install git`), clone the repo, then
-copy `~/bar_data` from an existing provisioned Pi (same architecture required — both current
-Pis are aarch64). A same-LAN Pi-to-Pi copy won't work directly between these two specific
-Pis ("No route to host" between their 192.168.1.x addresses) — route it over their Tailscale
-IPs instead, e.g. `tar -C ~ -cf - bar_data | ssh iamtree@<new-pi-tailscale-ip> "tar -C ~ -xf -"`.
 
 ## How matches end
 
@@ -179,8 +127,7 @@ weaknesses:
 
 `python find_weakness.py result.json` reads those rows and ranks likely weaknesses; the
 `/find_bot_weakness <bot>` command wraps it into a full diagnosis (it reports weaknesses, it does not
-fix them; `improve_bot` does that). Both Pis need the new `bot_testing.py` and tracker;
-`remote_testing.py` does not sync them.
+fix them; `improve_bot` does that).
 
 ## Reading test results
 
@@ -298,6 +245,7 @@ MetalBot/
   RAIDER_BOT/          — exploiter: air raid (bombers) on an early timer
   GROUND_RAIDER_BOT/   — exploiter: ground raid (Incisors + fighter escort) on an early timer
   MECH_BOT/            — DRAGON_BOT + game_mechanics units/scouting (see MECH_BOT/GOAL.md)
+  TILE_BOT/            — con-bot tile opening + SPINE_BOT lab/unit controllers (TILE_BOT/GOAL.md)
     macro_controller.lua
     lab_controller.lua
     unit_controller.lua

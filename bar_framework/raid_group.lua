@@ -40,6 +40,10 @@ M.MIN_ARMY       = 10     -- the unit controller's ADVANCE_MIN_UNITS
 M.MIN_GROUP      = 4      -- never launch fewer than this
 M.DISBAND_AT     = 2      -- a group this small goes back to the line
 M.MIN_SPEED      = 200    -- raiders are fast; a Wasp (159) is main-army material
+-- Units that are fast enough to look like raiders but must never be sent out as one.
+-- Empty by default (MECH_BOT raids with Shurikens); SPINE-style unit controllers set
+-- { corbw = true } after loading, so Shurikens stay home as defence.
+M.NEVER_RAID     = {}
 M.GATHER_DIST    = 1200   -- rally point, forward of home along the axis
 M.GATHER_MAX     = 900    -- frames to wait for stragglers before going anyway
 M.GATHER_RADIUS  = 600
@@ -75,7 +79,8 @@ local raiderCache = {}
 function M.IsRaiderDef(defID)
     local r = raiderCache[defID]
     if r ~= nil then return r end
-    r = defID ~= nil and UQ.has_weapons(defID) and UQ.can_hit_ground(defID)
+    r = defID ~= nil and not (UnitDefs[defID] and M.NEVER_RAID[UnitDefs[defID].name])
+        and UQ.has_weapons(defID) and UQ.can_hit_ground(defID)
         and not UQ.is_dedicated_aa(defID) and not UQ.is_scout(defID)
         and not UQ.is_commander(defID) and not UQ.is_builder(defID)
         and UQ.max_speed(defID) >= M.MIN_SPEED

@@ -132,6 +132,9 @@ end
 -- Call it every tick.  Repeating an unchanged claim is free.
 function M.Claim(prio, unitID, spec, frame)
     if not Alive(unitID) or not spec then return false end
+    -- An order needs a target unit or a position; one with neither used to crash Issue and
+    -- take the whole unit controller down.
+    if not spec.targetID and not (spec.x and spec.z) then return false end
     local d = duty[unitID]
 
     if d then

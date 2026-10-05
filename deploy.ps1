@@ -36,6 +36,11 @@ $files = @(
     "blueprints\general\upgrade.lua",
     "blueprints\general\raider_blueprint.lua",
     "blueprints\general\ground_raider_blueprint.lua",
+    "blueprints\general\bad_com_start.lua",
+    "blueprints\general\con_bot_grid.lua",
+    "blueprints\general\T1Spine.lua",
+    "blueprints\general\T2Spine.lua",
+    "blueprints\general\T3Spine.lua",
     "metalbot_stats_tracker.lua",
     "bar_framework\escape_guard.lua",
     "bar_framework\nano_broker.lua",
@@ -51,7 +56,10 @@ $files = @(
     "bar_framework\raid_group.lua",
     "bar_framework\rez_crew.lua",
     "bar_framework\endgame.lua",
-    "bar_framework\commander_guard.lua"
+    "bar_framework\commander_guard.lua",
+    "bar_framework\tile_crew.lua",
+    "bar_framework\spine.lua",
+    "bar_framework\line_fight.lua"
 )
 
 # The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).
