@@ -39,5 +39,10 @@ Base: `candidates/LINE_CLICK_v12`. Status per item: TODO / DONE-untested / VERIF
   - Conclusion: **v13d is the current best.** What hurt: the 10% army floor (v13b: ~11k eco lost to raids) and the
     30-rez-bot floor by 8:00 / faster nano switching (v13c lost both main-PC games). The user's "30+ rez bots" needs a
     later ramp (e.g. reach 30 by ~15:00, scaled by wreck metal) -- next to try, on top of v13d.
+  - v13e = v13d + rez floor 2 -> 30 from 8:00 to 15:00 (+ wreck metal): vs v13d 0.71x (s0), 1.34x (s1) -> 0.98x,
+    no measurable difference (2 games).
+  - 30-min game, v12 vs v13d (v13d in slot 1, main PC): **v13d killed v12's commander at 24.9 min**; income 805 vs
+    585 M/s at 20:00, eco lost 1.6k vs 6.6k. Replay: demos/2026-10-08_16-16-40-669_Full Metal Plate 1.7_2026.07.04.sdfz.
+  - Still far from the 2-4k M/s target: best seen 1,256 M/s at 20:00 (v13a).
 
 Also open from the 30-min game: v12 led at 20:00 (army 82.5k vs 63.6k) but LINE_CLICK led at 30:00 (292k vs 211k).
