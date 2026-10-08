@@ -20,7 +20,37 @@ Running log of what was tried overnight, newest at the bottom. Base bot: `candid
   END_SCORE and the tracker rows work as for a bot. The AI's commander is never self-destructed at end-minutes, so only
   the END_SCORE comparison is meaningful at the deadline (an earlier commander kill is still a real `game_over`).
 
+- `--end-minutes` matches in `ab_test.py`; `series.py` (a batch of matches, resumable) and `match_summary.py`
+  (winner, commander deaths, army / income / losses to the enemy at checkpoints).
+
 ## Baseline
 
 - LINE_CLICK vs pool/bots/champion_v1, army value at frame 14400, one match per slot: **1.25x and 1.31x, gm 1.28,
-  "A is better"** (main PC). TreeServer, same A/B: 1.40x in the first match.
+  "A is better"** (main PC). TreeServer, same A/B: **1.40x and 1.35x, gm 1.38**.
+- LINE_CLICK vs BARb (hard): LINE_CLICK out-earns it ~7x by 12:00 (375 vs 49 m/s) but **does not always finish it**:
+  commander kills at 10.1 and 16.1 min, none in two other 20-minute games (it won those on END_SCORE, 12x).
+
+## E1: click_army FORWARD_CORE -> `candidates/LINE_CLICK_v2` -- ADOPT
+
+**Problem (seen vs BARb, 20:00):** 112k of army stood at mid-map (dist_base ~5500) with the enemy commander in sight
+and 633 value guarding it. With 3 groups out every new unit joins the weakest group from the factory, so a group's
+centroid slid toward home ("attacking" a nano with its centre 11,000 elmos away) and the core -- the units around the
+centroid -- were sent back to it. `tests/test_click_forward.lua` reproduces it: old rule, 20/20 front units are
+ordered away from their target.
+
+**Change:** `CFG.FORWARD_CORE` -- the core is the forward cluster (nearest the target with 2 others within 500, and
+everyone within 1500 of it); the core's value decides fights/targets; `CMDR_KEEP_FRAC 0.8` (stay on the commander while
+the guard is < 0.8x the core; it flip-flopped at 0.3); `CORE_WAIT_FRAC 0.35` (a small front waits for units within
+4000 behind it, not for units fresh from the factory). Off by default; LINE_CLICK_v2 turns it on.
+
+**Results (20-minute games):**
+
+| match | result |
+|---|---|
+| v2 vs BARb x3 | commander killed at 12.3, 13.1, 12.9 min (3/3) |
+| LINE_CLICK vs BARb x4 | killed at 10.1, 16.1 min; no kill in 2 (2/4) |
+| v2 (slot 0) vs LINE_CLICK | **v2 killed LINE_CLICK's commander at 9.7 min** (a dive found it in its lane, few guards) |
+| LINE_CLICK vs v2 (slot 1) | **v2 won on END_SCORE 102k vs 85k (1.20x) from the weaker slot**; enemy eco destroyed 7.4k vs 1.4k |
+
+v2 won both head-to-heads, including from slot 1. Two matches is not a large sample, but it agrees with the BARb
+series and with the mechanism (the front no longer walks home).
