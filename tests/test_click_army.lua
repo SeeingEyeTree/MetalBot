@@ -857,6 +857,11 @@ local function Smoke(dir, minutes)
             -- behind our contact line (the dispatch only counts enemies that got past it), by the base
             for i = 1, 6 do S.Spawn("corak", 1, W.start[0][1] - 300 + i * 15, W.start[0][2] - 100) end
         end
+        if f == 12 * 1800 then       -- ...and it is over (the stub does not kill on FIGHT)
+            for id, u in pairs(W.units) do
+                if u.team == 1 and UnitDefs[u.defID].name == "corak" then S.Kill(id) end
+            end
+        end
         if f == 7 * 1800 then
             for i = 1, 40 do S.Spawn("corgator", 0, W.start[0][1] + i * 6, W.start[0][2] + 300) end
             for i = 1, 3 do S.Spawn("corsumo", 0, W.start[0][1] + i * 9, W.start[0][2] + 350) end
@@ -901,6 +906,15 @@ check((handCmds[90] or 0) >= 1, string.format("the rez bots reclaim scrap (%d RE
 check(hawkSpots >= 3, string.format("the Hawks were sent to several different spots (%d)", hawkSpots))
 check(Any(logC, "%[UC/respond%]"), "a raid on the main base is answered (by the units that are allowed to)")
 check(valueC <= 3500 + 400, string.format("guard value stays within GUARD_MAX (%.0f)", valueC))
+
+-- LINE_CLICK_v3 (2026-10-08): click_army FORWARD_CORE + commander safety (commander_guard: evade, cloak)
+local _, _, logV, errV = Smoke("candidates/LINE_CLICK_v3", 14)
+for _, e in ipairs(errV) do print("LUA ERROR (LINE_CLICK_v3): " .. e) end
+check(#errV == 0, "LINE_CLICK_v3 widgets run 14 minutes without Lua errors")
+check(not Any(logV, "ERROR loading commander_guard"), "v3: commander_guard loaded")
+check(Any(logV, "%[CK%] .*group #%d+ launch"), "v3: a group launches")
+check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away from the raid on the base")
+check(Any(logV, "%[LN%] .*commander back to its lane after evading"), "v3: and goes back to its lane when it is over")
 
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",

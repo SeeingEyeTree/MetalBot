@@ -56,7 +56,7 @@ local ORDER_TIMEOUT = 450
 local MOVE_TIMEOUT  = 600
 local MAX_RETRIES   = 3
 local ARRIVE        = 16     -- elmos from a stop that count as standing on it
-local CMD_STOP, CMD_MOVE = 0, 10
+local CMD_STOP, CMD_MOVE, CMD_REPAIR = 0, 10, 40
 
 -- Transition (line_transition.lua): an outer lane's builder places the air lab on the closest 6 open slots
 -- (3 columns x 2 rows) and two nanos on open slots beside it.  Nothing is reserved ahead of time.
@@ -279,6 +279,29 @@ function LC.Release(crew, id)
 end
 
 function LC.IsBuilder(crew, id) return crew.cons[id] ~= nil end
+
+-- Hand a builder to someone else for a while (LINE_CLICK_v2: the commander walks away from a raid) and take it
+-- back.  While suspended the crew gives it no orders.  An item it had only ordered is given up; a frame it was
+-- building is kept, and on Resume it goes back to finishing it (REPAIR) if the frame still stands.
+function LC.Suspend(crew, id)
+    local c = crew.cons[id]
+    if not c or c.phase == "suspended" then return end
+    if c.target and c.target.state == "ordered" then FreeSlot(crew, c.target); c.target = nil end
+    c.phase, c.hold = "suspended", nil
+end
+
+function LC.Resume(crew, id)
+    local c = crew.cons[id]
+    if not c or c.phase ~= "suspended" then return end
+    local s = c.target
+    if s and s.state == "building" and s.frameID and Spring.GetUnitDefID(s.frameID) then
+        Spring.GiveOrderToUnit(id, CMD_REPAIR, { s.frameID }, {})
+        c.phase = "build"
+    else
+        if s then FreeSlot(crew, s) end
+        c.target, c.phase = nil, "idle"
+    end
+end
 
 -- --- Deciding what to build ---
 
@@ -512,6 +535,7 @@ local ROUTE_ARRIVE, ROUTE_TIMEOUT = 40, 900
 
 local function Step(crew, c, res)
     if c.phase == "help" then return end       -- guarding another builder (the macro ends it)
+    if c.phase == "suspended" then return end  -- LC.Suspend: someone else commands it (the commander evading)
     -- An urgent job (the vehicle lab) drops whatever the builder is on: a slot frame it was "stuck" on stays in the
     -- world for the nanos / a later visit, and the builder goes straight to the job.
     if c.preempt and c.phase ~= "job" then

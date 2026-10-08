@@ -226,6 +226,8 @@ local function UpdateCloak(comID, res)
     if want ~= nil and want ~= cloaked then
         Spring.GiveOrderToUnit(comID, CMD_CLOAK, { want and 1 or 0 }, 0)
         cloaked = want
+        Spring.Echo(string.format("[CG] %s commander cloak %s (energy %.0f%% full, spare %.0f/s, cost %s)",
+            Clock(Spring.GetGameFrame()), want and "ON" or "off", frac * 100, spare, tostring(d.cloakCost)))
     end
 end
 
@@ -266,6 +268,9 @@ function M.Update(frame, comID, res, opts)
         retired = true
         Spring.Echo(string.format("[CG] %s commander retired from the build order", Clock(frame)))
     end
+    -- opts.cloakAlways (LINE_CLICK_v2): cloak whenever energy allows, also while it still builds.  An enemy that
+    -- hunts the commander by sight (click_army's "commander is open", BARb) does not see it then.
+    if not retired and opts.cloakAlways then UpdateCloak(comID, res) end
     if not retired then return "free" end
 
     if not safeX and opts.homeX then
