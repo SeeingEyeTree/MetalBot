@@ -938,6 +938,13 @@ for _, e in ipairs(errH) do print("LUA ERROR (LINE_CLICK_v5e): " .. e) end
 check(#errH == 0, "LINE_CLICK_v5e widgets run 14 minutes without Lua errors")
 check(Any(logH, "%[CK%] .*group #%d+ launch"), "v5e: a group launches")
 
+-- LINE_CLICK_v12: the overnight combination (FORWARD_CORE + FLANK + ENERGY_PUSH + commander evades real dives)
+local _, _, log12, err12 = Smoke("candidates/LINE_CLICK_v12", 14)
+for _, e in ipairs(err12) do print("LUA ERROR (LINE_CLICK_v12): " .. e) end
+check(#err12 == 0, "LINE_CLICK_v12 widgets run 14 minutes without Lua errors")
+check(Any(log12, "%[CK%] .*group #%d+ launch"), "v12: a group launches")
+check(not Any(log12, "%[LN%] .*commander leaves the line"), "v12: the commander does not retire")
+
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
     madeB, valueB, madeC, valueC))
