@@ -57,6 +57,9 @@ LT.CFG = {
     --     the base ~850 from the map edge that left one row of grids.  Allow cells this many elmos past that edge (0 = old).
     COLLECT_ALWAYS = false,
     GRID_ENEMY_SIDE = 0,
+    --   LINE_GATE: while the line is unbuilt only GRIDS_OPENING grids may open (v13 run: 3 grids from 5:00 to 7:30 with 2
+    --     air cons idle and cells waiting).  false = the bank / fast rules apply while the line is still being built.
+    LINE_GATE = true,
     ENERGY_PUSH = false,
     EP_START = 10 * 60 * 30, EP_MFRAC = 0.30, EP_MIN_METAL = 3000,   -- "metal floats"
     EP_EFRAC = 0.50, EP_EPULL = 0.85,                                -- "energy binds": bank under half, pull >= 85% of income
@@ -850,7 +853,7 @@ local function ReleaseCandidates(T, frame, res)
     local energyOK = res.energyStorage > 0 and res.energy / res.energyStorage >= T.CFG.GRID_FAST_ENERGY
     local income = res.metalIncomeS or res.metalIncome or 0
     if opening < T.CFG.GRIDS_OPENING then why = "pace"
-    elseif not lineBuilt then return
+    elseif not lineBuilt and T.CFG.LINE_GATE then return
     elseif income >= T.CFG.GRID_FAST_INCOME and idleCon and energyOK then
         -- A big economy: expand whenever an air con stands idle.  No bank test (the army spends it), and no
         -- GRIDS_OPENING_MAX either: the idle-con test is the limit, and cons only come as fast as the air lab makes them.

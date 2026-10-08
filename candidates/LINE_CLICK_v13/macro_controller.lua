@@ -45,7 +45,7 @@ local CFG = {
                             -- LINE_CLICK_v13: grids were starved of cells (2 grids 4:00-7:40, 2-4 idle air cons): look for
                             -- cells whatever the bank, allow cells toward the map interior, open more at once
                             COLLECT_ALWAYS = true, GRID_ENEMY_SIDE = 1500,
-                            GRIDS_OPENING = 3, GRID_FAST_INCOME = 250 },
+                            GRIDS_OPENING = 3, GRID_FAST_INCOME = 250, LINE_GATE = false },
     -- LINE_CLICK_v13: spine overrides (user: army floor 10%, and more responsive production)
     SPINE_CFG           = { FLOOR = 0.10, MOVES_MAX = 12, NANO_BATCH = 8, NANO_INFLIGHT_MAX = 10 },
     -- LINE_CLICK_v2 (2026-10-08): commander safety, bar_framework/commander_guard.lua.  In the first v2-vs-LINE_CLICK

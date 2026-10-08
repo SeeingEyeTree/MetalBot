@@ -1,4 +1,4 @@
-"""
+﻿"""
 Single-client matches (bot_testing.py --server single): ONE spring-headless process runs both bots.
 
 The normal harness runs three engine processes per match (a spectator host plus one client per bot). Each of them
@@ -6,9 +6,9 @@ simulates the whole game, and the speed governor slows the game down so the clie
 frames. Here a single spectator process owns the game:
 
   - both teams are led by NullAI (ships with the engine; does nothing), so the game needs no second player;
-  - the spectator turns on `cheat` + `godmode 3` (control every team) and pins the speed to --max-speed, so the sim
-    runs as fast as one CPU core can manage. There is no network and no order latency: an order takes effect on the
-    next sim frame for both bots alike;
+  - the spectator turns on `cheat` + `godmode 3` (control every team). Widget orders still go through the engine's
+    local network loop, so the order round trip grows with speed (150-320 frames at a pinned 150-280x); CONTROL_WIDGET
+    governs the speed to hold it near --target-lag, like the normal harness, and both bots share the same lag;
   - both bots' widgets load into the same LuaUI. Each bot file (and each team's stats widgets) is wrapped in
     SHIM_HEAD / SHIM_TAIL below, which make it behave like a fogged player on its own team.
 
@@ -209,29 +209,74 @@ do
 end
 """
 
-# Turns on control of every team and pins the speed. Ends the process on GameOver: a spectator's plain "quit"
+# Turns on control of every team and governs the speed. Ends the process on GameOver: a spectator's plain "quit"
 # never exits (a probe kept simulating to frame 1.47M), "quitforce" does.
+#
+# Widget orders still travel through the engine's (local) network loop, which takes a few real milliseconds: at a
+# pinned 150-280x that measured a 150-320 frame order round trip (5-10 game-seconds), and LINE_CLICK's opening
+# stalled (builders idle, 4-8k army at 20:00 instead of ~50k). So, like SPEED_GOVERNOR_WIDGET in bot_testing.py, the
+# speed follows the round trip of the Latency Probe's messages (same process here): every 0.25 real seconds, worst
+# lag > 1.25 x TARGET cuts the speed in proportion (at most halving it), < 0.8 x TARGET raises it 10%.
+# The "speed" logged is the speed actually achieved over the last 300 frames.
 CONTROL_WIDGET = r"""
 function widget:GetInfo()
-    return { name = "Single Control", desc = "cheat + godmode + speed", layer = -1000, enabled = true }
+    return { name = "Single Control", desc = "cheat + godmode + speed governor", layer = -1000, enabled = true }
 end
 
-local SPEED = __SPEED__
-local timer, lastF
+local MIN_SPEED, MAX_SPEED, TARGET = __MIN__, __MAX__, __TARGET__
+local INTERVAL = 0.25
+local speed = MIN_SPEED
+local worst = 0
+local timer, logTimer, lastF
+
+local function SetSpeed(s)
+    if s < speed then
+        Spring.SendCommands("setminspeed " .. s, "setmaxspeed " .. s)
+    else
+        Spring.SendCommands("setmaxspeed " .. s, "setminspeed " .. s)
+    end
+    speed = s
+end
 
 function widget:GameStart()
     Spring.SendCommands("cheat 1", "godmode 3")
-    Spring.SendCommands("setmaxspeed " .. SPEED, "setminspeed " .. SPEED)
-    timer, lastF = Spring.GetTimer(), 0
+    speed = MAX_SPEED
+    SetSpeed(MIN_SPEED)
+    timer, logTimer, lastF = Spring.GetTimer(), Spring.GetTimer(), 0
 end
 
--- [GOV]-style speed log so _parse_speed fills result.speed_timeline (lag is 0: there is no network).
+function widget:RecvLuaMsg(msg, playerID)
+    local sent = msg:match("^mblat:(%d+)")
+    if not sent then return end
+    local lag = Spring.GetGameFrame() - tonumber(sent)
+    if lag > worst then worst = lag end
+end
+
 function widget:GameFrame(n)
-    if not timer or n - lastF < 300 then return end
+    if not timer then return end
     local now = Spring.GetTimer()
-    local dt = Spring.DiffTimers(now, timer)
-    if dt > 0 then Spring.Echo(string.format("[GOV] frame=%d speed=%.1f lag=0", n, (n - lastF) / dt / 30)) end
-    timer, lastF = now, n
+    if Spring.DiffTimers(now, timer) >= INTERVAL then
+        timer = now
+        if worst > 0 then
+            local new = speed
+            if worst > TARGET * 1.25 then
+                new = speed * math.max(0.5, TARGET / worst)
+            elseif worst < TARGET * 0.8 then
+                new = speed * 1.1
+            end
+            new = math.floor(math.max(MIN_SPEED, math.min(MAX_SPEED, new)) * 10 + 0.5) / 10
+            if new ~= speed then SetSpeed(new) end
+        end
+        worst = 0
+    end
+    if n - lastF >= 300 then
+        local dt = Spring.DiffTimers(now, logTimer)
+        if dt > 0 then
+            Spring.Echo(string.format("[GOV] frame=%d speed=%.1f lag=%d set=%.1f", n, (n - lastF) / dt / 30,
+                worst, speed))
+        end
+        logTimer, lastF = now, n
+    end
 end
 
 function widget:GameOver(winners)
@@ -301,7 +346,7 @@ def render_script(game_type: str, map_name: str, save_replay: bool, host_port: i
 
 
 def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int, end_frame: int,
-          eco_weight: float, spring_data: str, max_speed: float, profile: bool) -> list:
+          eco_weight: float, spring_data: str, speeds: "tuple[float, float, float]", profile: bool) -> list:
     widgets_dir = write_dir / "LuaUI" / "Widgets"
     widgets_dir.mkdir(parents=True, exist_ok=True)
     active, skip = [], set()
@@ -311,7 +356,10 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
         skip.add(fname)
         active.append(wname)
 
-    put("single_control.lua", CONTROL_WIDGET.replace("__SPEED__", f"{max_speed:g}"), "Single Control")
+    lo, hi, target = speeds
+    put("single_control.lua", CONTROL_WIDGET.replace("__MIN__", f"{lo:g}").replace("__MAX__", f"{hi:g}")
+        .replace("__TARGET__", f"{target:g}"), "Single Control")
+    put("headless_latency_probe.lua", bt.LATENCY_PROBE_WIDGET, "Latency Probe")
     if profile:
         put("headless_profiler.lua", bt.PROFILER_WIDGET, "Harness Profiler")
 
@@ -346,7 +394,8 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
 
 
 def run_match_single(bot0_dir, bot1_dir, duration: int, map_name: str, save_replay: bool, verbose: bool,
-                     end_frame: int, eco_weight: float, max_speed: float, profile: bool = False):
+                     end_frame: int, eco_weight: float, max_speed: float, profile: bool = False,
+                     min_speed: float = 2, target_lag: float = 30):
     """Like bot_testing.run_match, in one process. Returns a bot_testing.MatchResult."""
     files = (sorted(Path(bot0_dir).glob("*.lua")), sorted(Path(bot1_dir).glob("*.lua")))
     if not files[0] or not files[1]:
@@ -370,10 +419,11 @@ def run_match_single(bot0_dir, bot1_dir, duration: int, map_name: str, save_repl
         print(f"Map       : {map_name}")
         print(f"Bot 0     : {Path(bot0_dir).name}  ({len(files[0])} files)")
         print(f"Bot 1     : {Path(bot1_dir).name}  ({len(files[1])} files)")
-        print(f"Speed     : pinned at {max_speed:g}x (runs as fast as the sim allows)")
+        print(f"Speed     : {min_speed:g}-{max_speed:g}x, holding the order round trip near {target_lag:g} frames")
 
     game_end_target = max(30, duration - 150)
-    setup(solo_dir, files, game_end_target, end_frame, eco_weight, spring_data, max_speed, profile)
+    setup(solo_dir, files, game_end_target, end_frame, eco_weight, spring_data, (min_speed, max_speed, target_lag),
+          profile)
     bt.write_script(solo_dir / "startscript.txt",
                     render_script(game_type, map_name, save_replay, host_port, name0, name1, max_speed))
 
