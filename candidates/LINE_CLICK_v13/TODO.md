@@ -33,6 +33,11 @@ Base: `candidates/LINE_CLICK_v12`. Status per item: TODO / DONE-untested / VERIF
   - v13b = v12 + army changes (floor 10%, slow group, rez, Shurikens): slot 0 tie 1.03x but **11.0k eco lost vs 1.1k**;
     slot 1 (TreeServer) 0.69x, **10.6k eco lost vs 0.8k**. The army changes leave the eco open to raids.
   - Stun allocation works in-engine (`[UC/stun] 17 stunners on 4 targets (0 stunned, 4 still moving)`).
-  - Next: v13c = v13 with the 20% floor back.
+  - v13c = v13 with the 20% floor back, vs v12: TreeServer 1.21x (s0), 1.07x (s1); main PC **0.86x (s0), 0.81x (s1)**.
+  - **v13d** = v13a + Mammoths/Sheldons in the slow group + Shuriken stuns + brave rez crew, with v12's rez count
+    and spine settings, **vs v13a**: tie 0.99x (s0), **win 1.38x (s1)** -> geometric mean 1.17x.
+  - Conclusion: **v13d is the current best.** What hurt: the 10% army floor (v13b: ~11k eco lost to raids) and the
+    30-rez-bot floor by 8:00 / faster nano switching (v13c lost both main-PC games). The user's "30+ rez bots" needs a
+    later ramp (e.g. reach 30 by ~15:00, scaled by wreck metal) -- next to try, on top of v13d.
 
 Also open from the 30-min game: v12 led at 20:00 (army 82.5k vs 63.6k) but LINE_CLICK led at 30:00 (292k vs 211k).
