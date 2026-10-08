@@ -219,3 +219,38 @@ PC after the diagnostic), and v12 against a human.
   reach (a T2 con cannot place T1 nanos) and a site bigger than a wind block. endgame.lua's FireNukes + enemy_intel's
   AntiNukeCovers are the pieces to reuse for targeting.
 - **2 Skuttles/spies, 3 LRPC, 5 T3 mix, 6 defence creep** -- not reached.
+## Daytime follow-up (2026-10-08, after the user watched v12)
+
+**30-min check of v12:** LINE_CLICK (s0) vs v12, TreeServer: v12 led at 20:00 (army 82.5k vs 63.6k) but LINE_CLICK led at
+30:00 (~343k vs 264k END_SCORE, computed from the 30:00 rows). Replay demos/2026-10-08_13-52-31-583_*.sdfz.
+
+**User's notes (full list and status: `candidates/LINE_CLICK_v13/TODO.md`)** -> v13 = v12 + all of them. Then split:
+
+| variant | what | result (20 min) |
+|---|---|---|
+| v13 | everything | lost 0.44x vs v12 at 26:00 (s1, main PC); eco raided |
+| **v13a** | grid expansion: COLLECT_ALWAYS, GRID_ENEMY_SIDE 1500 (grids toward the map interior), GRIDS_OPENING 3, GRID_FAST_INCOME 250, LINE_GATE off | **3-0 vs v12, 1.19x** (1.14 s0, 1.21 + 1.30 s1); up to 1,256 M/s at 20:00 |
+| v13b | army only: floor 10%, faster nanos, Mammoths/Sheldons slow group, 30 rez by 8:00 + brave rez, Shuriken stuns | 0-2-1 vs v12; **~11k eco lost to raids** in 2 games |
+| v13c | v13 with the 20% floor | 1-2-1 vs v12 (1.21, 1.07, 0.86, 0.81) |
+| **v13d** | v13a + slow group Mammoths/Sheldons + Shuriken stuns + brave rez (v12 rez count & spine) | vs v13a: 0.99 (s0), **1.38 (s1)**; 30-min vs v12: **killed v12's commander at 24.9 min** |
+| v13e | v13d + 30 rez bots ramped 8:00-15:00, + wreck metal | vs v13d 0.71 / 1.34 -> 0.98, no difference |
+| v14 | v13d + grids choose by resource pressure (GRID_BALANCE, mex without nanos in reach) + placer order grace 60 frames | **0.29x vs v13d (s1)**: grids stalled, income stuck at 168 M/s from 10:00, nothing placed 9:00-10:00 with 4k banked |
+
+**Current best: `candidates/LINE_CLICK_v13d`.** Lessons: the grid throttles were real (cells only searched while the
+bank had 500; no cells toward the interior; the line gate) and fixing them is the biggest gain of the day. The 10%
+army floor and an early 30-rez floor leave the eco open to raids. The stun allocator works in-engine
+(`[UC/stun] 17 stunners on 4 targets`). The rez crew in v13 did 1,600+ repairs / 1,100+ rezzes by 25:00.
+
+**v14's stall, cause found but fix unmeasured:** the placer's interrupt path took the first unbuilt item of a class
+without checking it was buildable; the normal order skips a blocked spot after 3 looks, the interrupt path did not.
+Harmless while the metal interrupt hardly fired (bank < 150 AND 2 nanos in reach); with the balance interrupts always on
+an air con sat on one impossible item. Fixed in blueprint_placer (commit 0be5f6d), stub-tested only; the next step is
+one v14 vs v13d game. The user's original observation (grids build nanos first while metal is short; an air con ordered
+to a mex then redirected) is still the open problem -- the order grace and GRID_BALANCE are the candidate fixes.
+
+**Still open:** income is ~800-1,250 M/s at 20:00 vs the user's 2-4k target; the bot cannot pick its spawn (grids
+toward the interior is the workaround); the main-PC slot-edge diagnostic was inconclusive (no-pin runs hit the wall
+clock).
+
+**Repo note:** during the session HEAD moved from `main` to `bot-testing-v2` without a checkout entry (another session?).
+Everything after v12 is committed on `bot-testing-v2`; `main` stops at v12 (000b3b1). The user decides how to merge.

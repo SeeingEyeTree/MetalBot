@@ -9,8 +9,14 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 **`candidates/LINE_CLICK/` is the main bot right now** (updated 2026-10-08). Start new work from it (not TILE_BOT, DRAGON_BOT or SPINE_BOT). Open ideas: `experiment_ideas.md`.
 **`candidates/LINE_CLICK_v12/` beat it 5-0-1 (1.36x END_SCORE, 6 twenty-minute mirror games, both slot orders) in the
 2026-10-08 overnight run** -- LINE_CLICK + click_army FORWARD_CORE and FLANK, line_transition ENERGY_PUSH, and the
-commander evading real dives (commander_guard DANGER_VALUE). Promote it once the user agrees. Everything tried that
-night, and the measurement lessons: `knowledge/overnight_2026-10-08.md`.
+commander evading real dives (commander_guard DANGER_VALUE). Everything tried that night, and the measurement
+lessons: `knowledge/overnight_2026-10-08.md`.
+**Best so far: `candidates/LINE_CLICK_v13d/`** (2026-10-08 daytime, from the user's notes on v12): v12 + grid expansion
+fixes in line_transition (COLLECT_ALWAYS, GRID_ENEMY_SIDE, LINE_GATE off; alone 3-0 vs v12) + Mammoths/Sheldons in the
+slow group, Shuriken stun allocation, brave rez crew. Rejected: 10% army floor, 30 rez bots by 8:00. `LINE_CLICK_v14`
+(grids pick mex/wind/nano by resource pressure + placer order grace) stalled its grids; a placer fix (0be5f6d) is untested.
+Status and next steps: `candidates/LINE_CLICK_v13/TODO.md`. Neither is promoted yet -- the user decides.
+**Git:** work after v12 is on branch `bot-testing-v2` (HEAD moved off `main` mid-session); `main` stops at v12.
 
 **Measurement rules learned 2026-10-08:** grep a run for `Sync error` (`result["desync"]`) before trusting anything past
 ~10 game-min (the stats tracker's `RequestPath` desynced nearly every match until it was switched off); run 20-minute
@@ -109,6 +115,25 @@ python bot_testing.py --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay
   `Game speed` blocks
 - `--profile` — logs `[PROF]` lines: per-widget Lua milliseconds per game-minute on each bot process
 - `--save-replay` — saves a `.sdfz` replay to BAR's demos folder
+
+### Single-client mode (`--server single`, added 2026-10-08)
+
+One `spring-headless` process runs **both** bots (`single_client.py`; `ab_test.py --server single`,
+`$env:SERIES_EXTRA="--server single"` for `series.py`). The normal layout runs three processes that each simulate the
+whole game; here a spectator host turns on `cheat` + `godmode 3`, NullAI leads both teams, and every bot widget is
+wrapped in a per-team shim (own team id, fog via the team's LOS/radar, orders only to own units, per-team `WG`, log
+lines tagged `<T0>`/`<T1>` and split back into per-team logs). A 20-minute LINE_CLICK mirror takes ~2.5-3.5 min wall
+(normal: ~12 min, and it often hits the wall-clock backstop first) and ~4 GB of RAM instead of ~11 GB.
+Things that bit while building it (details in the `single_client.py` docstring):
+- Widget orders still go through the engine's local network loop, so its own governor holds the order round trip near
+  `--target-lag` (pinned at 150-280x the lag was 150-320 frames and the bots fell apart).
+- BAR's stock automation widgets (nano turrets on FIGHT etc.) do nothing for a spectator; each team gets a shimmed
+  copy (`STOCK_WIDGETS`). Without them the bots spent ~35% less by 5:00.
+- It pins its main thread to core 8 (`main_core_masks(4)[3]`); the engine default core is the one a normal match's P0 gets.
+Results are **not comparable** with normal-mode results (less order lag). First mirror batch (6 x 20-min LINE_CLICK,
+main PC): slot0/slot1 END_SCORE 0.96, 1.21, 1.04, 0.99, 1.03, 0.59 -- geo-mean 0.95 (no slot-0 edge seen; normal mode
+gives slot 0 ~1.4x here), per-game spread ~1.28x, scores 78-110k, no desyncs possible. Six games are not a noise floor:
+keep pairing slot orders and add mirrors before trusting a small A/B difference in this mode.
 
 ### Remote test machine: TreeServer (Windows laptop)
 
@@ -283,6 +308,7 @@ Or the deploy skill runs automatically when a `.lua` file is created or modified
 ```
 MetalBot/
   bot_testing.py       — test harness (single match; rarely what you want directly)
+  single_client.py     — --server single: both bots in one engine process (shim, governor, stock widgets)
   ab_test.py           — CORRECT way to compare two bots: both slot orders, frame-18000 metric
   find_weakness.py     — ranks likely weaknesses from a result's tracker_timeline
   bot_score.py         — state value phi per team per checkpoint (config: score_config.json)

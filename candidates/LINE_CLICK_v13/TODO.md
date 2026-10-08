@@ -44,5 +44,12 @@ Base: `candidates/LINE_CLICK_v12`. Status per item: TODO / DONE-untested / VERIF
   - 30-min game, v12 vs v13d (v13d in slot 1, main PC): **v13d killed v12's commander at 24.9 min**; income 805 vs
     585 M/s at 20:00, eco lost 1.6k vs 6.6k. Replay: demos/2026-10-08_16-16-40-669_Full Metal Plate 1.7_2026.07.04.sdfz.
   - Still far from the 2-4k M/s target: best seen 1,256 M/s at 20:00 (v13a).
+  - **v14** = v13d + GRID_BALANCE (grids build the pressed resource; nano only when neither is used),
+    GRID_INTR_MIN_NANOS 0, placer SINGLE_ORDER_GRACE 60 (user saw an air con ordered to a mex and redirected):
+    **lost 0.29x to v13d** -- grids stalled (168 M/s from 10:00; nothing placed 9:00-10:00 with 4k banked). Cause: the
+    interrupt path retried an unbuildable item forever; fixed in blueprint_placer (0be5f6d), not yet re-tested.
+
+**Next session:** one v14 vs v13d game with the fix; if it scales, A/B it properly (both slot orders, TreeServer).
+Best bot right now: **v13d**.
 
 Also open from the 30-min game: v12 led at 20:00 (army 82.5k vs 63.6k) but LINE_CLICK led at 30:00 (292k vs 211k).
