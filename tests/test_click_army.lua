@@ -923,6 +923,13 @@ local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
 for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
 check(#errE == 0, "LINE_CLICK_v4e widgets run 14 minutes without Lua errors")
 
+-- LINE_CLICK_v5e: the commander helps the outer-lane cons with their jobs (the stub builds instantly, so this
+-- checks the code runs, not that the help happens)
+local _, _, logH, errH = Smoke("candidates/LINE_CLICK_v5e", 14)
+for _, e in ipairs(errH) do print("LUA ERROR (LINE_CLICK_v5e): " .. e) end
+check(#errH == 0, "LINE_CLICK_v5e widgets run 14 minutes without Lua errors")
+check(Any(logH, "%[CK%] .*group #%d+ launch"), "v5e: a group launches")
+
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
     madeB, valueB, madeC, valueC))
