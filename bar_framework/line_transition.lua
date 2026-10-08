@@ -60,6 +60,13 @@ LT.CFG = {
     --   LINE_GATE: while the line is unbuilt only GRIDS_OPENING grids may open (v13 run: 3 grids from 5:00 to 7:30 with 2
     --     air cons idle and cells waiting).  false = the bank / fast rules apply while the line is still being built.
     LINE_GATE = true,
+    --   GRID_BALANCE / GRID_INTR_MIN_NANOS (user, watching v13): grids were built in blueprint order -- nanos first --
+    --     while metal was short.  The metal interrupt only fires under 150 metal banked AND needs 2 nanos in reach of
+    --     the mex.  GRID_BALANCE adds the placer's utilisation interrupts (mex when metal is the pressed resource, wind
+    --     when energy is, a nano only when neither is used); GRID_INTR_MIN_NANOS = 0 lets an air con place a mex with
+    --     no nano in reach yet.  nil/false = the old behaviour.
+    GRID_BALANCE = false,
+    GRID_INTR_MIN_NANOS = nil,
     ENERGY_PUSH = false,
     EP_START = 10 * 60 * 30, EP_MFRAC = 0.30, EP_MIN_METAL = 3000,   -- "metal floats"
     EP_EFRAC = 0.50, EP_EPULL = 0.85,                                -- "energy binds": bank under half, pull >= 85% of income
@@ -473,9 +480,18 @@ local function TryAssignGrids(T, frame)
             end
             T.allAnchors[#T.allAnchors + 1] = { anchorX = g.anchorX, anchorZ = g.anchorZ, key = k }
             T.gridRotation[k] = g.rotation
-            local st = T.BP.New(T.gridBP, conID, g.anchorX, g.anchorZ, g.rotation, T.BP.GRID_INTERRUPTS)
+            local intr = T.BP.GRID_INTERRUPTS
+            if T.CFG.GRID_BALANCE then
+                -- GRID_BALANCE: below the stall interrupts, build what is under the most pressure (mex / wind), and a
+                -- nano only when neither metal nor energy is being used (blueprint_placer.BalanceInterrupts)
+                intr = {}
+                for _, it in ipairs(T.BP.GRID_INTERRUPTS) do intr[#intr + 1] = it end
+                for _, it in ipairs(T.BP.BalanceInterrupts()) do intr[#intr + 1] = it end
+            end
+            local st = T.BP.New(T.gridBP, conID, g.anchorX, g.anchorZ, g.rotation, intr)
             -- The grid's own factory is the last thing built, unless metal piles up unspent.
             st.deferFactories, st.handoffProgress = true, T.CFG.GRID_HANDOFF
+            if T.CFG.GRID_INTR_MIN_NANOS then st.interruptMinNanos = T.CFG.GRID_INTR_MIN_NANOS end
             if T.gridsAssigned == 0 then T.firstGrid = st end
             T.gridsAssigned = T.gridsAssigned + 1
             ApplyCapstone(T, st, conID)

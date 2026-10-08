@@ -305,6 +305,7 @@ M.GRID_INTERRUPTS = {
 -- Callers add M.BalanceInterrupts() to their interrupt list; all are lowest priority, below
 -- every stall interrupt, and never preempt.  `res` may carry smoothed values
 -- (metalIncomeS / metalPullS / energyIncomeS / energyPullS); the raw ones are the fallback.
+M.SINGLE_ORDER_GRACE = 0 -- frames a single-builder session waits after an order before judging the builder idle (0 = off)
 M.BALANCE_HORIZON = 30   -- seconds
 M.BALANCE_BP_U    = 0.8  -- both resources under this utilization -> build nano (BP)
 
@@ -866,6 +867,14 @@ function M.Update(state, frame, resources)
     local cmds   = Spring.GetUnitCommands(builderID, 1)
     local isBusy = cmds and #cmds > 0
 
+    -- SINGLE_ORDER_GRACE (2026-10-08, 0 = off): an order takes ~20+ frames to show in the builder's queue, and this
+    -- runs every 10, so a builder that was JUST ordered read as idle and got a second, different order (the user saw
+    -- an air con ordered to a mex and then redirected).  Do not judge a builder idle this soon after ordering it.
+    if not isBusy and M.SINGLE_ORDER_GRACE > 0 and state.issueFrame
+       and frame - state.issueFrame < M.SINGLE_ORDER_GRACE then
+        return
+    end
+
     if isBusy then
         local intr = EvalInterrupts(state, resources, frame)
         if not intr then
@@ -939,6 +948,7 @@ function M.Update(state, frame, resources)
                     task.released     = true
                     state.currentTask = nil
                     AdvanceQueue(state, resources, frame)   -- straight to the next site
+                    state.issueFrame = frame
                 end
             end
         end
@@ -986,6 +996,7 @@ function M.Update(state, frame, resources)
     end
 
     AdvanceQueue(state, resources, frame)
+    state.issueFrame = frame
 end
 
 -- Call when no enemies are within ENEMY_CLEAR_RADIUS.
