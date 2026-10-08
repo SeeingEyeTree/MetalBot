@@ -690,7 +690,7 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
                  spring_data: str, end_frame: int = END_FRAME,
                  eco_weight: float = ECO_WEIGHT_SECS, main_core_mask: int = 0,
                  fixed_speed: "float | None" = None, governor: "dict | None" = None,
-                 profile: bool = False) -> list:
+                 profile: bool = False, force_team: "int | None" = None) -> list:
     """
     Populate one player's write_dir with bot widgets, shared deps, shadow stubs,
     BYAR config, and springsettings.cfg.  Returns list of active widget names.
@@ -727,9 +727,16 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
         skip.add("headless_profiler.lua")
         active.append("Harness Profiler")
 
+    # A spectator player (the host of a native AI, see parse_ai) reads GetMyTeamID() = 0;
+    # its stats widgets must score the AI's team instead.
+    team_fix = ""
+    if force_team is not None:
+        team_fix = (f"Spring.GetMyTeamID = function() return {force_team} end\n"
+                    f"Spring.GetMyAllyTeamID = function() return {force_team} end\n")
+
     if include_stats:
         (widgets_dir / "headless_stats.lua").write_text(
-            STATS_WIDGET.replace("__ADJ_SECS__", str(game_end_target))
+            team_fix + STATS_WIDGET.replace("__ADJ_SECS__", str(game_end_target))
                         .replace("__END_FRAME__", str(end_frame))
                         .replace("__ECO_WEIGHT__", str(eco_weight)), encoding="utf-8")
         skip.add("headless_stats.lua")
@@ -739,7 +746,7 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
         # that bot can actually see. Same file a bot would run in a real game.
         tracker_src = REPO_DIR / "metalbot_stats_tracker.lua"
         if tracker_src.exists():
-            (widgets_dir / tracker_src.name).write_bytes(tracker_src.read_bytes())
+            (widgets_dir / tracker_src.name).write_bytes(team_fix.encode("utf-8") + tracker_src.read_bytes())
             skip.add(tracker_src.name)
             active.append("Stats Tracker")
         else:
@@ -852,10 +859,11 @@ def bot_player_name(bot_dir, slot: int) -> str:
 def render_host_script(player_name: str, game_type: str, map_name: str,
                        save_replay: bool, host_port: int,
                        name0: str = "BotCtrl", name1: str = "BotB",
-                       speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
+                       speeds: tuple = (100, 100), spectator: "str | None" = None,
+                       ai: "dict | None" = None) -> str:
     """Start script for the hosting process: P0, or the bot-less spectator host."""
     body = _common_script_body(game_type, map_name, save_replay, name0, name1, speeds,
-                               spectator)
+                               spectator, ai)
     return (
         "[GAME]\n{\n"
         f"    IsHost=1;\n    MyPlayerName={player_name};\n    HostPort={host_port};\n"
@@ -863,12 +871,35 @@ def render_host_script(player_name: str, game_type: str, map_name: str,
     )
 
 
+def parse_ai(spec: "str | None") -> "dict | None":
+    """--bot2 AI:<ShortName>[:<profile>] -> {"short", "profile"} (None for a bot folder).
+
+    A native skirmish AI (BAR ships BARb) plays team 1 instead of a widget bot. It is hosted
+    by player 1, which joins as a spectator so it gives no orders of its own; player 1 still
+    runs the stats widgets for team 1, so the END_SCORE / tracker rows work as for a bot.
+    """
+    if not spec or not str(spec).upper().startswith("AI:"):
+        return None
+    parts = str(spec).split(":")
+    return {"short": parts[1] or "BARb", "profile": parts[2] if len(parts) > 2 and parts[2] else "hard"}
+
+
+def _ai_block(ai: "dict | None", name1: str) -> str:
+    if not ai:
+        return ""
+    return (f"    [AI0]\n    {{\n        Name={name1}_ai;\n        ShortName={ai['short']};\n"
+            "        Version=stable;\n        Team=1;\n        Host=1;\n"
+            f"        [OPTIONS]\n        {{\n            profile={ai['profile']};\n        }}\n    }}\n")
+
+
 def _common_script_body(game_type, map_name, save_replay,
                         name0: str = "BotCtrl", name1: str = "BotB",
-                        speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
+                        speeds: tuple = (100, 100), spectator: "str | None" = None,
+                        ai: "dict | None" = None) -> str:
     record = "1" if save_replay else "0"
     spec = (f"    [PLAYER2]\n    {{\n        name={spectator};\n        team=0;\n"
             "        spectator=1;\n    }\n") if spectator else ""
+    p1_spec = "        spectator=1;\n" if ai else ""
     return (
         f"    GameType={game_type};\n    MapName={map_name};\n"
         "    StartPosType=0;\n    FixedRNGSeed=1;\n"
@@ -897,8 +928,8 @@ def _common_script_body(game_type, map_name, save_replay,
         # give cross-team visibility headless, so every process scores only its own team.
         # The stats tracker logs the fullview flag it actually gets ([TRK] init).
         f"    [PLAYER0]\n    {{\n        name={name0};\n        team=0;\n        fullview=1;\n    }}\n"
-        f"    [PLAYER1]\n    {{\n        name={name1};\n        team=1;\n        fullview=1;\n    }}\n"
-        + spec
+        f"    [PLAYER1]\n    {{\n        name={name1};\n        team=1;\n        fullview=1;\n{p1_spec}    }}\n"
+        + spec + _ai_block(ai, name1)
     )
 
 
@@ -916,10 +947,11 @@ def render_dedicated_script(game_type, map_name, save_replay, host_port,
 
 def render_player_script(player_name, game_type, map_name, save_replay, host_port,
                          name0: str = "BotCtrl", name1: str = "BotB",
-                         speeds: tuple = (100, 100), spectator: "str | None" = None) -> str:
+                         speeds: tuple = (100, 100), spectator: "str | None" = None,
+                         ai: "dict | None" = None) -> str:
     """Startscript for a spring-headless client connecting to the host or dedicated server."""
     body = _common_script_body(game_type, map_name, save_replay, name0, name1, speeds,
-                               spectator)
+                               spectator, ai)
     return (
         "[GAME]\n{\n"
         f"    MyPlayerName={player_name};\n    IsHost=0;\n"
@@ -1297,11 +1329,13 @@ def run_match(
     max_speed: float = DEFAULT_MAX_SPEED,
     target_lag: float = DEFAULT_TARGET_LAG,
     profile: bool = False,
+    ai1: "dict | None" = None,
 ) -> MatchResult:
     """
     Run a headless bot-vs-bot match and return a structured MatchResult.
 
-    bot0_dir / bot1_dir must contain *.lua widget files.
+    bot0_dir / bot1_dir must contain *.lua widget files.  With ai1 (parse_ai), team 1 is a
+    native skirmish AI instead and bot1_dir is only used for its name.
     duration is wall-clock seconds; the game runs at ~20-100x in-game speed. It is a
     backstop: the match normally ends at end_frame game frames, and only ends earlier
     (result.end_reason == "wallclock") if duration - 150s of real time passes first.
@@ -1311,10 +1345,10 @@ def run_match(
     it -- team 1 then acts later on every order (see DEFAULT_SERVER).
     """
     bot0_files = sorted(Path(bot0_dir).glob("*.lua"))
-    bot1_files = sorted(Path(bot1_dir).glob("*.lua"))
+    bot1_files = [] if ai1 else sorted(Path(bot1_dir).glob("*.lua"))
     if not bot0_files:
         raise ValueError(f"No .lua files in {bot0_dir}")
-    if not bot1_files:
+    if not bot1_files and not ai1:
         raise ValueError(f"No .lua files in {bot1_dir}")
 
     stamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1374,10 +1408,11 @@ def run_match(
     setup_player(p1_dir, bot1_files, 1, "T1", include_stats=True,
                  game_end_target=game_end_target, do_selfd=False, end_frame=end_frame,
                  eco_weight=eco_weight, spring_data=spring_data,
-                 main_core_mask=masks[1], profile=profile)
+                 main_core_mask=masks[1], profile=profile,
+                 force_team=1 if ai1 else None)
 
     name0 = bot_player_name(bot0_dir, 0)
-    name1 = bot_player_name(bot1_dir, 1)
+    name1 = (re.sub(r"[^A-Za-z0-9_-]", "_", ai1["short"]) + "_s1") if ai1 else bot_player_name(bot1_dir, 1)
     # "spectator": a third, bot-less headless process hosts, so both bots are ordinary
     # clients and pay the same network latency. It is a real headless client rather than
     # spring-dedicated because the host paces frame creation to its own local client;
@@ -1392,17 +1427,17 @@ def run_match(
                      main_core_mask=masks[2], **host_speed)
         write_script(spec_dir / "startscript.txt",
             render_host_script(spec, game_type, map_name, save_replay, host_port,
-                               name0, name1, speeds, spec))
+                               name0, name1, speeds, spec, ai1))
         write_script(p0_dir / "startscript.txt",
             render_player_script(name0, game_type, map_name, save_replay, host_port,
-                                 name0, name1, speeds, spec))
+                                 name0, name1, speeds, spec, ai1))
     else:
         write_script(p0_dir / "startscript.txt",
             render_host_script(name0, game_type, map_name, save_replay, host_port,
-                               name0, name1, speeds))
+                               name0, name1, speeds, None, ai1))
     write_script(p1_dir / "startscript.txt",
         render_player_script(name1, game_type, map_name, save_replay, host_port,
-                             name0, name1, speeds, spec))
+                             name0, name1, speeds, spec, ai1))
 
     if verbose:
         print("Scripts written.\n")
@@ -1660,7 +1695,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--bot1", required=True, metavar="PATH", help="Team-0 bot folder")
-    p.add_argument("--bot2", required=True, metavar="PATH", help="Team-1 bot folder")
+    p.add_argument("--bot2", required=True, metavar="PATH",
+                   help="Team-1 bot folder, or AI:<ShortName>[:<profile>] for a native skirmish AI "
+                        "(e.g. AI:BARb, AI:BARb:hard)")
     p.add_argument("--duration", type=int, default=None, metavar="SECS",
                    help="Real-seconds backstop; the match is cut short (and marked so) if "
                         "the game-time limit is not reached by then. Default: long enough "
@@ -1697,9 +1734,10 @@ def main() -> None:
                    help="Write result.json to this path after the match")
     args = p.parse_args()
 
+    ai1 = parse_ai(args.bot2)
     bot1_dir = Path(args.bot1).resolve()
-    bot2_dir = Path(args.bot2).resolve()
-    for d, label in [(bot1_dir, "--bot1"), (bot2_dir, "--bot2")]:
+    bot2_dir = Path(ai1["short"]) if ai1 else Path(args.bot2).resolve()
+    for d, label in [(bot1_dir, "--bot1")] + ([] if ai1 else [(bot2_dir, "--bot2")]):
         if not d.is_dir():
             sys.exit(f"{label}: folder not found: {d}")
 
@@ -1721,6 +1759,7 @@ def main() -> None:
         max_speed   = args.max_speed,
         target_lag  = args.target_lag,
         profile     = args.profile,
+        ai1         = ai1,
     )
 
     print_result(result)

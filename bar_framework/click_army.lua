@@ -137,6 +137,25 @@ local CFG = {
     SCOUT_SIDE      = 900,    -- the second scout looks this far to the side
     CALL_SCOUTS_PER_GROUP = 2,
     CALL_SCOUT_MAX  = 6,
+    -- FORWARD_CORE (2026-10-08, off by default = the old behaviour): a group's core is its FORWARD cluster --
+    -- the unit nearest its target (or furthest along home->foe) that has company, and everyone within
+    -- CORE_R of it -- not the units around the centroid of everyone.  With 3 groups out every new unit joins
+    -- the weakest group from the factory, so the centroid slid back toward home (a group "attacking" a nano
+    -- at the enemy base had its centre 11,000 elmos away) and the units at the front were sent back to it:
+    -- vs BARb at 20:00, 112k of army stood at mid-map with the enemy commander in sight and 633 value guarding it.
+    -- The core's value (not the whole group's, half of which is still walking) decides fights and targets.
+    FORWARD_CORE    = false,
+    CORE_R          = 1500,
+    CORE_CLUSTER_R  = 500,    -- the forward unit needs CORE_COMPANY others this close
+    CORE_COMPANY    = 2,
+    -- Once a group is on the commander it keeps going while the guard is under this share of the core
+    -- (CMDR_OPEN_FRAC only decides when it starts).  The guard estimate swings, and every drop-out sent three
+    -- groups back across the map (flip-flopped 14:59-15:28 in that game).
+    CMDR_KEEP_FRAC  = nil,    -- nil = CMDR_OPEN_FRAC (old behaviour)
+    -- FORWARD_CORE: a core holding less than this share of the group's value waits (FIGHT where it stands) for
+    -- the rest to catch up, unless it is already at its target.  nil = never waits.
+    CORE_WAIT_FRAC  = nil,
+    CORE_WAIT_R     = 4000,   -- ...counting only the units this close to the core
 }
 M.CFG = CFG
 
@@ -282,7 +301,7 @@ end
 -- The enemy commander as a target, but only when it is open: seen recently, and little armed enemy
 -- value around it besides itself (EI.ThreatAt counts the commander too, so its own value is taken
 -- off).  Returns a target record like EI.RaidTargets' entries, or nil.
-local function CommanderTarget(frame, groupValue)
+local function CommanderTarget(frame, groupValue, keeping)
     if groupValue < CFG.CMDR_MIN_AV then return nil end
     local x, z, seen, uid = EI.Commander()
     if not x or frame - seen > CFG.CMDR_FRESH then return nil end
@@ -290,7 +309,8 @@ local function CommanderTarget(frame, groupValue)
     local c = rec and rec.c
     local own = (c and c.armed and c.hitsGnd) and c.value or 0
     local guard = math.max(0, EI.ThreatAt(frame, x, z, "ground") - own)
-    if guard > CFG.CMDR_OPEN_FRAC * groupValue then return nil end
+    local frac = (keeping and CFG.CMDR_KEEP_FRAC) or CFG.CMDR_OPEN_FRAC
+    if guard > frac * groupValue then return nil end
     return { uid = uid, x = x, z = z, defID = rec and rec.defID, value = c and c.value or 0,
              bp = c and c.bp or 0, commander = true, guard = guard }
 end
@@ -379,6 +399,14 @@ end
 local function SumValue(list)
     local v = 0
     for _, u in ipairs(list) do v = v + u.v end
+    return v
+end
+
+local function NearValue(list, x, z, r)
+    local v = 0
+    for _, u in ipairs(list) do
+        if Dist(u.x, u.z, x, z) <= r then v = v + u.v end
+    end
     return v
 end
 
@@ -804,6 +832,38 @@ local function UpdateSlow(frame, g, list)
     end
 end
 
+-- FORWARD_CORE: the forward cluster of a group.  "Forward" is nearness to the group's target when it has one,
+-- else distance along home->foe.  The forward unit must have CORE_COMPANY others within CORE_CLUSTER_R, so one
+-- unit that ran ahead is not the core.  Returns core, far, cx, cz.
+local function ForwardCore(list, g)
+    local tx, tz = nil, nil
+    if g.target then tx, tz = g.target.x, g.target.z end
+    local need = math.min(CFG.CORE_COMPANY, #list - 1)
+    local best, bestF
+    for _, a in ipairs(list) do
+        local n = 0
+        for _, b in ipairs(list) do
+            if a ~= b and Dist(a.x, a.z, b.x, b.z) <= CFG.CORE_CLUSTER_R then
+                n = n + 1
+                if n >= need then break end
+            end
+        end
+        if n >= need then
+            local f = tx and -Dist(a.x, a.z, tx, tz) or MM.Forward(a.x, a.z)
+            if not bestF or f > bestF then best, bestF = a, f end
+        end
+    end
+    local core, far = {}, {}
+    if best then
+        for _, u in ipairs(list) do
+            if Dist(u.x, u.z, best.x, best.z) <= CFG.CORE_R then core[#core + 1] = u else far[#far + 1] = u end
+        end
+    end
+    if #core == 0 then core, far = list, {} end
+    local cx, cz = Centroid(core)
+    return core, far, cx, cz
+end
+
 local function UpdateAttack(frame, g, list)
     local n = #list
     if n > g.peakN then g.peakN = n end
@@ -814,14 +874,22 @@ local function UpdateAttack(frame, g, list)
 
     -- the core: units near the group's centre.  Units far behind (reinforcements, stragglers) walk
     -- to the core instead of running ahead on their own.
-    local cx, cz = Centroid(list)
-    local core, far = {}, {}
-    for _, u in ipairs(list) do
-        if Dist(u.x, u.z, cx, cz) <= CFG.STRAGGLER_R then core[#core + 1] = u else far[#far + 1] = u end
+    local cx, cz, core, far
+    if CFG.FORWARD_CORE then
+        core, far, cx, cz = ForwardCore(list, g)
+    else
+        cx, cz = Centroid(list)
+        core, far = {}, {}
+        for _, u in ipairs(list) do
+            if Dist(u.x, u.z, cx, cz) <= CFG.STRAGGLER_R then core[#core + 1] = u else far[#far + 1] = u end
+        end
+        if #core > 0 and #far > 0 then cx, cz = Centroid(core) end
+        if #core == 0 then core, far = list, {} end
     end
-    if #core > 0 and #far > 0 then cx, cz = Centroid(core) end
-    if #core == 0 then core, far = list, {} end
     g.cx, g.cz, g.value, g.n = cx, cz, SumValue(list), n
+    -- what the group can fight with right now (FORWARD_CORE: the core, not units still walking in)
+    local fightV = CFG.FORWARD_CORE and SumValue(core) or g.value
+    g.coreValue = fightV
     if g.slow then
         g.heavy, g.escort = 0, 0
         for _, u in ipairs(list) do
@@ -831,7 +899,7 @@ local function UpdateAttack(frame, g, list)
     for _, u in ipairs(far) do Claim(frame, u.uid, CMD_MOVE, cx, cz) end
 
     -- the enemy commander, when it is out in the open, beats everything and pulls every group
-    local cmdr = CommanderTarget(frame, g.value)
+    local cmdr = CommanderTarget(frame, fightV, g.target and g.target.commander)
     if cmdr then
         if g.target and g.target.commander then
             g.target.x, g.target.z, g.target.picked = cmdr.x, cmdr.z, frame     -- it walks: follow it
@@ -851,7 +919,7 @@ local function UpdateAttack(frame, g, list)
         g.target = nil
     end
     if not g.target then
-        local t, score = PickTarget(frame, g, g.value)
+        local t, score = PickTarget(frame, g, fightV)
         if t then
             g.target = t; t.picked = frame
             local d = t.defID and UnitDefs[t.defID]
@@ -898,8 +966,17 @@ local function UpdateAttack(frame, g, list)
             if visible then Claim(frame, u.uid, CMD_ATTACK, tx, tz, g.target.uid)
             else Claim(frame, u.uid, CMD_FIGHT, tx, tz) end
         end
+    elseif CFG.FORWARD_CORE and CFG.CORE_WAIT_FRAC and #far > 0
+           and fightV < CFG.CORE_WAIT_FRAC * (fightV + NearValue(far, cx, cz, CFG.CORE_WAIT_R)) then
+        -- the front is a small part of what is about to arrive: hold and let it catch up.  Units further
+        -- than CORE_WAIT_R (fresh from the factory) do not hold the front back.
+        for _, u in ipairs(core) do Claim(frame, u.uid, CMD_FIGHT, cx, cz) end
+        if frame - (g.waitLogF or -99999) >= 450 then
+            g.waitLogF = frame
+            Log(frame, "group #%d core waits for the rest: core av=%d of %d (%d far)", g.id, fightV, g.value, #far)
+        end
     else
-        local lx, lz = LegPoint(frame, cx, cz, tx, tz, g.value, g.target and g.target.uid)
+        local lx, lz = LegPoint(frame, cx, cz, tx, tz, fightV, g.target and g.target.uid)
         for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, lx, lz) end
     end
 end

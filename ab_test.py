@@ -75,11 +75,17 @@ NOISE_FLOOR = {("army", 3600): 1.09, ("army", 7200): 1.07, ("army", 10800): 1.10
                ("income", 27000): 1.60, ("income", 36000): 4.50}
 
 
-def run_match(bot1: str, bot2: str, duration: int, out: Path) -> dict:
-    subprocess.run(
-        [sys.executable, "bot_testing.py", "--bot1", bot1, "--bot2", bot2,
-         "--duration", str(duration), "--save-result", str(out)],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def run_match(bot1: str, bot2: str, duration: "int | None", out: Path,
+              end_minutes: "float | None" = None) -> dict:
+    # The match only has to reach the checkpoint: --end-minutes stops it there (a minute
+    # later), instead of running a 60-minute game until the wall-clock backstop.
+    cmd = [sys.executable, "bot_testing.py", "--bot1", bot1, "--bot2", bot2,
+           "--save-result", str(out)]
+    if duration:
+        cmd += ["--duration", str(duration)]
+    if end_minutes:
+        cmd += ["--end-minutes", f"{end_minutes:g}"]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return json.loads(out.read_text(encoding="utf-8"))
 
 
@@ -122,7 +128,13 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bot-a", required=True, help="bot folder (the candidate)")
     ap.add_argument("--bot-b", required=True, help="bot folder (the opponent)")
-    ap.add_argument("--duration", type=int, default=300, help="real seconds per match")
+    ap.add_argument("--duration", type=int, default=None,
+                    help="real-seconds backstop per match (default: bot_testing derives it from "
+                         "--end-minutes)")
+    ap.add_argument("--end-minutes", type=float, default=None,
+                    help="game minutes each match runs (default: one minute past the checkpoint)")
+    ap.add_argument("--keep", metavar="DIR", default=None,
+                    help="also copy each match's result json here (A0.json, B0.json, ...)")
     ap.add_argument("--repeat", type=int, default=1,
                     help="matches per slot order (default 1; the verdict is paired within "
                          "each match, see the docstring)")
@@ -160,7 +172,11 @@ def main() -> int:
             n += 1
             print(f"[{n}/{total}] {first} in slot 0 ...", flush=True)
             b1, b2 = (args.bot_a, args.bot_b) if first == "A" else (args.bot_b, args.bot_a)
-            r = run_match(b1, b2, args.duration, tmp / f"{first}{i}.json")
+            end_minutes = args.end_minutes or (max(frame, ctx_frame) / 1800 + 1)
+            r = run_match(b1, b2, args.duration, tmp / f"{first}{i}.json", end_minutes)
+            if args.keep:
+                Path(args.keep).mkdir(parents=True, exist_ok=True)
+                (Path(args.keep) / f"{first}{i}.json").write_bytes((tmp / f"{first}{i}.json").read_bytes())
             other = "B" if first == "A" else "A"
             got = {}
             for who, team in ((first, 0), (other, 1)):

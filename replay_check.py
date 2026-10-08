@@ -84,7 +84,12 @@ def find_engine():
     return c[0]
 
 
-def setup(write_dir, every, end, speed, threads, extra=(), norequest=False):
+BLOCK = ("do local S, f = Spring, function() return false end; S.GiveOrderToUnit = f; S.GiveOrderToUnitArray = f; "
+         "S.GiveOrderToUnitMap = f; S.GiveOrderArrayToUnit = f; S.GiveOrderArrayToUnitArray = f; S.GiveOrder = f; "
+         "S.SendCommands = function() end end\n")
+
+
+def setup(write_dir, every, end, speed, threads, extra=(), norequest=False, block_orders=False):
     wd = write_dir / "LuaUI" / "Widgets"
     wd.mkdir(parents=True, exist_ok=True)
     (wd / "replay_probe.lua").write_text(
@@ -95,6 +100,8 @@ def setup(write_dir, every, end, speed, threads, extra=(), norequest=False):
     for ex in extra:                       # widgets under test, copied BEFORE the shadowing below
         src = Path(ex)
         txt = src.read_text(encoding="utf-8", errors="replace")
+        if block_orders:                    # the widgets can still READ the game, but cannot give a single order
+            txt = BLOCK + txt
         (wd / src.name).write_text(txt, encoding="utf-8")
         m = re.search(r"GetInfo.*?name\s*=\s*[\"']([^\"']+)[\"']", txt, re.S)
         order.append(m.group(1) if m else src.stem)
@@ -115,10 +122,10 @@ def setup(write_dir, every, end, speed, threads, extra=(), norequest=False):
     (write_dir / "springsettings.cfg").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run(demo, label, every, end, speed, threads, timeout, out, extra=(), norequest=False):
+def run(demo, label, every, end, speed, threads, timeout, out, extra=(), norequest=False, block_orders=False):
     demo = Path(demo).resolve()
     write_dir = Path(tempfile.mkdtemp(prefix="replaychk_"))
-    setup(write_dir, every, end, speed, threads, extra, norequest)
+    setup(write_dir, every, end, speed, threads, extra, norequest, block_orders)
     exe = find_engine()
     env = {**os.environ, "SPRING_DATADIR": str(BAR_DATA_DIR)}
     log = write_dir / "headless.log"
@@ -191,6 +198,8 @@ if __name__ == "__main__":
     ap.add_argument("--with", dest="extra", action="append", default=[], metavar="WIDGET.lua",
                     help="also load this widget (repeatable), e.g. metalbot_stats_tracker.lua")
     ap.add_argument("--no-requestpath", action="store_true", help="make Spring.RequestPath unavailable to widgets")
+    ap.add_argument("--block-orders", action="store_true",
+                    help="stub out every GiveOrder* / SendCommands the --with widgets could call (read-only widgets)")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
     a = ap.parse_args()
     if a.compare:
@@ -198,4 +207,5 @@ if __name__ == "__main__":
     else:
         if not a.demo:
             ap.error("a demo path is required")
-        run(a.demo, a.label, a.every, a.end, a.speed, a.threads, a.timeout, a.out, a.extra, a.no_requestpath)
+        run(a.demo, a.label, a.every, a.end, a.speed, a.threads, a.timeout, a.out, a.extra, a.no_requestpath,
+            a.block_orders)
