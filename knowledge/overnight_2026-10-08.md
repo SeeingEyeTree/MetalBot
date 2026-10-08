@@ -65,4 +65,39 @@ the guard is < 0.8x the core; it flip-flopped at 0.3); `CORE_WAIT_FRAC 0.35` (a 
 | LINE_CLICK vs v2 (slot 1) | **v2 won on END_SCORE 102k vs 85k (1.20x) from the weaker slot**; enemy eco destroyed 7.4k vs 1.4k |
 
 v2 won both head-to-heads, including from slot 1. Two matches is not a large sample, but it agrees with the BARb
-series and with the mechanism (the front no longer walks home).
+series and with the mechanism (the front no longer walks home). **Caveat (found later): all of these were played
+before the desync fix, and the commander kills at 12-13 min fall inside the 10-14 min desync window.** Clean
+re-run: E3 below.
+
+## E3: clean re-run of v2 vs LINE_CLICK (after the desync fix) -- NO DIFFERENCE DEMONSTRATED
+
+| match (20 min, main PC, no desync) | result |
+|---|---|
+| v2 (s0) vs LINE_CLICK | v2 1.28x |
+| v2 (s0) vs LINE_CLICK | v2 1.75x |
+| LINE_CLICK (s0) vs v2 | LINE_CLICK 1.57x (v2 0.64x) |
+| LINE_CLICK (s0) vs v2 | LINE_CLICK 1.65x (v2 0.61x) |
+
+Geometric mean over the slot orders **0.97x**: the earlier "v2 won both" was in desynced games. **The slot-0 edge in
+20-minute mirror games is ~1.5x on END_SCORE** (same-slot spread ~1.35x), far larger than the 8-minute army
+metric's. Order latency is symmetric (~22 frames both); slot 0 has the higher income at 15:00 in 12 of 13 mirror games;
+the two starts are mirror images ((2400,850) rot 0 vs (9650,11400) rot 2). Cause not found. FORWARD_CORE still fixes
+a real bug (the test shows it; vs BARb it is re-measured in E7), but no mirror effect is measurable at this noise. -> `candidates/LINE_CLICK_v3` -- NO DIFFERENCE, not adopted
+
+v2 + commander_guard in the macro: evade any armed enemy near it (crew suspended, `LC.Suspend/Resume`), cloak
+when energy covers the MOVING cost (1000 E/s for corcom; cloaking on the standing 100 E/s emptied the opening's
+energy in 24 s), retire to a safe spot behind the base (jammer + 2 AA) at 10:00 or when its lane is done.
+
+| match (20 min, no desync) | result |
+|---|---|
+| v3 (s0) vs LINE_CLICK | tie 1.05x (this one desynced) |
+| v3 (s0) vs LINE_CLICK | win 1.58x |
+| LINE_CLICK (s0) vs v3 | loss 0.84x; v3 income 378 vs 673 at 20:00, 4.6k eco lost by 10:00 (vs 0.7k) |
+| v3 (s0) vs v2 | win 1.19x |
+| v2 (s0) vs v3 | loss 0.90x |
+
+Slot 0 won every game: geometric mean over the slot orders 1.04 (vs LINE_CLICK) and 1.03 (vs v2) -- nothing
+measurable. Mechanism: the commander retired at ~5:45 (its lane done) and ran from single raiders; it is one of the
+best defenders of the early base (3700 hp, a real weapon), so the eco lost a defender. **Lesson: in 20-minute games
+the slot-0 advantage is ~1.2-1.3x on END_SCORE -- always pair the slot orders.** Follow-up `LINE_CLICK_v3b`: no
+retirement, no cloak, evade only a real dive (armed value >= 1500 near it).
