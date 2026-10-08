@@ -24,4 +24,15 @@ Base: `candidates/LINE_CLICK_v12`. Status per item: TODO / DONE-untested / VERIF
 7. **Shuriken micro -- DONE-untested.** Responding Shurikens get individual ATTACK targets: an unstunned unit gets 2-6
    (by hp), a stunned one keeps ONE keeper, the rest go to units that are still moving. Log: `[UC/stun]`.
 
+## Results so far
+
+- v13 (everything) vs v12, 30 min, main PC, v13 in slot 1: **lost badly**, 137k vs 307k at 26:00 (cut by wall clock);
+  v13 income 596 vs 925 at 20:00, 7.3k eco lost vs 3.8k. Rez crew in-engine: 30 rez bots, 1600+ repairs, 1100+ rezzes.
+- Split to find out why (20 min):
+  - v13a = v12 + grid/eco switches + LINE_GATE off: slot 0 1.14x at 16:00 (wall-clock cut), income 573 vs 429.
+  - v13b = v12 + army changes (floor 10%, slow group, rez, Shurikens): slot 0 tie 1.03x but **11.0k eco lost vs 1.1k**;
+    slot 1 (TreeServer) 0.69x, **10.6k eco lost vs 0.8k**. The army changes leave the eco open to raids.
+  - Stun allocation works in-engine (`[UC/stun] 17 stunners on 4 targets (0 stunned, 4 still moving)`).
+  - Next: v13c = v13 with the 20% floor back.
+
 Also open from the 30-min game: v12 led at 20:00 (army 82.5k vs 63.6k) but LINE_CLICK led at 30:00 (292k vs 211k).
