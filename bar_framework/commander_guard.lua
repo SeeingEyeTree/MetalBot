@@ -215,19 +215,23 @@ local function IssueBuilds(frame, comID)
     end
 end
 
-local function UpdateCloak(comID, res)
+local function UpdateCloak(comID, res, moving)
     local d = UnitDefs[Spring.GetUnitDefID(comID) or -1]
     if not (d and d.canCloak) then return end
     local frac = (res.energyStorage or 0) > 0 and res.energy / res.energyStorage or 0
     local spare = (res.energyIncome or 0) - (res.energyPull or 0)
+    -- A commander that still walks (its lane) pays the MOVING cost: 1000 E/s for corcom against 100 standing.
+    -- Cloaking on the standing cost at 1:16 emptied the opening's energy bank in 24 s.
+    local cost = d.cloakCost or 0
+    if moving then cost = math.max(cost, d.cloakCostMoving or 0) end
     local want = cloaked
-    if frac >= M.CLOAK_ON_FRAC and spare >= (d.cloakCost or 0) then want = true
+    if frac >= M.CLOAK_ON_FRAC and spare >= cost then want = true
     elseif frac < M.CLOAK_OFF_FRAC then want = false end
     if want ~= nil and want ~= cloaked then
         Spring.GiveOrderToUnit(comID, CMD_CLOAK, { want and 1 or 0 }, 0)
         cloaked = want
-        Spring.Echo(string.format("[CG] %s commander cloak %s (energy %.0f%% full, spare %.0f/s, cost %s)",
-            Clock(Spring.GetGameFrame()), want and "ON" or "off", frac * 100, spare, tostring(d.cloakCost)))
+        Spring.Echo(string.format("[CG] %s commander cloak %s (energy %.0f%% full, spare %.0f/s, cost %d)",
+            Clock(Spring.GetGameFrame()), want and "ON" or "off", frac * 100, spare, cost))
     end
 end
 
@@ -270,7 +274,7 @@ function M.Update(frame, comID, res, opts)
     end
     -- opts.cloakAlways (LINE_CLICK_v2): cloak whenever energy allows, also while it still builds.  An enemy that
     -- hunts the commander by sight (click_army's "commander is open", BARb) does not see it then.
-    if not retired and opts.cloakAlways then UpdateCloak(comID, res) end
+    if not retired and opts.cloakAlways then UpdateCloak(comID, res, true) end
     if not retired then return "free" end
 
     if not safeX and opts.homeX then

@@ -47,6 +47,9 @@ local CFG = {
     -- armed enemies (the crew gets it back when the area is quiet) and cloaks whenever energy allows.
     CMDR_EVADE          = true,
     CMDR_CLOAK          = true,
+    -- ...and once its lane is done, or from this frame on, it retires: leaves the line (game_mechanics 1.5: after the
+    -- opening its 300 BP hardly matters) for a safe spot behind the base, where it builds a jammer and 2 AA turrets.
+    CMDR_RETIRE_FRAME   = 10 * 60 * 30,
 }
 local START_FRAME = 15
 local NET_SMOOTH  = 0.1
@@ -379,10 +382,18 @@ local function UpdateCommanderSafety(frame, res)
     if not (CG and crew and commanderID and TS.cmdPhase == "lane") then return end
     if not (CFG.CMDR_EVADE or CFG.CMDR_CLOAK) then return end
     local mb = WG and WG.MetalBot or {}
+    local retire = CFG.CMDR_RETIRE_FRAME and mb.homeX ~= nil
+                   and (frame >= CFG.CMDR_RETIRE_FRAME or (crew.lanesDone and crew.lanesDone[1] ~= nil))
     local state = CG.Update(frame, commanderID, res, {
-        retire = false, homeX = mb.homeX, homeZ = mb.homeZ, foeX = mb.foeX, foeZ = mb.foeZ,
+        retire = retire, homeX = mb.homeX, homeZ = mb.homeZ, foeX = mb.foeX, foeZ = mb.foeZ,
         threats = CFG.CMDR_EVADE and mb.threats or nil, cloakAlways = CFG.CMDR_CLOAK })
-    if not CFG.CMDR_EVADE then return end
+    if state == "retired" and not TS.cmdRetired then
+        TS.cmdRetired = frame
+        LC.Release(crew, commanderID)          -- the line goes on without it
+        TS.cmdEvading = nil
+        Spring.Echo(string.format("[LN] %s commander leaves the line for its safe spot", Clock(frame)))
+    end
+    if not CFG.CMDR_EVADE or TS.cmdRetired then return end
     if state == "evading" and not TS.cmdEvading then
         TS.cmdEvading = frame
         LC.Suspend(crew, commanderID)

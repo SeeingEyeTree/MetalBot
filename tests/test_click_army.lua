@@ -914,7 +914,9 @@ check(#errV == 0, "LINE_CLICK_v3 widgets run 14 minutes without Lua errors")
 check(not Any(logV, "ERROR loading commander_guard"), "v3: commander_guard loaded")
 check(Any(logV, "%[CK%] .*group #%d+ launch"), "v3: a group launches")
 check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away from the raid on the base")
-check(Any(logV, "%[LN%] .*commander back to its lane after evading"), "v3: and goes back to its lane when it is over")
+-- (the stub builds instantly, so the commander's lane is done long before the 11:00 raid: it has retired by then)
+check(Any(logV, "%[LN%] .*commander leaves the line for its safe spot"), "v3: the commander retires from the line")
+check(Any(logV, "%[CG%] .*commander builds %d+ defences at its safe spot"), "v3: and builds its defences at the safe spot")
 
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
