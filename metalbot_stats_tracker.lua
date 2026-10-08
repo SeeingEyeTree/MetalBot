@@ -871,8 +871,13 @@ end
 -- erroring), which is logged as fac_exit_unknown, never as trapped.  The second value is a
 -- short description of the best attempt, for the fac_boxed event.
 local EXIT_FAR = 1000
+-- OFF since 2026-10-08: Spring.RequestPath from a widget goes through the same path manager the simulation uses,
+-- the prime suspect for the desyncs seen with the LINE_CLICK widget set (replays become unrepeatable with the full
+-- widget set loaded; a headless bot-vs-bot match lost a client to "Sync error" at 17:15).  fac_exit_ok then reads
+-- unknown.  Set true only for a run that needs the lab-exit check.
+local FAC_EXIT_CHECK = false
 local function exitOK(uid, defID, x, z)
-    if not Spring.RequestPath then return nil end
+    if not FAC_EXIT_CHECK or not Spring.RequestPath then return nil end
     local od = groundOption(defID)
     if not od then return nil end
     local fd = UnitDefs[defID]

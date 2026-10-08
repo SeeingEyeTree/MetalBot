@@ -17,7 +17,7 @@ if (-not $barBase) {
 
 $dst = "$barBase\data\LuaUI\Widgets"
 Write-Host "Deploying to: $dst"
-# do not add new_bot.lua and bot.lua
+# do not add archive\bot.lua / new_bot.lua (retired)
 $files = @(
     "blueprint_placer.lua",
     "blueprints_data.lua",
@@ -37,11 +37,14 @@ $files = @(
     "blueprints\general\raider_blueprint.lua",
     "blueprints\general\ground_raider_blueprint.lua",
     "blueprints\general\bad_com_start.lua",
+    "blueprints\general\line_com.lua",
     "blueprints\general\con_bot_grid.lua",
+    "blueprints\general\con_bot_grid_v2.lua",
     "blueprints\general\T1Spine.lua",
     "blueprints\general\T2Spine.lua",
     "blueprints\general\T3Spine.lua",
     "metalbot_stats_tracker.lua",
+    "human_control_logger.lua",
     "bar_framework\escape_guard.lua",
     "bar_framework\nano_broker.lua",
     "bar_framework\resource_utils.lua",
@@ -58,8 +61,15 @@ $files = @(
     "bar_framework\endgame.lua",
     "bar_framework\commander_guard.lua",
     "bar_framework\tile_crew.lua",
+    "bar_framework\slot_crew.lua",
+    "bar_framework\line_crew.lua",
+    "bar_framework\line_transition.lua",
+    "bar_framework\nano_lift.lua",
     "bar_framework\spine.lua",
-    "bar_framework\line_fight.lua"
+    "bar_framework\line_fight.lua",
+    "bar_framework\click_army.lua",
+    "bar_framework\scout_lanes.lua",
+    "bar_framework\slow_front.lua"
 )
 
 # The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).

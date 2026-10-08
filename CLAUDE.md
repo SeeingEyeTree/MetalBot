@@ -4,6 +4,25 @@
 
 MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as Spring engine Lua widgets. The bot runs headlessly (no display) in a dedicated test harness (`bot_testing.py`) so it can be developed and benchmarked automatically.
 
+## Main bot and test settings
+
+**`candidates/LINE_CLICK/` is the main bot right now** (updated 2026-10-08). Start new work from it (not TILE_BOT, DRAGON_BOT or SPINE_BOT). Open ideas: `experiment_ideas.md`.
+**`candidates/LINE_CLICK_v12/` beat it 5-0-1 (1.36x END_SCORE, 6 twenty-minute mirror games, both slot orders) in the
+2026-10-08 overnight run** -- LINE_CLICK + click_army FORWARD_CORE and FLANK, line_transition ENERGY_PUSH, and the
+commander evading real dives (commander_guard DANGER_VALUE). Promote it once the user agrees. Everything tried that
+night, and the measurement lessons: `knowledge/overnight_2026-10-08.md`.
+
+**Measurement rules learned 2026-10-08:** grep a run for `Sync error` (`result["desync"]`) before trusting anything past
+~10 game-min (the stats tracker's `RequestPath` desynced nearly every match until it was switched off); run 20-minute
+mirror A/Bs on **TreeServer** (the main PC gives slot 0 a ~1.4-1.5x edge there, TreeServer ~1.0-1.1x) and always pair
+slot orders; never `Stop-Process` spring-headless by name (other sessions run matches on this PC). Tools:
+`series.py` (batch of matches), `match_summary.py`, `h2h_report.py`; `--bot2 AI:BARb` plays BAR's native AI (weak vs
+LINE_CLICK: a regression check, not a strength measure); `ab_test.py --end-minutes/--keep`.
+
+**All testing uses a 5000 unit cap** (`maxunits=5000` in the harness's modoptions; BAR's default is
+2000). The larger cap makes a bigger economy worth building. Results from before this change were
+measured under the 2k cap and are not directly comparable.
+
 ## Bot structure
 
 A bot is a **folder** containing three Lua widget files:
@@ -14,7 +33,7 @@ A bot is a **folder** containing three Lua widget files:
 | `lab_controller.lua` | Factory queues: what units each lab builds and in what ratio |
 | `unit_controller.lua` | Combat/scouts: where units move and how they fight |
 
-`OK_BOT/` is the original reference bot. `DRAGON_BOT/` is the current main bot (sim-derived
+`OK_BOT/` is the original reference bot. `DRAGON_BOT/` was the main bot (sim-derived
 opening, executed distributed via `blueprint_placer.lua`, then mex-grid scaling — see
 `knowledge/lessons_learned.md`). `RAIDER_BOT/` and `GROUND_RAIDER_BOT/` are DRAGON_BOT-derived
 **exploiter fixtures**, not champion candidates: each is tuned to hit a specific known weakness
@@ -30,6 +49,22 @@ opening: the commander builds `bad_com_start`, up to 4 con bots each build a row
 `con_bot_grid` tiles (`bar_framework/tile_crew.lua`), then an air lab hands off to the mex grids.
 Its lab and unit controllers, and the spine (`bar_framework/spine.lua`), are SPINE_BOT's (origin/main).
 See `TILE_BOT/GOAL.md`; `tests/test_tile_bot.lua` checks the block geometry and runs a stub smoke test.
+`LINE_BOT/` is an economy-only bot: a line of mex/wind slots (`bar_framework/line_crew.lua`), then an air lab on the
+6 open slots nearest its outer con and TILE_BOT's grid system (spend-pressure hand-off, capstone, T2 retrofits,
+unit-cap consolidation) in `bar_framework/line_transition.lua`. Army: a vehicle lab on the line (done by 4:30) seeds
+TILE_BOT's spine (`LINE_BOT/SPINE_BRIEF.md` is the history); the starter bot lab is reclaimed to fund it. Stub-tested only so far; `candidates/LINE_NOSPINE` is the economy-only A/B baseline.
+`LINE_BOT/GOAL.md` has the design, measurements and lessons. Deploy it with
+`.\deploy.ps1 -Bot LINE_BOT` (the default bot is DRAGON_BOT); `tests/test_line_crew.lua` runs through lupa's Lua 5.1.
+
+**`candidates/LINE_HUMAN/` + `human_control_logger.lua`** record how a person controls units (LINE_BOT macro, empty unit controller, the
+person queues and commands the army). Deploy with `.\deploy.ps1 -Bot candidates\LINE_HUMAN`; `python human_control_report.py` and
+`python human_kite_report.py` read the `[HCL]` logs. Details: `candidates/LINE_CLICK/GOAL.md` and the header of `human_control_logger.lua`.
+
+**`candidates/LINE_CLICK/` is the MAIN BOT.** LINE_BOT's economy plus a human-style aggressive army (`bar_framework/click_army.lua`: up to 3
+simultaneous attack groups hitting different enemy targets, ranked by build power + eco; `bar_framework/slow_front.lua`: Lashers/Pounders/rez bots
+played from the user's own games; `bar_framework/scout_lanes.lua`: enemy-side scouting). Doctrine: win by killing enemy build power/eco/commander,
+not by trade efficiency. Judge it on enemy BP/eco destroyed (`[CK]`, `[SF]` log rows), then A/B on army value. Full design, rulings and tunables:
+`candidates/LINE_CLICK/GOAL.md`. Tests (lupa Lua 5.1, see `tests/LUA_TESTING.md`): `test_click_army`, `test_slow_front`, `test_scout_lanes`.
 
 ### Key Lua API calls used by bots
 
@@ -74,6 +109,24 @@ python bot_testing.py --bot1 OK_BOT --bot2 MY_BOT --duration 300 --save-replay
   `Game speed` blocks
 - `--profile` — logs `[PROF]` lines: per-widget Lua milliseconds per game-minute on each bot process
 - `--save-replay` — saves a `.sdfz` replay to BAR's demos folder
+
+### Remote test machine: TreeServer (Windows laptop)
+
+A second Windows laptop, set up 2026-10-05, runs the same harness so the main PC stays free.
+(`remote_testing.py` only knows the two Raspberry Pis; TreeServer is not wired into it.)
+
+- Tailscale IP `100.104.234.20`, login `malco` (the device name is `TreeServer`, not the login).
+  Key-only SSH: `ssh -i ~/.ssh/id_ed25519_nopass malco@100.104.234.20`.
+- Repo clone: `C:\Users\malco\Documents\GitHub\MetalBot` (plain Documents, not OneDrive); update with
+  `git pull`, then run `deploy.ps1` there. BAR is installed in the same place as on the main PC, so the
+  harness works unchanged.
+- Node.js is not installed, so `replay_analysis.py` won't run there yet.
+- It sleeps after 30 min idle on purpose. Start the keep-awake script on it before a test session; SSH
+  and Tailscale drop while it sleeps and it can't be woken remotely.
+- Run both bots of an A/B on the same machine. TreeServer's CPU differs from the main PC's, so the
+  speed governor reaches a different game speed and results are not directly comparable across machines.
+- If a match there ends implausibly early (the first smoke test ended after ~38 game-seconds with every
+  building self-destroyed; later runs were normal), rerun before trusting it. Cause unknown.
 
 ## How matches end
 
@@ -172,7 +225,7 @@ Use `python checkpoint_map.py <abtest-temp-dir>` to chart signal against noise p
 a result is ambiguous.
 
 - **Army metal value at frame 18000** (10 game-minutes) is the metric, not units built. Slot 0
-  saturates the ~2000 unit cap in a 300s match, so end-of-match numbers can't tell two
+  saturated the old ~2000 unit cap in a 300s match (the cap is now 5000), so end-of-match numbers can't tell two
   competent bots apart.
 - Each team's numbers must be read from its own process — team 0 from P0, team 1 from P1.
   `fullview=1` does not give cross-team visibility in headless.
@@ -241,7 +294,7 @@ MetalBot/
   blueprint_gen.py     — turns a build_order_sim.py result into a blueprint .lua + layout image;
                           reserves an exit corridor (M.keepout) for ground-unit factories
   OK_BOT/              — original reference bot (Cortex faction)
-  DRAGON_BOT/          — current main bot: sim-derived opening + mex-grid scaling
+  DRAGON_BOT/          — earlier main bot: sim-derived opening + mex-grid scaling
   RAIDER_BOT/          — exploiter: air raid (bombers) on an early timer
   GROUND_RAIDER_BOT/   — exploiter: ground raid (Incisors + fighter escort) on an early timer
   MECH_BOT/            — DRAGON_BOT + game_mechanics units/scouting (see MECH_BOT/GOAL.md)
@@ -253,7 +306,9 @@ MetalBot/
   bar_framework/       — shared widgets loaded via VFS.Include (escape_guard, nano_broker, ...);
                           MECH_BOT only: enemy_intel, recon_plan, raid_group, rez_crew,
                           endgame, commander_guard
-  tests/               — plain-Lua tests: spring_stub.lua + test_mech_bot.lua (LUA_TESTING.md)
+  tests/               — plain-Lua tests: spring_stub.lua + test_*.lua (tests/LUA_TESTING.md)
+  archive/             — retired files (old bot.lua, new_bot.lua, original_bot_tmp, unused visualisers); not deployed
+  candidates/          — bots under test; LINE_CLICK is the main one (tracked in git)
   blueprints/          — blueprint .lua files + the build_order_sim.py results they came from
   raid_configs/        — build_order_sim.py `raid` mode configs
   knowledge/raid_runs/ — saved exploiter-bot match results and analysis

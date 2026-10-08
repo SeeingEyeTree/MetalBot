@@ -1,17 +1,17 @@
 # Lua 5.1 check
 
-MetalBot targets Lua 5.1. Before submitting a code change, compile the bot
+MetalBot targets Lua 5.1. Before submitting a code change, compile each changed Lua file
 without producing an output file:
 
 ```sh
-luac5.1 -p bot.lua
+luac5.1 -p candidates/LINE_CLICK/unit_controller.lua
 ```
 
 Some systems install the same compiler as `luac`:
 
 ```sh
 luac -v
-luac -p bot.lua
+luac -p candidates/LINE_CLICK/unit_controller.lua
 ```
 
 Confirm that `luac -v` reports Lua 5.1 before relying on the second command.
@@ -36,3 +36,14 @@ lua5.1 tests/test_mech_bot.lua -v     # same, printing every Spring.Echo
 It takes a few minutes and exits non-zero on any failed check or Lua error. `luac5.1 -p` should
 still be run on every changed file: the stub runs whatever Lua 5.1 accepts, but the 60-upvalue and
 200-local limits are compile-time errors.
+
+
+## Running the tests through lupa (no Lua install needed)
+
+`lupa.lua51` runs the same Lua 5.1 the engine uses. From the repo root:
+
+```sh
+python -c "import lupa.lua51 as L; L.LuaRuntime().execute(open('tests/test_click_army.lua',encoding='utf-8').read())"
+```
+
+Suites: test_click_army, test_slow_front, test_scout_lanes, test_line_crew, test_tile_bot, test_human_logger (all passed 2026-10-08), test_mech_bot, test_slot_*.

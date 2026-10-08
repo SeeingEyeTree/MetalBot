@@ -290,6 +290,59 @@ M.GRID_INTERRUPTS = {
     M_DEFAULT_METAL_INTERRUPT,
 }
 
+-- ── Resource balance (opt-in) ─────────────────────────────────────────────────
+-- When nothing is stalling, build the class of the resource that is under the most pressure,
+-- judged by flow and stock rather than storage fractions: how much of the next H seconds'
+-- supply (income plus the stock spread over H) the current pull would eat.
+--     U = pull / (income + stock / H)
+-- 200/1000 metal and 900/1000 energy -> mex; 3k metal vs 4k energy with a big income gap
+-- follows the flows, not the 30k storage.  U > 1 means it would run dry inside H.
+-- Build power is the third resource.  If NEITHER metal nor energy is under pressure
+-- (both U below BALANCE_BP_U) the money is going unspent, so spend capacity is the limit: the
+-- next item is a nano.  Measured (eco_bench, 8 mirror matches, metal used at 7:30): choosing only
+-- between mex and wind, so nanos waited for the end of every tile, cost 15% (24.9k -> 21.2k) with
+-- ~2k metal banked unspent at 5:00.
+-- Callers add M.BalanceInterrupts() to their interrupt list; all are lowest priority, below
+-- every stall interrupt, and never preempt.  `res` may carry smoothed values
+-- (metalIncomeS / metalPullS / energyIncomeS / energyPullS); the raw ones are the fallback.
+M.BALANCE_HORIZON = 30   -- seconds
+M.BALANCE_BP_U    = 0.8  -- both resources under this utilization -> build nano (BP)
+
+function M.Utilization(res)
+    local H = M.BALANCE_HORIZON
+    local function u(stock, income, pull)
+        local supply = (income or 0) + math.max(stock or 0, 0) / H
+        return (pull or 0) / math.max(supply, 1e-3)
+    end
+    return u(res.metal,  res.metalIncomeS  or res.metalIncome,  res.metalPullS  or res.metalPull),
+           u(res.energy, res.energyIncomeS or res.energyIncome, res.energyPullS or res.energyPull)
+end
+
+-- opts.bp (default true): include the build-power (nano) rule.
+function M.BalanceInterrupts(opts)
+    local withBP = not (opts and opts.bp == false)
+    local list = {
+        { name = "balance_metal", priority = 0.5, buildType = "metal", noPreempt = true,
+          check = function(state, res, frame)
+              local um, ue = M.Utilization(res)
+              return um >= ue
+          end },
+        { name = "balance_energy", priority = 0.4, buildType = "energy", noPreempt = true,
+          check = function(state, res, frame)
+              local um, ue = M.Utilization(res)
+              return ue > um
+          end },
+    }
+    if withBP then
+        list[#list + 1] = { name = "balance_bp", priority = 0.6, buildType = "nano", noPreempt = true,
+          check = function(state, res, frame)
+              local um, ue = M.Utilization(res)
+              return um < M.BALANCE_BP_U and ue < M.BALANCE_BP_U
+          end }
+    end
+    return list
+end
+
 -- ── Internal helpers ──────────────────────────────────────────────────────────
 
 local function EvalInterrupts(state, res, frame)
@@ -525,6 +578,8 @@ local function NoteItemSettled(state)
 end
 
 local function AdvanceQueue(state, res, frame)
+    -- Builder died and the owner is finding a replacement (M.Reassign): keep the session.
+    if state.orphaned then return end
     local builderID = state.builderID
     if not Spring.GetUnitDefID(builderID) then
         state.done = true
@@ -797,6 +852,7 @@ end
 function M.Update(state, frame, resources)
     if state.done then return end
     if state.distributed then return M.UpdateDistributed(state, frame, resources) end
+    if state.orphaned then return end   -- see M.Reassign
 
     local builderID = state.builderID
     if not Spring.GetUnitDefID(builderID) then
@@ -1726,6 +1782,28 @@ function M.NewDistributed(blueprint, anchorX, anchorZ, rotation, interrupts)
                               -- dropped one (see FindNextOpeningItem)
     ComputeBlockers(state.queue)
     return state
+end
+
+-- A single-builder session (M.New) whose builder died.  By default Update marks such a
+-- session done, abandoning the grid half-built and never firing onComplete.  An owner that
+-- wants to keep it calls M.Orphan(state) when the builder dies, then M.Reassign(state, uid)
+-- once a replacement exists; the session is idle in between.
+function M.Orphan(state)
+    if state.distributed or state.done then return false end
+    state.orphaned    = true
+    state.currentTask = nil
+    state.activeInterrupt = nil
+    return true
+end
+
+function M.Reassign(state, builderID)
+    if state.distributed or state.done or not builderID then return false end
+    if not Spring.GetUnitDefID(builderID) then return false end
+    state.builderID   = builderID
+    state.orphaned    = nil
+    state.currentTask = nil
+    Spring.GiveOrderToUnit(builderID, CMD_STOP, {}, {})
+    return true
 end
 
 function M.AddBuilder(state, unitID)

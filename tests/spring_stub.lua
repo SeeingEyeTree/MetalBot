@@ -24,6 +24,7 @@ WeaponDefs = {
     [5] = { name = "antinuke", range = 2000,  type = "StarburstLauncher", interceptor = 1,
             coverageRange = 2000 },
     [6] = { name = "llt",      range = 450,   type = "BeamLaser" },
+    [7] = { name = "missile",  range = 700,   type = "MissileLauncher" },   -- Lasher / Sheldon: long range
 }
 local GUN   = { { weaponDef = 1, onlyTargets = {} } }
 local AAGUN = { { weaponDef = 2, onlyTargets = { vtol = true } } }
@@ -70,6 +71,12 @@ Def("cornecro", { speed = 78, isBuilder = true, canResurrect = true, buildSpeed 
 Def("corak",    { speed = 81, weapons = GUN, metalCost = 43 })
 Def("corgator", { speed = 85, weapons = GUN, metalCost = 120 })
 Def("corraid",  { speed = 72, weapons = GUN, metalCost = 235 })
+Def("corsumo",  { speed = 23, weapons = GUN, metalCost = 2200, energyCost = 28000 })   -- Mammoth (slow)
+local LONGGUN = { { weaponDef = 7, onlyTargets = {} } }
+Def("cormist",  { speed = 52, weapons = LONGGUN, metalCost = 155, energyCost = 2400 })  -- Lasher (slow, long range)
+Def("corlevlr", { speed = 40, weapons = GUN, metalCost = 220, energyCost = 2600 })     -- Pounder (slow screen)
+Def("cormort",  { speed = 50, weapons = LONGGUN, metalCost = 400, energyCost = 2800,    -- Sheldon (T2 bot lab)
+                  customParams = { techlevel = "2" } })
 Def("corfav",   { speed = 153, weapons = GUN, metalCost = 26, modCategories = { scout = true } })
 Def("corcv",    { speed = 51, isBuilder = true, buildSpeed = 95, metalCost = 145 })
 Def("corbw",    { speed = 280.5, canFly = true, weapons = GUN, metalCost = 58, energyCost = 1300 })
@@ -86,6 +93,8 @@ Def("corhurc",  { speed = 248, canFly = true, weapons = BOMB, metalCost = 310, e
 Def("corawac",  { speed = 321, canFly = true, radarRadius = 2500, metalCost = 180,
                   energyCost = 8300, customParams = { techlevel = "2" } })
 Def("corfink",  { speed = 360, canFly = true, metalCost = 51, energyCost = 1450 })
+Def("corvalk",  { speed = 198, canFly = true, metalCost = 74, energyCost = 1450, transportCapacity = 1,
+                  transportMass = 2000, transportSize = 4 })
 Def("corca",    { speed = 131, canFly = true, isBuilder = true, buildSpeed = 65,
                   buildDistance = 136, metalCost = 115, energyCost = 2200 })
 Def("coraca",   { speed = 181, canFly = true, isBuilder = true, buildSpeed = 100,
@@ -103,6 +112,8 @@ Def("corvp",    { isFactory = true, isBuilder = true, buildSpeed = 100, xsize = 
                   metalCost = 600 })
 Def("corap",    { isFactory = true, isBuilder = true, buildSpeed = 100, xsize = 12, zsize = 12,
                   metalCost = 650 })
+Def("coralab",  { isFactory = true, isBuilder = true, buildSpeed = 200, xsize = 12, zsize = 12,
+                  metalCost = 2000, customParams = { techlevel = "2" } })
 Def("coraap",   { isFactory = true, isBuilder = true, buildSpeed = 200, xsize = 14, zsize = 14,
                   metalCost = 2900, customParams = { techlevel = "2" } })
 
@@ -119,9 +130,10 @@ Opts("corca",  { "corwin", "cormex", "corrad", "corrl", "corllt", "cornanotc", "
 Opts("coraca", { "cormoho", "corfus", "corsilo", "corfmd", "coraap", "cornanotc" })
 Opts("corcv",  { "corwin", "cormex", "corrl", "corllt", "cornanotc" })
 Opts("corlab", { "corck", "cornecro", "corak" })
-Opts("corvp",  { "corcv", "corgator", "corraid", "corfav" })
-Opts("corap",  { "corca", "corfink", "corveng", "corbw", "corshad" })
+Opts("corvp",  { "corcv", "corgator", "corraid", "corfav", "cormist", "corlevlr" })
+Opts("corap",  { "corca", "corfink", "corveng", "corbw", "corshad", "corvalk" })
 Opts("coraap", { "coraca", "corape", "corvamp", "corcrwh", "corhurc", "corawac" })
+Opts("coralab", { "corsumo", "cormort" })
 
 -- Anything else a blueprint names: a small plain structure.
 setmetatable(UnitDefNames, { __index = function(t, name)
@@ -136,6 +148,7 @@ Game = { mapSizeX = S.MAP, mapSizeZ = S.MAP, maxUnits = 32000, gameSpeed = 30 }
 CMD = {
     STOP = 0, MOVE = 10, PATROL = 15, FIGHT = 16, ATTACK = 20, GUARD = 25, REPAIR = 40,
     RECLAIM = 90, RESURRECT = 125, STOCKPILE = 100, INSERT = 1, CLOAK = 37382,
+    LOAD_UNITS = 75, UNLOAD_UNITS = 80,
     OPT_ALT = 128, OPT_CTRL = 64, OPT_SHIFT = 32, OPT_INTERNAL = 8,
 }
 
@@ -238,6 +251,17 @@ function S.Step()
             elseif cmd == CMD.ATTACK and #p == 1 and W.units[p[1]]
                    and W.units[p[1]].team ~= u.team then
                 S.Kill(p[1], u.id)
+            elseif cmd == CMD.LOAD_UNITS and p[1] and W.units[p[1]] and not u.cargo then
+                -- A transport takes the unit at once and the unit goes where the transport is.
+                local t = W.units[p[1]]
+                u.cargo, t.loadedIn = t.id, u.id
+                t.x, t.z = u.x, u.z
+                Callin("UnitLoaded", t.id, t.defID, t.team, u.id, u.team)
+            elseif cmd == CMD.UNLOAD_UNITS and p[1] and u.cargo and W.units[u.cargo] then
+                local t = W.units[u.cargo]
+                t.x, t.z, t.loadedIn, u.cargo = p[1], p[3], nil, nil
+                u.x, u.z = p[1], p[3]
+                Callin("UnitUnloaded", t.id, t.defID, t.team, u.id, u.team)
             elseif cmd == CMD.STOCKPILE then
                 u.stock = u.stock + 1
             elseif cmd == CMD.CLOAK then
@@ -337,6 +361,8 @@ Spring = setmetatable({
         table.sort(out)
         return out
     end,
+    -- elmos per FRAME, like the engine; a test sets u.vx / u.vz to make a unit "move"
+    GetUnitVelocity = function(id) local u = W.units[id]; if u then return u.vx or 0, 0, u.vz or 0, 0 end end,
     GetFeaturePosition = function(id) local f = W.features[id]; if f then return f.x, 0, f.z end end,
     GetFeatureResources = function(id) local f = W.features[id]; return f and f.metal end,
     GetFeatureResurrect = function(id) local f = W.features[id]; return f and f.rez or "" end,

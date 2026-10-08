@@ -35,6 +35,11 @@ M.NANO_SNAP      = 600    -- ...moved next to a nano turret this close to it
 M.DANGER_RADIUS  = 1100   -- armed enemies this close -> evade
 M.THREAT_RADIUS  = 1500   -- a reported attack this close -> evade
 M.BLIP_GROUP     = 3      -- unidentified radar blips that count as danger
+-- Armed enemy value (metal + energy/70) near the commander that counts as danger.  0 = any armed unit (the old rule).
+-- The commander (3700 hp, a real weapon) is one of the best defenders of the early base: running from one gator it
+-- could kill left the eco to the raid (LINE_CLICK_v3 lost 4.6k of eco by 10:00, LINE_CLICK 0.7k).  LINE_CLICK_v3b
+-- evades only a real dive.
+M.DANGER_VALUE   = 0
 M.FLEE_DIST      = 1000
 M.CLEAR_HOLD     = 600    -- quiet frames before returning
 M.ORDER_EVERY    = 90
@@ -114,6 +119,7 @@ end
 local function Danger(cx, cz, threats)
     local sx, sz, n = 0, 0, 0
     local bx, bz, blips = 0, 0, 0
+    local value = 0
     for _, uid in ipairs(Spring.GetUnitsInCylinder(cx, cz, M.DANGER_RADIUS) or {}) do
         if Spring.GetUnitAllyTeam(uid) ~= myAllyID then
             local defID = Spring.GetUnitDefID(uid)
@@ -122,8 +128,16 @@ local function Danger(cx, cz, threats)
                 bx, bz, blips = bx + x, bz + z, blips + 1
             elseif x and UQ.has_weapons(defID) and not UQ.is_scout(defID) then
                 sx, sz, n = sx + x, sz + z, n + 1
+                local d = UnitDefs[defID]
+                value = value + ((d and d.metalCost) or 0) + ((d and d.energyCost) or 0) / 70
             end
         end
+    end
+    -- DANGER_VALUE: a few raiders are not a reason to leave; the commander fights them (threat reports count only
+    -- together with real value near it).
+    if M.DANGER_VALUE > 0 then
+        if value < M.DANGER_VALUE then return nil end
+        return sx / math.max(1, n), sz / math.max(1, n)
     end
     -- Radar blips have no def.  One is usually a scout passing over, and dodging it
     -- would pull the commander off the opening for nothing; a group is a raid.
@@ -215,17 +229,23 @@ local function IssueBuilds(frame, comID)
     end
 end
 
-local function UpdateCloak(comID, res)
+local function UpdateCloak(comID, res, moving)
     local d = UnitDefs[Spring.GetUnitDefID(comID) or -1]
     if not (d and d.canCloak) then return end
     local frac = (res.energyStorage or 0) > 0 and res.energy / res.energyStorage or 0
     local spare = (res.energyIncome or 0) - (res.energyPull or 0)
+    -- A commander that still walks (its lane) pays the MOVING cost: 1000 E/s for corcom against 100 standing.
+    -- Cloaking on the standing cost at 1:16 emptied the opening's energy bank in 24 s.
+    local cost = d.cloakCost or 0
+    if moving then cost = math.max(cost, d.cloakCostMoving or 0) end
     local want = cloaked
-    if frac >= M.CLOAK_ON_FRAC and spare >= (d.cloakCost or 0) then want = true
+    if frac >= M.CLOAK_ON_FRAC and spare >= cost then want = true
     elseif frac < M.CLOAK_OFF_FRAC then want = false end
     if want ~= nil and want ~= cloaked then
         Spring.GiveOrderToUnit(comID, CMD_CLOAK, { want and 1 or 0 }, 0)
         cloaked = want
+        Spring.Echo(string.format("[CG] %s commander cloak %s (energy %.0f%% full, spare %.0f/s, cost %d)",
+            Clock(Spring.GetGameFrame()), want and "ON" or "off", frac * 100, spare, cost))
     end
 end
 
@@ -266,6 +286,9 @@ function M.Update(frame, comID, res, opts)
         retired = true
         Spring.Echo(string.format("[CG] %s commander retired from the build order", Clock(frame)))
     end
+    -- opts.cloakAlways (LINE_CLICK_v2): cloak whenever energy allows, also while it still builds.  An enemy that
+    -- hunts the commander by sight (click_army's "commander is open", BARb) does not see it then.
+    if not retired and opts.cloakAlways then UpdateCloak(comID, res, true) end
     if not retired then return "free" end
 
     if not safeX and opts.homeX then

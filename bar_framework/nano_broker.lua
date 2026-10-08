@@ -42,6 +42,7 @@ M.PRIO = {
 
 local CMD_STOP    = 0
 local CMD_WAIT    = 5
+local CMD_ONOFF   = (CMD and CMD.ONOFF) or 85
 local CMD_GUARD   = 25
 local CMD_REPAIR  = 40
 local CMD_RECLAIM = 90
@@ -65,6 +66,23 @@ local function Expired(a)
     return false
 end
 
+-- Parked nanos are paused (on/off command = off): a nano that only has a WAIT queued still auto-assists nearby
+-- builds (measured: 27 of 28 parked spine nanos building at 15:28).  A paused nano builds nothing, so every
+-- order that gives it work switches it back on first.
+local paused = {}
+
+local function SetActive(nanoID, on)
+    if on then
+        if paused[nanoID] then
+            paused[nanoID] = nil
+            if Alive(nanoID) then Spring.GiveOrderToUnit(nanoID, CMD_ONOFF, {1}, {}) end
+        end
+    else
+        paused[nanoID] = true
+        Spring.GiveOrderToUnit(nanoID, CMD_ONOFF, {0}, {})
+    end
+end
+
 local function Claim(nanoID, prio, cmd, target, mode, opts)
     if not Alive(nanoID) or not Alive(target) then return false end
     local cur = assign[nanoID]
@@ -74,6 +92,7 @@ local function Claim(nanoID, prio, cmd, target, mode, opts)
         if cur.cmd == cmd and cur.target == target then return true end
         if cur.prio <= prio then return false end
     end
+    SetActive(nanoID, true)
     Spring.GiveOrderToUnit(nanoID, cmd, {target}, opts or {})
     assign[nanoID] = {prio = prio, cmd = cmd, target = target, mode = mode}
     return true
@@ -91,27 +110,34 @@ function M.Guard(prio, nanoID, target)
     return Claim(nanoID, prio, CMD_GUARD, target, "guard")
 end
 
--- Stop the nano auto-assisting: a queued WAIT.  Held until Release (or a higher-priority claim).
+-- Stop the nano building at all: clear its orders and pause it (on/off = off).  Held until Release (or a
+-- higher-priority claim).
 function M.Park(prio, nanoID)
     if not Alive(nanoID) then return false end
     local cur = assign[nanoID]
     if cur and not Expired(cur) then
-        if cur.mode == "park" then return true end
+        if cur.mode == "park" then
+            if not paused[nanoID] then SetActive(nanoID, false) end     -- re-pause if something switched it back on
+            return true
+        end
         if cur.prio <= prio then return false end
     end
-    Spring.GiveOrderToUnit(nanoID, CMD_WAIT, {}, {})
-    assign[nanoID] = {prio = prio, cmd = CMD_WAIT, target = nil, mode = "park"}
+    Spring.GiveOrderToUnit(nanoID, CMD_STOP, {}, {})
+    SetActive(nanoID, false)
+    assign[nanoID] = {prio = prio, cmd = CMD_ONOFF, target = nil, mode = "park"}
     return true
 end
 
 -- Hand the nano back to the engine's auto-assist behaviour.
 function M.Release(nanoID)
+    local was = paused[nanoID]
+    SetActive(nanoID, true)
     if assign[nanoID] then
         assign[nanoID] = nil
         if Alive(nanoID) then Spring.GiveOrderToUnit(nanoID, CMD_STOP, {}, {}) end
         return true
     end
-    return false
+    return was and true or false
 end
 
 -- What is this nano on?  Returns {prio, cmd, target, mode} or nil.
@@ -139,6 +165,9 @@ end
 function M.Sweep()
     for nanoID, a in pairs(assign) do
         if not Alive(nanoID) or Expired(a) then assign[nanoID] = nil end
+    end
+    for nanoID in pairs(paused) do
+        if not Alive(nanoID) then paused[nanoID] = nil end
     end
 end
 
