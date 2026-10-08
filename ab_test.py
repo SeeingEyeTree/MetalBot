@@ -76,11 +76,13 @@ NOISE_FLOOR = {("army", 3600): 1.09, ("army", 7200): 1.07, ("army", 10800): 1.10
 
 
 def run_match(bot1: str, bot2: str, duration: "int | None", out: Path,
-              end_minutes: "float | None" = None) -> dict:
+              end_minutes: "float | None" = None, server: "str | None" = None) -> dict:
     # The match only has to reach the checkpoint: --end-minutes stops it there (a minute
     # later), instead of running a 60-minute game until the wall-clock backstop.
     cmd = [sys.executable, "bot_testing.py", "--bot1", bot1, "--bot2", bot2,
            "--save-result", str(out)]
+    if server:
+        cmd += ["--server", server]
     if duration:
         cmd += ["--duration", str(duration)]
     if end_minutes:
@@ -144,6 +146,9 @@ def main() -> int:
                          " floor not yet measured)")
     ap.add_argument("--checkpoint", type=int, default=None,
                     help="game frame to score at (default 9000 for income, 18000 for army)")
+    ap.add_argument("--server", choices=("spectator", "host", "single"), default=None,
+                    help="passed to bot_testing.py (single = one process, see single_client.py; "
+                         "the noise floors above were measured in spectator mode)")
     args = ap.parse_args()
 
     frame = args.checkpoint or DEFAULT_FRAME[args.metric]
@@ -173,7 +178,7 @@ def main() -> int:
             print(f"[{n}/{total}] {first} in slot 0 ...", flush=True)
             b1, b2 = (args.bot_a, args.bot_b) if first == "A" else (args.bot_b, args.bot_a)
             end_minutes = args.end_minutes or (max(frame, ctx_frame) / 1800 + 1)
-            r = run_match(b1, b2, args.duration, tmp / f"{first}{i}.json", end_minutes)
+            r = run_match(b1, b2, args.duration, tmp / f"{first}{i}.json", end_minutes, args.server)
             if args.keep:
                 Path(args.keep).mkdir(parents=True, exist_ok=True)
                 (Path(args.keep) / f"{first}{i}.json").write_bytes((tmp / f"{first}{i}.json").read_bytes())

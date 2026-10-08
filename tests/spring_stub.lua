@@ -365,6 +365,7 @@ Spring = setmetatable({
     GetUnitVelocity = function(id) local u = W.units[id]; if u then return u.vx or 0, 0, u.vz or 0, 0 end end,
     GetFeaturePosition = function(id) local f = W.features[id]; if f then return f.x, 0, f.z end end,
     GetFeatureResources = function(id) local f = W.features[id]; return f and f.metal end,
+    GetAllFeatures = function() local out = {}; for id in pairs(W.features) do out[#out + 1] = id end; return out end,
     GetFeatureResurrect = function(id) local f = W.features[id]; return f and f.rez or "" end,
     ValidFeatureID = function(id) return W.features[id] ~= nil end,
     RequestPath = function() return nil end,

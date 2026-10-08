@@ -49,6 +49,14 @@ LT.CFG = {
     -- metal, so energy, not metal, capped spending.  When metal floats and energy is the binding resource, free T2 cons
     -- turn 2x2 blocks of winds into fusions (the consolidation job, before the unit cap), up to EP_INFLIGHT at once;
     -- with no free T2 con an idle advanced air lab makes one.
+    -- GRID EXPANSION (2026-10-08, off by default; LINE_CLICK_v13 turns them on).  In a 30-minute game v12 sat at 2
+    -- grids from 4:00 to 7:40 and at 7-8 from 9:30 to 15:00 with 2-4 air cons idle and 0 cells waiting:
+    --   COLLECT_ALWAYS: new cells were only looked for while the bank held GRID_BANK metal, and the army spends the
+    --     bank -- look whenever the list is empty;
+    --   GRID_ENEMY_SIDE: cells were never allowed past the line's enemy-facing edge, i.e. toward the map interior; with
+    --     the base ~850 from the map edge that left one row of grids.  Allow cells this many elmos past that edge (0 = old).
+    COLLECT_ALWAYS = false,
+    GRID_ENEMY_SIDE = 0,
     ENERGY_PUSH = false,
     EP_START = 10 * 60 * 30, EP_MFRAC = 0.30, EP_MIN_METAL = 3000,   -- "metal floats"
     EP_EFRAC = 0.50, EP_EPULL = 0.85,                                -- "energy binds": bank under half, pull >= 85% of income
@@ -108,7 +116,7 @@ function LT.New(o)
         local bx, bz = self.LC.Rotate(ax - self.L.anchorX, az - self.L.anchorZ, (4 - self.L.rot) % 4)
         local out = (self.enemyLane == 3) and 1 or -1
         local edge = (out > 0) and LINE_BOX.z1 or LINE_BOX.z0
-        return out * (bz - edge) > 0
+        return out * (bz - edge) > (self.CFG.GRID_ENEMY_SIDE or 0)
     end
     -- Does a grid cell at (ax, az) overlap any cell or exit lane of the spine's stack?  (480-elmo cells.)
     T.OverlapsSpine = function(self, ax, az)
@@ -822,8 +830,8 @@ end
 
 -- Opening every free cell at once starves the first grids of build power; pace them (TILE_BOT).
 local function ReleaseCandidates(T, frame, res)
-    if #T.gridCands == 0 and res.metal >= T.CFG.GRID_BANK and frame - T.lastBankGrid >= T.CFG.GRID_BANK_GAP
-       and not T.consolidateOn then
+    if #T.gridCands == 0 and not T.consolidateOn
+       and (T.CFG.COLLECT_ALWAYS or (res.metal >= T.CFG.GRID_BANK and frame - T.lastBankGrid >= T.CFG.GRID_BANK_GAP)) then
         local sources = {}
         for _, a in ipairs(T.completed) do sources[#sources + 1] = a end
         for _, g in ipairs(T.allAnchors) do sources[#sources + 1] = g end

@@ -84,6 +84,12 @@ local CFG = {
     REPAIR_R      = 900,
     REPAIR_BELOW  = 0.9,
     SELF_RETREAT  = 0.4,
+    -- REZ_BRAVE (2026-10-08, off by default; LINE_CLICK_v13): the user saw rez bots walk away from a unit under attack
+    -- right next to them -- "they are useless if they are not doing their job; it is fine if they die".  With it on, a
+    -- damaged unit in reach is repaired even with enemies near (a rez bot only walks back when it has no job or is
+    -- itself nearly dead), ANY of our units counts (not only the slow group), and wrecks may be riskier.
+    REZ_BRAVE     = false,
+    BRAVE_RETREAT = 0.2,     -- REZ_BRAVE: own hp share below which a rez bot still steps back
     BOT_DANGER_R  = 450,    -- an enemy this close to a rez bot sends it back behind the line
     TRAIL         = 350,    -- the crew idles this far behind the Lasher core
     TRAIL_SPREAD  = 120,
@@ -616,6 +622,20 @@ end
 
 local function DamagedFriend(uid, x, z)
     local best, bestScore = nil, 0
+    if CFG.REZ_BRAVE then
+        -- any of our units in reach (fast groups, guards, builders), not only the slow group
+        local team = Spring.GetMyTeamID and Spring.GetMyTeamID()
+        for _, fid in ipairs(Spring.GetUnitsInCylinder(x, z, CFG.REPAIR_R, team) or {}) do
+            if fid ~= uid and not Spring.GetUnitIsBeingBuilt(fid) then
+                local hp, mhp = Spring.GetUnitHealth(fid)
+                if hp and mhp and mhp > 0 and hp / mhp < CFG.REPAIR_BELOW then
+                    local missing = (1 - hp / mhp) * Value(Spring.GetUnitDefID(fid))
+                    if missing > bestScore then best, bestScore = fid, missing end
+                end
+            end
+        end
+        return best
+    end
     for fid in pairs(units) do
         local fx, _, fz = Spring.GetUnitPosition(fid)
         if fx and Dist(fx, fz, x, z) <= CFG.REPAIR_R then
@@ -678,10 +698,12 @@ local function UpdateCrew(frame, cx, cz, val, ux, uz, enemies)
             for _, e in ipairs(enemies or {}) do
                 if Dist(x, z, e.x, e.z) <= math.max(CFG.BOT_DANGER_R, e.range + 100) then danger = true; break end
             end
-            if hp / mhp < CFG.SELF_RETREAT or danger then
+            local friend = CFG.REZ_BRAVE and hp / mhp >= CFG.BRAVE_RETREAT and DamagedFriend(uid, x, z) or nil
+            if not friend and (hp / mhp < (CFG.REZ_BRAVE and CFG.BRAVE_RETREAT or CFG.SELF_RETREAT)
+                               or (danger and not CFG.REZ_BRAVE)) then
                 Order(frame, uid, CMD_MOVE, wx, wz)
             else
-                local friend = DamagedFriend(uid, x, z)
+                friend = friend or DamagedFriend(uid, x, z)
                 if friend then
                     if Order(frame, uid, CMD_REPAIR, nil, nil, friend) then stats.repair = stats.repair + 1 end
                 else

@@ -87,6 +87,7 @@ DEFAULT_SPEED      = "auto"
 # stock UI widgets -- so a 5x floor let the bots fall 450 frames behind by 10 minutes.
 DEFAULT_MIN_SPEED  = 2
 DEFAULT_MAX_SPEED  = 40
+SINGLE_MAX_SPEED   = 1000   # --server single: no network, so just run as fast as the sim can
 DEFAULT_TARGET_LAG = 30     # frames; the network floor alone is ~2 per 1x, so ~15x when idle
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -1346,6 +1347,14 @@ def run_match(
     both pay the same network latency. server="host": P0 hosts in-process and only P1 pays
     it -- team 1 then acts later on every order (see DEFAULT_SERVER).
     """
+    if server == "single":
+        # One process runs both bots (single_client.py): no network, speed pinned at max_speed.
+        if ai1:
+            raise ValueError("--server single does not support a native AI opponent")
+        from single_client import run_match_single
+        return run_match_single(bot0_dir, bot1_dir, duration, map_name, save_replay, verbose,
+                                end_frame, eco_weight, max_speed, profile)
+
     bot0_files = sorted(Path(bot0_dir).glob("*.lua"))
     bot1_files = [] if ai1 else sorted(Path(bot1_dir).glob("*.lua"))
     if not bot0_files:
@@ -1727,18 +1736,21 @@ def main() -> None:
     p.add_argument("--eco-weight", type=float, default=ECO_WEIGHT_SECS, dest="eco_weight",
                    help="seconds of metal income added to army metal value in the end "
                         "score (default: %g)" % ECO_WEIGHT_SECS)
-    p.add_argument("--server", choices=("spectator", "host"), default=DEFAULT_SERVER,
+    p.add_argument("--server", choices=("spectator", "host", "single"), default=DEFAULT_SERVER,
                    help="spectator: a third, bot-less process hosts, so both bots get the "
                         "same order latency. host: team 0's process hosts, giving team 1 "
-                        "extra latency (the old behaviour) (default: %(default)s)")
+                        "extra latency (the old behaviour). single: one process runs both "
+                        "bots under godmode with emulated fog (single_client.py); the speed "
+                        "is pinned at --max-speed (default: %(default)s)")
     p.add_argument("--speed", default=DEFAULT_SPEED,
                    type=lambda v: v if v == "auto" else float(v),
                    help="'auto' (speed follows bot lag, see --target-lag) or a fixed game "
                         "speed multiplier (default: %(default)s)")
     p.add_argument("--min-speed", type=float, default=DEFAULT_MIN_SPEED,
                    help="auto speed never goes below this (default: %(default)g)")
-    p.add_argument("--max-speed", type=float, default=DEFAULT_MAX_SPEED,
-                   help="auto speed never goes above this (default: %(default)g)")
+    p.add_argument("--max-speed", type=float, default=None,
+                   help="auto speed never goes above this (default: %g; with --server single "
+                        "the pinned speed, default %g)" % (DEFAULT_MAX_SPEED, SINGLE_MAX_SPEED))
     p.add_argument("--target-lag", type=float, default=DEFAULT_TARGET_LAG,
                    help="auto speed aims for this order round trip, in game frames; lower "
                         "= less lag but slower runs (default: %(default)g)")
@@ -1773,7 +1785,8 @@ def main() -> None:
         speed       = args.speed,
         pin_cores   = not args.no_pin_cores,
         min_speed   = args.min_speed,
-        max_speed   = args.max_speed,
+        max_speed   = args.max_speed or (SINGLE_MAX_SPEED if args.server == "single"
+                                         else DEFAULT_MAX_SPEED),
         target_lag  = args.target_lag,
         profile     = args.profile,
         ai1         = ai1,

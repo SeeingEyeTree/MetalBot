@@ -955,6 +955,20 @@ do
     check(not Any(log12, "%[LN%] .*commander leaves the line"), "v12: the commander does not retire")
 end
 
+-- LINE_CLICK_v13: grid expansion switches, 10% army floor, Mammoths/Sheldons in the slow group, 30+ rez bots
+-- (brave), Shuriken stun allocation
+do
+    local _, _, log13, err13 = Smoke("candidates/LINE_CLICK_v13", 14)
+    for _, e in ipairs(err13) do print("LUA ERROR (LINE_CLICK_v13): " .. e) end
+    check(#err13 == 0, "LINE_CLICK_v13 widgets run 14 minutes without Lua errors")
+    check(Any(log13, "%[CK%] .*group #%d+ launch"), "v13: a group launches")
+    local rez = 0
+    for _, l in ipairs(log13) do if l:find("%[LabCtrl%] .* rez%s+cornecro") then rez = rez + 1 end end
+    -- (informational: in the stub the only lab that can make cornecro is the starter bot lab, which is reclaimed;
+    -- in a real game the spine's T1 cell has its own bot lab)
+    print(string.format("v13: %d rez bot orders in 14 min (stub)", rez))
+end
+
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
     madeB, valueB, madeC, valueC))
