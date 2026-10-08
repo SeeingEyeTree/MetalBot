@@ -908,42 +908,52 @@ check(Any(logC, "%[UC/respond%]"), "a raid on the main base is answered (by the 
 check(valueC <= 3500 + 400, string.format("guard value stays within GUARD_MAX (%.0f)", valueC))
 
 -- LINE_CLICK_v3 (2026-10-08): click_army FORWARD_CORE + commander safety (commander_guard: evade, cloak)
-local _, _, logV, errV = Smoke("candidates/LINE_CLICK_v3", 14)
-for _, e in ipairs(errV) do print("LUA ERROR (LINE_CLICK_v3): " .. e) end
-check(#errV == 0, "LINE_CLICK_v3 widgets run 14 minutes without Lua errors")
-check(not Any(logV, "ERROR loading commander_guard"), "v3: commander_guard loaded")
-check(Any(logV, "%[CK%] .*group #%d+ launch"), "v3: a group launches")
-check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away from the raid on the base")
--- (the stub builds instantly, so the commander's lane is done long before the 11:00 raid: it has retired by then)
-check(Any(logV, "%[LN%] .*commander leaves the line for its safe spot"), "v3: the commander retires from the line")
-check(Any(logV, "%[CG%] .*commander builds %d+ defences at its safe spot"), "v3: and builds its defences at the safe spot")
+do
+    local _, _, logV, errV = Smoke("candidates/LINE_CLICK_v3", 14)
+    for _, e in ipairs(errV) do print("LUA ERROR (LINE_CLICK_v3): " .. e) end
+    check(#errV == 0, "LINE_CLICK_v3 widgets run 14 minutes without Lua errors")
+    check(not Any(logV, "ERROR loading commander_guard"), "v3: commander_guard loaded")
+    check(Any(logV, "%[CK%] .*group #%d+ launch"), "v3: a group launches")
+    check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away from the raid on the base")
+    -- (the stub builds instantly, so the commander's lane is done long before the 11:00 raid: it has retired by then)
+    check(Any(logV, "%[LN%] .*commander leaves the line for its safe spot"), "v3: the commander retires from the line")
+    check(Any(logV, "%[CG%] .*commander builds %d+ defences at its safe spot"), "v3: and builds its defences at the safe spot")
+end
 
 -- LINE_CLICK_v3b: the commander stays in its lane and evades only a real dive (value >= 1500): the stub's raid is
--- 6 Ak (~300), so it must NOT leave
-local _, _, logB3, errB3 = Smoke("candidates/LINE_CLICK_v3b", 14)
-for _, e in ipairs(errB3) do print("LUA ERROR (LINE_CLICK_v3b): " .. e) end
-check(#errB3 == 0, "LINE_CLICK_v3b widgets run 14 minutes without Lua errors")
-check(not Any(logB3, "%[CG%] .*commander evading"), "v3b: the commander does not run from 6 Ak (under DANGER_VALUE)")
-check(not Any(logB3, "%[LN%] .*commander leaves the line"), "v3b: the commander does not retire")
+do
+    -- 6 Ak (~300), so it must NOT leave
+    local _, _, logB3, errB3 = Smoke("candidates/LINE_CLICK_v3b", 14)
+    for _, e in ipairs(errB3) do print("LUA ERROR (LINE_CLICK_v3b): " .. e) end
+    check(#errB3 == 0, "LINE_CLICK_v3b widgets run 14 minutes without Lua errors")
+    check(not Any(logB3, "%[CG%] .*commander evading"), "v3b: the commander does not run from 6 Ak (under DANGER_VALUE)")
+    check(not Any(logB3, "%[LN%] .*commander leaves the line"), "v3b: the commander does not retire")
+end
 
 -- LINE_CLICK_v4e: line_transition ENERGY_PUSH on (the stub rarely meets its trigger: this checks the code runs)
-local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
-for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
-check(#errE == 0, "LINE_CLICK_v4e widgets run 14 minutes without Lua errors")
+do
+    local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
+    for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
+    check(#errE == 0, "LINE_CLICK_v4e widgets run 14 minutes without Lua errors")
+end
 
 -- LINE_CLICK_v5e: the commander helps the outer-lane cons with their jobs (the stub builds instantly, so this
--- checks the code runs, not that the help happens)
-local _, _, logH, errH = Smoke("candidates/LINE_CLICK_v5e", 14)
-for _, e in ipairs(errH) do print("LUA ERROR (LINE_CLICK_v5e): " .. e) end
-check(#errH == 0, "LINE_CLICK_v5e widgets run 14 minutes without Lua errors")
-check(Any(logH, "%[CK%] .*group #%d+ launch"), "v5e: a group launches")
+do
+    -- checks the code runs, not that the help happens)
+    local _, _, logH, errH = Smoke("candidates/LINE_CLICK_v5e", 14)
+    for _, e in ipairs(errH) do print("LUA ERROR (LINE_CLICK_v5e): " .. e) end
+    check(#errH == 0, "LINE_CLICK_v5e widgets run 14 minutes without Lua errors")
+    check(Any(logH, "%[CK%] .*group #%d+ launch"), "v5e: a group launches")
+end
 
 -- LINE_CLICK_v12: the overnight combination (FORWARD_CORE + FLANK + ENERGY_PUSH + commander evades real dives)
-local _, _, log12, err12 = Smoke("candidates/LINE_CLICK_v12", 14)
-for _, e in ipairs(err12) do print("LUA ERROR (LINE_CLICK_v12): " .. e) end
-check(#err12 == 0, "LINE_CLICK_v12 widgets run 14 minutes without Lua errors")
-check(Any(log12, "%[CK%] .*group #%d+ launch"), "v12: a group launches")
-check(not Any(log12, "%[LN%] .*commander leaves the line"), "v12: the commander does not retire")
+do
+    local _, _, log12, err12 = Smoke("candidates/LINE_CLICK_v12", 14)
+    for _, e in ipairs(err12) do print("LUA ERROR (LINE_CLICK_v12): " .. e) end
+    check(#err12 == 0, "LINE_CLICK_v12 widgets run 14 minutes without Lua errors")
+    check(Any(log12, "%[CK%] .*group #%d+ launch"), "v12: a group launches")
+    check(not Any(log12, "%[LN%] .*commander leaves the line"), "v12: the commander does not retire")
+end
 
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
