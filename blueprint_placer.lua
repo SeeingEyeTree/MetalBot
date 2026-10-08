@@ -611,6 +611,20 @@ local function AdvanceQueue(state, res, frame)
         end
 
         local task = FindNextOfClass(state.queue, intr.buildType)
+        -- A spot that cannot be built (TestBuildOrder 0) must not be retried for ever: the normal order skips such an
+        -- item after 3 looks, the interrupt path did not -- harmless while the metal interrupt hardly fired, but with
+        -- the balance interrupts (always on) an air con sat on one impossible mex (LINE_CLICK_v14: no grid item placed
+        -- 9:00-10:00 with 4k metal banked).  Count the look; a still-blocked item goes back to the normal order.
+        while task and SpotIsBlocked(task) and not (state.clearBlockers and (ExistingBuildAt(task) or FriendlyBlocker(state, task))) do
+            task.testFails = (task.testFails or 0) + 1
+            if task.testFails >= 3 then
+                task.built, task.status = true, "skipped"
+                NoteItemSettled(state)
+                task = FindNextOfClass(state.queue, intr.buildType)
+            else
+                task = nil
+            end
+        end
         if task and CountNanosInRange(task.wx, task.wz) >= (state.interruptMinNanos or 2) then
             IssueBuildTask(builderID, task)
             state.currentTask = task
