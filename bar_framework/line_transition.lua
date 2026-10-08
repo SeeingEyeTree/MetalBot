@@ -44,6 +44,15 @@ LT.CFG = {
     CONSOLIDATE_SLACK = 1000, CAP_SLACK_FRAC = 0.20, WIND_LATTICE = 48,
     CONSOLIDATE_SCAN = 300, CONSOLIDATE_MAX = 60,
     RECLAIM_TRIGGER_FRAC = 0.20, RECLAIM_BUDGET_FRAC = 0.02, RECLAIM_EVERY = 90,
+    -- ENERGY PUSH (2026-10-08, off by default; LINE_CLICK_v4 turns it on): from ~16:00 of a mirror game metal sat at
+    -- its 30k cap and was wasted (pull 380 of 635 M/s) while energy ran at 93% of income -- army units cost ~15 E per
+    -- metal, so energy, not metal, capped spending.  When metal floats and energy is the binding resource, free T2 cons
+    -- turn 2x2 blocks of winds into fusions (the consolidation job, before the unit cap), up to EP_INFLIGHT at once;
+    -- with no free T2 con an idle advanced air lab makes one.
+    ENERGY_PUSH = false,
+    EP_START = 10 * 60 * 30, EP_MFRAC = 0.30, EP_MIN_METAL = 3000,   -- "metal floats"
+    EP_EFRAC = 0.50, EP_EPULL = 0.85,                                -- "energy binds": bank under half, pull >= 85% of income
+    EP_INFLIGHT = 2, EP_EVERY = 300, EP_CON_EVERY = 1800,
     AIR_CON_TIMEOUT = 80 * 30,
     -- Vehicle lab (the spine's seed): finished by ~4:30 (the human reference had its lab done at 3:57 and its
     -- units arrived at ~5:30); it is queued backwards from that deadline.  4 slots (2x2) on the other outer lane.
@@ -491,7 +500,11 @@ end
 
 TryAssignUpgrades = function(T)
     if not T.upgradeBP then return end
-    while #T.freeT2Cons > 0 do
+    -- ENERGY PUSH: while energy binds, keep enough free T2 cons for its fusion jobs (a retrofit adds metal too,
+    -- which is the resource that is floating).
+    local keep = 0
+    if T.CFG.ENERGY_PUSH and T.epBound then keep = math.max(0, T.CFG.EP_INFLIGHT - #T.consolidateJobs) end
+    while #T.freeT2Cons > keep do
         local conID = T.freeT2Cons[1]
         if not Spring.GetUnitDefID(conID) then
             table.remove(T.freeT2Cons, 1)
@@ -641,17 +654,17 @@ local function UpdateWindReclaim(T)
     end
 end
 
-local function StartConsolidation(T, conID, res)
+local function StartConsolidation(T, conID, res, forceName)
     local block
     while #T.windBlocks > 0 do
         local b = table.remove(T.windBlocks, 1)
         if not T.consolidatedKeys[b.key] then block = b; break end
     end
     if not block then return false end
-    -- Replace the block with whichever resource is scarcer right now.
+    -- Replace the block with whichever resource is scarcer right now (the energy push always wants a fusion).
     local mFrac = res.metalStorage > 0 and res.metal / res.metalStorage or 1
     local eFrac = res.energyStorage > 0 and res.energy / res.energyStorage or 1
-    local name = (eFrac <= mFrac) and "corfus" or "cormoho"
+    local name = forceName or ((eFrac <= mFrac) and "corfus" or "cormoho")
     local ud = UnitDefNames[name]
     if not ud or not T.BP.CanBuild(Spring.GetUnitDefID(conID), ud.id) then return false end
     T.consolidatedKeys[block.key] = true
@@ -694,7 +707,58 @@ local function CheckCapPressure(T)
     TryAssignUpgrades(T)
 end
 
+-- ENERGY PUSH (see LT.CFG): metal floating while energy binds -> wind blocks become fusions.
+local function EnergyBound(T, frame, res)
+    local C = T.CFG
+    if frame < C.EP_START then return false end
+    local mFrac = res.metalStorage > 0 and res.metal / res.metalStorage or 0
+    local eFrac = res.energyStorage > 0 and res.energy / res.energyStorage or 1
+    local ei = res.energyIncomeS or res.energyIncome or 0
+    local ep = res.energyPullS or res.energyPull or 0
+    return mFrac >= C.EP_MFRAC and res.metal >= C.EP_MIN_METAL and eFrac < C.EP_EFRAC and ep >= C.EP_EPULL * ei
+end
+
+local function UpdateEnergyPush(T, frame, res)
+    local C = T.CFG
+    if not C.ENERGY_PUSH or T.consolidateOn or frame - (T.epFrame or -1e9) < C.EP_EVERY then return end
+    T.epFrame = frame
+    T.epBound = EnergyBound(T, frame, res)
+    if not T.epBound then return end
+    if #T.consolidateJobs >= C.EP_INFLIGHT then return end
+    ScanWindBlocks(T)
+    if #T.windBlocks == 0 then return end
+    local started = 0
+    while #T.consolidateJobs < C.EP_INFLIGHT and #T.freeT2Cons > 0 and #T.windBlocks > 0 do
+        local conID = T.freeT2Cons[1]
+        if not Spring.GetUnitDefID(conID) then table.remove(T.freeT2Cons, 1)
+        elseif StartConsolidation(T, conID, res, "corfus") then table.remove(T.freeT2Cons, 1); started = started + 1
+        else break end
+    end
+    T.epStarted = (T.epStarted or 0) + started
+    if started > 0 then
+        Spring.Echo(string.format("[LT] %s ENERGY PUSH: %d wind block(s) -> fusion (metal %.0f/%.0f, energy %.0f/%.0f, pull %.0f of %.0f E/s), %d so far",
+            Clock(frame), started, res.metal, res.metalStorage, res.energy, res.energyStorage,
+            res.energyPullS or res.energyPull, res.energyIncomeS or res.energyIncome, T.epStarted))
+    elseif #T.freeT2Cons == 0 and frame - (T.epConFrame or -1e9) >= C.EP_CON_EVERY then
+        -- no free T2 con: an advanced air lab with nothing queued makes one (it then joins the free pool)
+        for _, uid in ipairs(Spring.GetTeamUnits(T.teamID) or {}) do
+            local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+            if d and d.isFactory and uid ~= T.airLabID and not Spring.GetUnitIsBeingBuilt(uid) then
+                local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
+                local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, 1)
+                if t2 and IsT2Con(T, t2) and (not q or #q == 0) then
+                    Spring.GiveOrderToUnit(uid, -t2, { 0 }, {})
+                    T.epConFrame = frame
+                    Spring.Echo(string.format("[LT] %s ENERGY PUSH: no free T2 con, lab %d makes one", Clock(frame), uid))
+                    break
+                end
+            end
+        end
+    end
+end
+
 local function UpdateConsolidation(T, frame, res)
+    UpdateEnergyPush(T, frame, res)
     if T.consolidateOn then
         if frame % T.CFG.CONSOLIDATE_SCAN == 0 or #T.windBlocks == 0 then ScanWindBlocks(T) end
         -- Converting wind beats retrofitting another grid at the cap: every free T2 con starts a job at once.

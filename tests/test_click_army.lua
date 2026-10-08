@@ -918,6 +918,11 @@ check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away fro
 check(Any(logV, "%[LN%] .*commander leaves the line for its safe spot"), "v3: the commander retires from the line")
 check(Any(logV, "%[CG%] .*commander builds %d+ defences at its safe spot"), "v3: and builds its defences at the safe spot")
 
+-- LINE_CLICK_v4e: line_transition ENERGY_PUSH on (the stub rarely meets its trigger: this checks the code runs)
+local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
+for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
+check(#errE == 0, "LINE_CLICK_v4e widgets run 14 minutes without Lua errors")
+
 local madeB, valueB = Smoke("LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
     madeB, valueB, madeC, valueC))
