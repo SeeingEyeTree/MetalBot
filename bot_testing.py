@@ -879,7 +879,10 @@ def _common_script_body(game_type, map_name, save_replay,
         # the hosting process's setminspeed/setmaxspeed (Game Ender or Speed Governor) move
         # it within that. Equal values pin the speed. Engine speed control can still slow
         # the sim below minspeed when a client cannot keep up -- it ignores minspeed.
-        f"        deathmode=com;\n        maxspeed={speeds[1]:g};\n        minspeed={speeds[0]:g};\n"
+        # maxunits=5000: all testing uses a 5k unit cap (BAR's default is 2k) so a larger
+        # economy is worth building. The tracker's unit_cap field reads it back.
+        f"        deathmode=com;\n        maxunits=5000;\n"
+        f"        maxspeed={speeds[1]:g};\n        minspeed={speeds[0]:g};\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"
         "    [ALLYTEAM0] { numallies=0; }\n    [ALLYTEAM1] { numallies=0; }\n\n"
@@ -1200,7 +1203,7 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
     loss_p1 = _parse_loss_summary(p1_text)
 
     interesting = [l for l in (p0_text + p1_text).splitlines() if any(
-        kw in l for kw in ("Loading widget", "ERROR", "[STATS]", "[MC]", "[LC]",
+        kw in l for kw in ("Loading widget", "ERROR", "[STATS]", "[MC]", "[LN]", "[LC]",
                            "[UC]", "[WE]", "Player ", "Connection", "Initial Spawn",
                            "finished loading", "[WINNER]", "[END_SCORE]", "[TRK] init", "[SANITY]")
     )]

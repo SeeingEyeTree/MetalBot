@@ -17,7 +17,7 @@ if (-not $barBase) {
 
 $dst = "$barBase\data\LuaUI\Widgets"
 Write-Host "Deploying to: $dst"
-# do not add new_bot.lua and bot.lua
+# do not add archive\bot.lua / new_bot.lua (retired)
 $files = @(
     "blueprint_placer.lua",
     "blueprints_data.lua",
