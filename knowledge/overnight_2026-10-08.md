@@ -42,7 +42,7 @@ Running log of what was tried overnight, newest at the bottom. Base bot: `candid
 - LINE_CLICK vs BARb (hard): LINE_CLICK out-earns it ~7x by 12:00 (375 vs 49 m/s) but **does not always finish it**:
   commander kills at 10.1 and 16.1 min, none in two other 20-minute games (it won those on END_SCORE, 12x).
 
-## E1: click_army FORWARD_CORE -> `candidates/LINE_CLICK_v2` -- ADOPT
+## E1: click_army FORWARD_CORE -> `candidates/LINE_CLICK_v2` -- real bug fixed; mirror gain NOT demonstrated (E3)
 
 **Problem (seen vs BARb, 20:00):** 112k of army stood at mid-map (dist_base ~5500) with the enemy commander in sight
 and 633 value guarding it. With 3 groups out every new unit joins the weakest group from the factory, so a group's
@@ -82,7 +82,9 @@ Geometric mean over the slot orders **0.97x**: the earlier "v2 won both" was in 
 20-minute mirror games is ~1.5x on END_SCORE** (same-slot spread ~1.35x), far larger than the 8-minute army
 metric's. Order latency is symmetric (~22 frames both); slot 0 has the higher income at 15:00 in 12 of 13 mirror games;
 the two starts are mirror images ((2400,850) rot 0 vs (9650,11400) rot 2). Cause not found. FORWARD_CORE still fixes
-a real bug (the test shows it; vs BARb it is re-measured in E7), but no mirror effect is measurable at this noise. -> `candidates/LINE_CLICK_v3` -- NO DIFFERENCE, not adopted
+a real bug (the test shows it; vs BARb it is re-measured in E7), but no mirror effect is measurable at this noise.
+
+## E2: commander safety -> `candidates/LINE_CLICK_v3` -- NO DIFFERENCE, not adopted
 
 v2 + commander_guard in the macro: evade any armed enemy near it (crew suspended, `LC.Suspend/Resume`), cloak
 when energy covers the MOVING cost (1000 E/s for corcom; cloaking on the standing 100 E/s emptied the opening's
@@ -101,3 +103,38 @@ measurable. Mechanism: the commander retired at ~5:45 (its lane done) and ran fr
 best defenders of the early base (3700 hp, a real weapon), so the eco lost a defender. **Lesson: in 20-minute games
 the slot-0 advantage is ~1.2-1.3x on END_SCORE -- always pair the slot orders.** Follow-up `LINE_CLICK_v3b`: no
 retirement, no cloak, evade only a real dive (armed value >= 1500 near it).
+
+## Which machine for mirror A/Bs: TreeServer
+
+Per-slot ratios of every 20-minute A/B give the slot-0 edge on each machine: **main PC 1.24-1.55x, TreeServer
+0.94-1.10x** (and small on both at 8 minutes). The main PC (Ryzen AI 7 350, hybrid Zen5/Zen5c cores; the harness
+pins each engine's main thread to one core) favours slot 0 for a reason not found yet (no wall-clock budgets in bot
+code; order latency equal). Mirror head-to-heads were moved to TreeServer; the main PC runs single-bot BARb series.
+
+## E4: ENERGY PUSH -> `candidates/LINE_CLICK_v4e` -- promising, more games running
+
+| match (20 min, TreeServer) | result |
+|---|---|
+| v4e (s0) vs v2 | loss: v4e's commander killed at 18.8 min |
+| v4e (s0) vs v2 | tie 1.05x |
+| v2 (s0) vs v4e | **v4e 1.31x from slot 1** |
+| v2 (s0) vs v4e | v4e 1.09x from slot 1 (tie) |
+
+Geometric mean over slot orders 1.12x (bar ~1.16 for 4 games). The push fired at 17:13-17:45 (metal 6-7k of 16-20k,
+energy pull 90-100% of income): metal only starts floating at ~16:00, so most of the effect falls after the
+20-minute window. 4 more games queued (e7t).
+
+## E5: commander helps the outer-lane cons' lab jobs -> `candidates/LINE_CLICK_v5e` -- NO GAIN, dropped
+
+Mechanism works (the commander assisted the vehicle lab at 3:24, its nanos at 3:33 and 4:15...), but the 8-minute army
+A/B vs v2 gave 0.98, 1.01, 0.92. The order of the two labs varies from game to game (v2 had its air lab first, at
+3:16, in the same match), so the 3:30-5:00 idle lanes are not a fixed cost.
+
+## E2b: commander evades only real dives -> `candidates/LINE_CLICK_v3b` -- running (main PC, so slot-biased)
+
+v3b (s0) vs v2: 1.27x; v2 (s0) vs v3b: v3b 0.67x. Slot edge dominates; 2 more games.
+
+## E8: FLANK -> `candidates/LINE_CLICK_v8f` -- queued (TreeServer mirror x4, main PC vs BARb x3)
+
+Groups go round the biggest recently seen enemy ground-army cluster on their path (waypoint 2800 to the side, side
+kept per group). Stub: first legs 662 elmos off the line vs 18 without (`tests/test_click_forward.lua`).
