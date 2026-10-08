@@ -115,6 +115,7 @@ class MatchResult:
     speed_timeline:     list = field(default_factory=list)  # [{frame,speed,lag}] from the Speed Governor
     threat_log:         list = field(default_factory=list)  # raw [TML] rows (bar_framework/threat_log.lua), own team per process
     phi:                dict = field(default_factory=dict)  # bot_score.py state value per team per checkpoint (report only)
+    desync:             "dict | None" = None   # first "Sync error": {"player", "frame"}; numbers after it are suspect
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -144,6 +145,7 @@ class MatchResult:
             "speed_timeline":    self.speed_timeline,
             "threat_log":        self.threat_log,
             "phi":               self.phi,
+            "desync":            self.desync,
         }
 
 
@@ -1561,12 +1563,27 @@ def run_match(
             print("\nWARNING: --save-replay set but no non-empty .sdfz was found.")
 
     p0_text = _read_log(p0_log)
-    return _parse_logs(
-        p0_text, _read_log(p1_log),
+    p1_text = _read_log(p1_log)
+    host_text = _read_log(spec_dir / "headless.log") if separate else p0_text
+    result = _parse_logs(
+        p0_text, p1_text,
         Path(bot0_dir).name, Path(bot1_dir).name,
         duration_secs,
-        host_text=_read_log(spec_dir / "headless.log") if separate else p0_text,
+        host_text=host_text,
     )
+    # A desync makes every number after it come from diverged games (2026-10-08: the stats tracker's RequestPath
+    # desynced nearly every match at 10-14 min).  Record the first "Sync error" so a result can be screened.
+    m = None
+    for txt in (host_text, p0_text, p1_text):
+        for mm in re.finditer(r"Sync error for (\S+) in frame (\d+)", txt or ""):
+            if m is None or int(mm.group(2)) < int(m.group(2)):
+                m = mm
+    if m:
+        result.desync = {"player": m.group(1), "frame": int(m.group(2))}
+        if verbose:
+            print(f"\nWARNING: DESYNC -- {m.group(1)} out of sync from frame {m.group(2)} "
+                  f"({int(m.group(2)) / 1800:.1f} min); numbers after it are from diverged games")
+    return result
 
 
 def save_result(result: MatchResult, path: Path) -> None:

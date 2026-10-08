@@ -13,6 +13,18 @@ Running log of what was tried overnight, newest at the bottom. Base bot: `candid
    frame 14400 on a loaded PC). Now: `--end-minutes` defaults to one minute past the checkpoint, `--duration` is
    derived by bot_testing, `--keep DIR` saves each match's result json.
 
+3. **DESYNCS in nearly every match, from our stats tracker (fixed 02:43, confirmation pending).** Every main-PC and
+   TreeServer match before the fix logged `Sync error for <player> in frame N` with N = 18170-25066 (10-14 game-min),
+   for every bot including the BARb host process -- which runs no bot widgets, only `metalbot_stats_tracker.lua`. The
+   spectator host, the one process WITHOUT the tracker, is the one that reports the others as out of sync. The tracker
+   calls `Spring.RequestPath` (lab-exit check, every 30 s per ground lab) through the simulation's own path manager.
+   After a desync each process plays its own diverged game, and sometimes a client is dropped (autoquit) and its
+   tracker rows stop (two 20-minute games here lost team 0's data at ~15 min). So **everything measured after ~10 min
+   of game time before this fix is suspect**; the 8-minute ab_test checkpoint (frame 14400) is before it and stands.
+   The check is now off (`FAC_EXIT_CHECK = false`; `fac_exit_ok` reads unknown). The first match after the fix passed
+   frame 28,000 with no sync error. This is very likely also the cause of the "two-machine games desync at the first
+   fight" (the logger/tracker are deployed by every deploy.ps1).
+
 ## Harness additions
 
 - **`--bot2 AI:BARb[:profile]`** (bot_testing.py): BAR's native BARb AI plays team 1 (default profile `hard`). Player 1

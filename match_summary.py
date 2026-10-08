@@ -40,6 +40,9 @@ def summary(path):
     print(f"   winner: team {r.get('winner')} ({names.get(r.get('winner'), '-')}) by {r.get('winner_method')}"
           f"  | end_reason={r.get('end_reason')} last tracker frame={last} ({last / 1800:.1f} min)"
           f"  | wall {r.get('duration_secs', 0):.0f}s")
+    if r.get("desync"):
+        print(f"   ** DESYNC: {r['desync']['player']} out of sync from frame {r['desync']['frame']}"
+              f" ({r['desync']['frame'] / 1800:.1f} min) -- later numbers come from diverged games **")
     if ds:
         print(f"   END_SCORE {names[0]}={ds.get('score0', 0):,.0f}  {names[1]}={ds.get('score1', 0):,.0f}"
               f"  (army {ds.get('mv0', 0):,.0f} / {ds.get('mv1', 0):,.0f}, income {ds.get('metal_inc0', 0):.0f}"
