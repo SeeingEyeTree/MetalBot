@@ -116,5 +116,65 @@ print(string.format("CORE_WAIT_FRAC with 40 close behind: %d toward, %d away, %d
 -- (holding = FIGHT on the core's own centre, so units at the edge of the blob step a little either way)
 check(h3 >= 15 and t3 + a3 <= 5, "CORE_WAIT_FRAC: a small front waits for the 40 just behind it")
 
+-- FLANK: an enemy army sits 3000 ahead on the straight path to the target (out of LegPoint's 900 reach, so the
+-- old leg steering does not see it).  Off: the first leg goes (nearly) straight at it; on: the group heads for a
+-- waypoint beside it, so its first leg turns well off the line.
+local function FlankScenario(flank)
+    W.units, W.features, W.orders, W.log, W.errors, W.widgets = {}, {}, {}, {}, {}, {}
+    W.frame, WG = 0, {}
+    local MM   = VFS.Include("LuaUI/Widgets/bar_framework/map_model.lua")
+    local UQ   = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")
+    local EI   = VFS.Include("LuaUI/Widgets/bar_framework/enemy_intel.lua")
+    local ARMY = VFS.Include("LuaUI/Widgets/bar_framework/army_broker.lua")
+    local CA   = VFS.Include("LuaUI/Widgets/bar_framework/click_army.lua")
+    MM.Init(0, 0)
+    MM.SetHome(W.start[0][1], W.start[0][2])
+    EI.Init{ UQ = UQ, MM = MM, allyID = 0 }
+    local combat = {}
+    CA.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combat, guards = {}, muster = {},
+             scouts = {}, responding = {}, bombers = {}, cfg = { MAX_GROUPS = 1, FORWARD_CORE = true, FLANK = flank } }
+    local fx, fz = MM.Foe()
+    S.Spawn("cornanotc", 1, fx, fz, { silent = true })
+    local frame = 0
+    local function Update()
+        frame = frame + 30
+        EI.Scan(frame); ARMY.Sweep(frame); CA.Update(frame)
+        local o = W.orders; W.orders = {}
+        return o
+    end
+    Update()
+    local sx, sz = CA.StagePoint()
+    local ids = {}
+    for i = 1, 20 do
+        local id = S.Spawn("corgator", 0, sx + (i % 5) * 30, sz + math.floor(i / 5) * 30, { silent = true })
+        combat[id] = UnitDefNames.corgator.id
+        ids[#ids + 1] = id
+    end
+    -- the enemy army, 3000 ahead of the stage on the way to the nano
+    local ux, uz = fx - sx, fz - sz
+    local L = math.sqrt(ux * ux + uz * uz); ux, uz = ux / L, uz / L
+    for i = 1, 30 do
+        S.Spawn("corak", 1, sx + ux * 3000 + (i % 6) * 25, sz + uz * 3000 + math.floor(i / 6) * 25, { silent = true })
+    end
+    local last = {}
+    for _ = 1, 6 do for _, o in ipairs(Update()) do last[o.id] = o end end
+    local lat, n = 0, 0
+    for _, id in ipairs(ids) do
+        local o = last[id]
+        if o and o.cmd == 10 and o.params and o.params[1] then
+            local dx, dz = o.params[1] - sx, o.params[3] - sz
+            lat = lat + math.abs(-dx * uz + dz * ux); n = n + 1
+        end
+    end
+    return n > 0 and lat / n or 0, #CA.Groups(), S.Log("%[CK%] .*flanks the enemy army")
+end
+local latOff, gOff = FlankScenario(false)
+local latOn, gOn, logOn = FlankScenario(true)
+print(string.format("FLANK off: first legs %.0f off the line; FLANK on: %.0f off the line", latOff, latOn))
+check(gOff == 1 and gOn == 1, "the 20 gators launch in both runs")
+check(latOff < 250, "FLANK off: the group heads (nearly) straight at the enemy army")
+check(latOn > 450, "FLANK on: the group's first leg turns well off the line, toward a waypoint beside the army")
+check(#logOn >= 1, "FLANK on: the flank is logged")
+
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then error(failures .. " check(s) failed") end

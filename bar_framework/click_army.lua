@@ -156,6 +156,18 @@ local CFG = {
     -- the rest to catch up, unless it is already at its target.  nil = never waits.
     CORE_WAIT_FRAC  = nil,
     CORE_WAIT_R     = 4000,   -- ...counting only the units this close to the core
+    -- FLANK (2026-10-08, off by default): go round the enemy's main army instead of through it.  In the mirror
+    -- both stages sit ~45% of the way across, ~1300 elmos apart, and every group walked into the other side's staged
+    -- army: 70-80% of a group lost in ~2 min for 450-2100 value killed by 16:30.  User: "gators are fast: group
+    -- quickly, flank the enemy army, reach eco".  When the path to the target passes within FLANK_CLEAR of the
+    -- biggest recently seen enemy army cluster (worth >= FLANK_MIN_FRAC of the core), the group heads for a waypoint
+    -- FLANK_OFFSET to one side of it (the side is kept per group) until it is past the cluster.
+    FLANK           = false,
+    FLANK_CLEAR     = 1800,
+    FLANK_OFFSET    = 2800,
+    FLANK_MIN_FRAC  = 0.5,
+    FLANK_CLUSTER_R = 1200,
+    FLANK_MAX_AGE   = 600,    -- frames: a cluster seen longer ago than this is not steered round
 }
 M.CFG = CFG
 
@@ -512,6 +524,67 @@ local function EndGroup(frame, g, reason, n)
         g.id, reason, n, g.peakN, math.floor((frame - g.startF) / 30),
         totals.kills, totals.killBP, totals.killValue, totals.lostUnits, totals.lostValue)
     g.state, g.fallFrame, g.target = "fall", frame, nil
+end
+
+-- FLANK: the biggest cluster of enemy ground army seen in the last FLANK_MAX_AGE frames (value within
+-- FLANK_CLUSTER_R of its densest unit), as x, z, value.  Computed once per frame for all groups.
+local clusterF, clusterX, clusterZ, clusterV = -1, nil, nil, 0
+local function EnemyArmyCluster(frame)
+    if clusterF == frame then return clusterX, clusterZ, clusterV end
+    clusterF, clusterX, clusterZ, clusterV = frame, nil, nil, 0
+    local pts = {}
+    for _, rec in pairs(EI.Records()) do
+        local c = rec.c
+        if c.armed and c.mobile and not c.scout and not c.commander and not c.air
+           and frame - rec.frame <= CFG.FLANK_MAX_AGE then
+            pts[#pts + 1] = rec
+        end
+    end
+    local R2 = CFG.FLANK_CLUSTER_R * CFG.FLANK_CLUSTER_R
+    local best, bestV
+    for _, a in ipairs(pts) do
+        local v = 0
+        for _, b in ipairs(pts) do
+            local dx, dz = a.x - b.x, a.z - b.z
+            if dx * dx + dz * dz <= R2 then v = v + b.c.value end
+        end
+        if not bestV or v > bestV then best, bestV = a, v end
+    end
+    if not best then return nil, nil, 0 end
+    local sx, sz, sv = 0, 0, 0
+    for _, b in ipairs(pts) do
+        local dx, dz = best.x - b.x, best.z - b.z
+        if dx * dx + dz * dz <= R2 then sx, sz, sv = sx + b.x * b.c.value, sz + b.z * b.c.value, sv + b.c.value end
+    end
+    clusterX, clusterZ, clusterV = sx / sv, sz / sv, sv
+    return clusterX, clusterZ, clusterV
+end
+
+-- FLANK: a waypoint beside the enemy army when the straight path to (tx,tz) runs into it, else nil.  The side is
+-- the far side from where the cluster sits relative to the path, and is kept for the group (g.flankSide).
+local function FlankPoint(frame, g, cx, cz, tx, tz, groupValue)
+    local ax, az, av = EnemyArmyCluster(frame)
+    if not ax or av < CFG.FLANK_MIN_FRAC * groupValue then g.flankSide = nil; return nil end
+    if Dist(ax, az, tx, tz) < CFG.FLANK_CLEAR then return nil end     -- it guards the target itself: no way round
+    local dx, dz = tx - cx, tz - cz
+    local L = math.sqrt(dx * dx + dz * dz)
+    if L < 1 then return nil end
+    local ux, uz = dx / L, dz / L
+    local px, pz = ax - cx, az - cz
+    local along = px * ux + pz * uz
+    if along <= 0 or along >= L then g.flankSide = nil; return nil end  -- behind us, or beyond the target
+    local lat = -px * uz + pz * ux                                     -- its offset across our path
+    if math.abs(lat) >= CFG.FLANK_CLEAR then return nil end            -- the path already clears it
+    local side = g.flankSide or ((lat >= 0) and -1 or 1)
+    local wx, wz = ax - uz * side * CFG.FLANK_OFFSET, az + ux * side * CFG.FLANK_OFFSET
+    local cwx, cwz = MM.Clamp(wx, wz, CFG.MARGIN)
+    if not g.flankSide and Dist(cwx, cwz, wx, wz) > CFG.FLANK_OFFSET * 0.5 then
+        side = -side                                                   -- that side is off the map: the other one
+        wx, wz = ax - uz * side * CFG.FLANK_OFFSET, az + ux * side * CFG.FLANK_OFFSET
+        cwx, cwz = MM.Clamp(wx, wz, CFG.MARGIN)
+    end
+    g.flankSide = side
+    return cwx, cwz, av
 end
 
 -- Next leg: toward (tx,tz), turned up to ~70 degrees if that avoids enemy armed value.
@@ -976,7 +1049,19 @@ local function UpdateAttack(frame, g, list)
             Log(frame, "group #%d core waits for the rest: core av=%d of %d (%d far)", g.id, fightV, g.value, #far)
         end
     else
-        local lx, lz = LegPoint(frame, cx, cz, tx, tz, fightV, g.target and g.target.uid)
+        local ltx, ltz = tx, tz
+        if CFG.FLANK then
+            local wx, wz, av = FlankPoint(frame, g, cx, cz, tx, tz, fightV)
+            if wx then
+                ltx, ltz = wx, wz
+                if frame - (g.flankLogF or -99999) >= 450 then
+                    g.flankLogF = frame
+                    Log(frame, "group #%d flanks the enemy army (av=%d vs core %d): via (%d,%d), side %d", g.id, av,
+                        fightV, wx, wz, g.flankSide or 0)
+                end
+            end
+        end
+        local lx, lz = LegPoint(frame, cx, cz, ltx, ltz, fightV, g.target and g.target.uid)
         for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, lx, lz) end
     end
 end
