@@ -918,6 +918,14 @@ check(Any(logV, "%[CG%] .*commander evading"), "v3: the commander walks away fro
 check(Any(logV, "%[LN%] .*commander leaves the line for its safe spot"), "v3: the commander retires from the line")
 check(Any(logV, "%[CG%] .*commander builds %d+ defences at its safe spot"), "v3: and builds its defences at the safe spot")
 
+-- LINE_CLICK_v3b: the commander stays in its lane and evades only a real dive (value >= 1500): the stub's raid is
+-- 6 Ak (~300), so it must NOT leave
+local _, _, logB3, errB3 = Smoke("candidates/LINE_CLICK_v3b", 14)
+for _, e in ipairs(errB3) do print("LUA ERROR (LINE_CLICK_v3b): " .. e) end
+check(#errB3 == 0, "LINE_CLICK_v3b widgets run 14 minutes without Lua errors")
+check(not Any(logB3, "%[CG%] .*commander evading"), "v3b: the commander does not run from 6 Ak (under DANGER_VALUE)")
+check(not Any(logB3, "%[LN%] .*commander leaves the line"), "v3b: the commander does not retire")
+
 -- LINE_CLICK_v4e: line_transition ENERGY_PUSH on (the stub rarely meets its trigger: this checks the code runs)
 local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
 for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
