@@ -223,17 +223,23 @@ M.LabRate = LabRate
 
 -- Which way is the enemy, which way do cells stack, how must the blueprint turn.
 -- The enemy is assumed to sit at the point mirror of our start (the map is symmetric).
+-- "front" (dx, dz) is the way cells step away from the base and the labs face; the stack runs along (px, pz).
+-- With only (dx, dz) the stack is perpendicular to it (the enemy-facing default); a host may give both axes.
+function M.GeometryFor(dx, dz, px, pz)
+    local rot = 0
+    for r = 0, 3 do      -- blueprint east (+x) must point along the front
+        local rx, rz = RotateOffset(1, 0, r)
+        if rx == dx and rz == dz then rot = r end
+    end
+    return { dx = dx, dz = dz, px = px or dz, pz = pz or dx, rot = rot, facing = FacingFor(dx, dz) }
+end
+
 function M.Geometry(baseX, baseZ, mapX, mapZ)
     local ex, ez = mapX - 2 * baseX, mapZ - 2 * baseZ
     local dx, dz
     if math.abs(ex) >= math.abs(ez) then dx, dz = (ex >= 0) and 1 or -1, 0
     else dx, dz = 0, (ez >= 0) and 1 or -1 end
-    local rot = 0
-    for r = 0, 3 do      -- blueprint east (+x) must point at the enemy
-        local rx, rz = RotateOffset(1, 0, r)
-        if rx == dx and rz == dz then rot = r end
-    end
-    return { dx = dx, dz = dz, px = dz, pz = dx, rot = rot, facing = FacingFor(dx, dz) }
+    return M.GeometryFor(dx, dz)
 end
 
 -- Cell number (1 = in front of the base) to its offset along the stack: 0, +1, -1, +2 ...
@@ -295,6 +301,10 @@ end
 --   QueueAirCon()              -- ask the air lab for one more
 --   DeferStop(unitID)          -- STOP again shortly (the factory's guard lands late)
 --   CapPressure() -> bool
+--   CellOK(ax, az) -> bool     -- optional: veto a cell position
+--   geo                        -- optional: M.GeometryFor(...) instead of the enemy-facing default
+--   EarlyCons                  -- optional: max ground cons until cell 1 is built (see ConsAllowed)
+--   GroundOnly                 -- optional: cells are built only by ground cons of the spine's own labs (no air cons)
 -- }
 function M.Init(env)
     S = {
@@ -502,7 +512,7 @@ local function OpenCell(kind)
         S.opened = S.opened + 1
         ax, az = M.CellAnchor(S.geo, env.baseX, env.baseZ, S.opened)
         if math.abs(M.StackOffset(S.opened)) > Cfg().STACK_HALF then return nil end
-        if InMap(env, ax, az) then break end
+        if InMap(env, ax, az) and (not env.CellOK or env.CellOK(ax, az)) then break end
         ax = nil
     end
     if not ax then return nil end
@@ -542,17 +552,36 @@ local function ReserveStack()
     end
 end
 
--- Call when the air lab finishes (the same moment the mex grids start).
-function M.Start(frame)
+-- Call when the air lab finishes (the same moment the mex grids start).  opts.deferOpen: only reserve the
+-- stack now; the host calls M.OpenFirst() when it wants cell 1 built (LINE_BOT: once its vehicle lab stands).
+-- env.CellOK(ax, az) -> bool (optional): the host can veto a cell position (LINE_BOT: on the line).
+function M.Start(frame, opts)
     if not S or S.started then return end
     local env = S.env
-    S.geo = M.Geometry(env.baseX, env.baseZ, env.mapX, env.mapZ)
+    S.geo = env.geo or M.Geometry(env.baseX, env.baseZ, env.mapX, env.mapZ)
     S.started = true
     ReserveStack()
     Spring.Echo(string.format(
         "[SPINE] start: enemy direction (%d, %d), rotation %d, lab facing %d, stack along (%d, %d)",
         S.geo.dx, S.geo.dz, S.geo.rot, S.geo.facing, S.geo.px, S.geo.pz))
+    if opts and opts.deferOpen then S.firstDeferred = true; return end
     OpenCell("T1")
+end
+
+function M.OpenFirst()
+    if not S or not S.started or not S.firstDeferred then return false end
+    S.firstDeferred = false
+    return OpenCell("T1") ~= nil
+end
+
+-- A lab the host built itself (LINE_BOT's vehicle plant on the line).  It is not inside any cell, but the spine
+-- queues its hard-coded cons and demanded cons like a T1 cell lab's, and collects the cons it makes.
+function M.AdoptLab(uid, defID, cons)
+    if not S then return false end
+    local d = UnitDefs[defID or Spring.GetUnitDefID(uid) or -1]
+    if not d then return false end
+    S.labs[uid] = { cell = 0, name = d.name, conMade = 0, conWant = cons }
+    return true
 end
 
 -- ── Builders ─────────────────────────────────────────────────────────────────
@@ -623,14 +652,14 @@ local function ServiceCellBuilders(cell)
         if BuilderCanBuild(st, defID) then
             S.conWanted[defID] = nil
         else
-            local uid = TakeOwnCon(defID) or env.TakeCon(defID, false)
+            local uid = TakeOwnCon(defID) or (not env.GroundOnly and env.TakeCon(defID, false)) or nil
             if uid then GiveBuilder(cell, uid) else S.conWanted[defID] = true end
         end
     end
     local nano = UnitDefNames.cornanotc
     if nano then
         while #st.builders < Cfg().BUILDERS_PER_CELL do
-            local uid = TakeOwnCon(nano.id) or env.TakeCon(nano.id, true)
+            local uid = TakeOwnCon(nano.id) or (not env.GroundOnly and env.TakeCon(nano.id, true)) or nil
             if not uid then break end
             if not GiveBuilder(cell, uid) then break end
         end
@@ -650,7 +679,7 @@ end
 -- A new T1 air con is offered here before the mex grids see it.  Taken if a cell is
 -- short of builders and the con can place something that cell still needs.
 function M.OfferCon(uid)
-    if not S or not S.started then return false end
+    if not S or not S.started or S.env.GroundOnly then return false end
     local bd = Spring.GetUnitDefID(uid)
     if not bd then return false end
     for _, cell in ipairs(S.cells) do
@@ -1095,6 +1124,7 @@ function M.OnUnitFromFactory(uid, defID, factID)
     local d = UnitDefs[defID]
     if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not d.canFly then
         S.cons[uid] = true
+        S.conOut = (S.conOut or 0) + 1
         S.conPending[defID] = nil
         Spring.GiveOrderToUnit(uid, 0, {}, {})
         S.env.DeferStop(uid)
@@ -1140,16 +1170,31 @@ end
 -- The next unit this spine lab should queue, or nil.  Called by lab_controller until
 -- the queue is QUEUE_DEPTH deep.  Cons first (hard-coded, then whatever a cell is
 -- waiting for), then the lab's army unit -- only while army_share is above zero.
+-- env.EarlyCons (optional): until cell 1 is built, the spine may have at most this many ground cons (alive + ordered
+-- and not yet out).  One con is enough to place a cell's first labs and nanos; more only soak up metal.
+local function ConsAllowed()
+    local limit = S.env.EarlyCons
+    if not limit then return true end
+    local c1 = S.cells[1]
+    if c1 and c1.settled then return true end
+    local alive = 0
+    for uid in pairs(S.cons) do
+        if Alive(uid) then alive = alive + 1 else S.cons[uid] = nil end
+    end
+    return alive + math.max(0, (S.conOrders or 0) - (S.conOut or 0)) < limit
+end
+
 function M.NextOrder(labID, labDefID)
     local L = S and S.labs[labID]
     if not L then return nil end
+    local consOK = ConsAllowed()
     local hc = M.T1_CONS[L.name]
-    if hc and L.conMade < hc[2] then
+    if consOK and hc and L.conMade < (L.conWant or hc[2]) then
         local d = UnitDefNames[hc[1]]
-        if d then L.conMade = L.conMade + 1; return d.id end
+        if d then L.conMade = L.conMade + 1; S.conOrders = (S.conOrders or 0) + 1; return d.id end
     end
-    local con = DemandCon(labDefID)
-    if con then return con end
+    local con = consOK and DemandCon(labDefID) or nil
+    if con then S.conOrders = (S.conOrders or 0) + 1; return con end
     if S.share > 0 and M.LAB_UNITS[L.name] then
         local u = RefUnit(L.name)
         if u then return u.id end

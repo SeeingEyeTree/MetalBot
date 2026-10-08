@@ -89,6 +89,11 @@ local function Class(defID)
         value     = Value(d),
         tech      = TechLevel(d),
         interceptor = 0,
+        -- Damage-value inputs for bar_framework/click_army.lua: how much build power / income
+        -- killing this unit takes away.
+        bp        = d.buildSpeed or 0,
+        eco       = (d.extractsMetal or 0) > 0 or (d.energyMake or 0) > 0
+                    or (d.windGenerator or 0) > 0 or (d.tidalGenerator or 0) > 0,
     }
     for i = 1, #(d.weapons or {}) do
         local w  = d.weapons[i]
@@ -281,7 +286,8 @@ function M.RaidTargets(frame)
         if isEco and not c.commander
            and (not c.mobile or frame - rec.frame <= M.POSITION_FRESH) then
             out[#out + 1] = { uid = uid, x = rec.x, z = rec.z, value = c.value,
-                              factory = c.factory, builder = c.builder }
+                              factory = c.factory, builder = c.builder,
+                              bp = c.bp, eco = c.eco, mobile = c.mobile, defID = rec.defID }
         end
     end
     return out

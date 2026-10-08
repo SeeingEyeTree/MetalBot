@@ -37,9 +37,9 @@ M.layout = {
     {n="cornanotc", x= -120, z=  168, f=0},
     {n="cornanotc", x= -168, z=  168, f=0},
     {n="cornanotc", x= -216, z=  168, f=0},
-    {n="corestor", x= 216, z=-216, f=0},
-    {n="corestor", x= 216, z= 216, f=0},
-    {n="corestor", x= 168, z=-216, f=0},
-    {n="corestor", x= 168, z= 216, f=0},
+    {n="corestor", x=  208, z= -208, f=0},
+    {n="corestor", x=  208, z=  208, f=0},
+    {n="corestor", x=  144, z= -208, f=0},
+    {n="corestor", x=  144, z=  208, f=0},
 }
 return M
