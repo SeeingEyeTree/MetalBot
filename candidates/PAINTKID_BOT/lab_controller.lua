@@ -515,6 +515,7 @@ local function SaviorWant()
     inc = inc or 0
     local mb = WG and WG.MetalBot
     local silos = mb and mb.intel and mb.intel.silos or 0
+    if WG and WG.AntiNuke and WG.AntiNuke.saviorWant then return WG.AntiNuke.saviorWant end   -- defense_crew cover plan
     local want = 0
     if inc >= 350 or silos > 0 then want = 1 end
     if inc >= 800 or (silos > 0 and inc >= 350) then want = 2 end

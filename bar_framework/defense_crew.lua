@@ -267,6 +267,175 @@ local function Assist(names)
     end
 end
 
+-- ── Anti-nuke cover (M.COVER, spine bots) ───────────────────────────────────────────────────────────────────────────
+-- Saviors (cormabm, mobile) are spread so that every cluster of our eco / build power is inside an interceptor's
+-- coverage.  A point a Savior cannot walk to (no path: it makes no progress) gets a corfmd built there by a T2 con instead.
+M.COVER            = true
+M.COVER_PERIOD     = 300      -- frames between re-plans
+M.COVER_MAX        = 8        -- cover points (= Saviors + anti-nukes) at most
+M.COVER_FRAC       = 0.85     -- share of the interceptor's radius used for the plan
+M.COVER_CELL       = 240      -- structures are bucketed into cells this wide before the cover is planned
+M.COVER_STUCK      = 1200     -- frames a Savior may take without getting closer before its point counts as unreachable
+M.COVER_FALLBACK_R = { cormabm = 1200, corfmd = 2000 }
+local cover = { goal = {}, blocked = {}, last = -1e9, points = {} }
+local CMD_MOVE = (CMD and CMD.MOVE) or 10
+
+-- Coverage radius of an anti-nuke def (weapon coverageRange, else the fallback table).
+local function CoverRadius(name)
+    local d = UnitDefNames and UnitDefNames[name]
+    if d and d.weapons and WeaponDefs then
+        for _, w in ipairs(d.weapons) do
+            local wd = WeaponDefs[w.weaponDef or w.weaponDefID or -1]
+            if wd and (wd.coverageRange or 0) > 0 then return wd.coverageRange end
+        end
+    end
+    return M.COVER_FALLBACK_R[name] or 1200
+end
+
+-- items = { {x =, z =, w =}, ... } -> up to maxN centres {x, z, w} (w = weight covered) that cover as much weight as
+-- possible within radius R: greedy, each pick the cell centre covering the most uncovered weight, then re-centred on
+-- the weighted mean of what it covers.  Pure.
+function M.CoverPoints(items, R, maxN, cell)
+    cell = cell or M.COVER_CELL
+    local cells, list = {}, {}
+    for _, it in ipairs(items) do
+        local k = math.floor(it.x / cell) .. ":" .. math.floor(it.z / cell)
+        local c = cells[k]
+        if not c then c = { x = 0, z = 0, w = 0 }; cells[k] = c; list[#list + 1] = c end
+        c.x, c.z, c.w = c.x + it.x * it.w, c.z + it.z * it.w, c.w + it.w
+    end
+    for _, c in ipairs(list) do c.x, c.z = c.x / c.w, c.z / c.w end
+    local out, r2 = {}, R * R
+    while #out < maxN do
+        local best, bestW
+        for _, c in ipairs(list) do
+            if not c.done then
+                local w = 0
+                for _, o in ipairs(list) do
+                    if not o.done and (o.x - c.x) ^ 2 + (o.z - c.z) ^ 2 <= r2 then w = w + o.w end
+                end
+                if not bestW or w > bestW then best, bestW = c, w end
+            end
+        end
+        if not best then break end
+        local sx, sz, sw = 0, 0, 0
+        for _, o in ipairs(list) do
+            if not o.done and (o.x - best.x) ^ 2 + (o.z - best.z) ^ 2 <= r2 then
+                o.done = true
+                sx, sz, sw = sx + o.x * o.w, sz + o.z * o.w, sw + o.w
+            end
+        end
+        out[#out + 1] = { x = sx / sw, z = sz / sw, w = sw }
+    end
+    return out
+end
+
+local function CoverItems()
+    local items = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        local d = UnitDefs[Spring.GetUnitDefID(uid) or 0]
+        if d and (d.speed or 0) == 0 and IsDone(uid)
+           and ((d.extractsMetal or 0) > 0 or d.isFactory or d.isBuilder or (d.energyMake or 0) >= 200) then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x then items[#items + 1] = { x = x, z = z, w = d.metalCost or 50 } end
+        elseif d and d.customParams and d.customParams.iscommander then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x then items[#items + 1] = { x = x, z = z, w = 1500 } end
+        end
+    end
+    return items
+end
+
+local function KeyOf(p) return math.floor(p.x / 400) .. ":" .. math.floor(p.z / 400) end
+
+local function CoverUpdate(frame, income, silosSeen)
+    if frame - cover.last < M.COVER_PERIOD then return end
+    cover.last = frame
+    WG.AntiNuke = WG.AntiNuke or {}
+    if income < M.ANTINUKE_INCOME and not silosSeen then WG.AntiNuke.saviorWant = 0; return end
+    local R = CoverRadius(M.MOBILE_ANTINUKE) * M.COVER_FRAC
+    local points = M.CoverPoints(CoverItems(), R, M.COVER_MAX)
+    cover.points = points
+    -- standing corfmd cover the points near them
+    local fmdID, savID = DefID(M.ANTINUKE_NAME), DefID(M.MOBILE_ANTINUKE)
+    local fixed, savs = {}, {}
+    if fmdID then
+        for _, uid in ipairs(Spring.GetTeamUnitsByDefs(myTeamID, { fmdID }) or {}) do
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x then fixed[#fixed + 1] = { x = x, z = z, R = CoverRadius(M.ANTINUKE_NAME) * M.COVER_FRAC } end
+        end
+    end
+    if savID then
+        for _, uid in ipairs(Spring.GetTeamUnitsByDefs(myTeamID, { savID }) or {}) do
+            if IsDone(uid) then savs[#savs + 1] = uid end
+        end
+    end
+    local function Served(p)
+        for _, f in ipairs(fixed) do
+            if (f.x - p.x) ^ 2 + (f.z - p.z) ^ 2 <= (0.5 * f.R) ^ 2 then return true end
+        end
+        return false
+    end
+    local taken, want = {}, 0
+    for _, p in ipairs(points) do
+        if not Served(p) then
+            local key = KeyOf(p)
+            if cover.blocked[key] then
+                -- unreachable on foot: an anti-nuke is built there by a T2 con
+                Ensure("cover", frame, { M.ANTINUKE_NAME }, #fixed + 1, { { x = p.x, z = p.z, bearing = 0 } }, 0, 360)
+                Assist({ M.ANTINUKE_NAME })
+            else
+                want = want + 1
+                -- a Savior already heading for (or standing at) this point keeps it; else the nearest free one takes it
+                local mine
+                for _, uid in ipairs(savs) do
+                    local g = cover.goal[uid]
+                    if not taken[uid] and g and (g.x - p.x) ^ 2 + (g.z - p.z) ^ 2 <= (0.5 * R) ^ 2 then mine = uid; break end
+                end
+                if not mine then
+                    local bd
+                    for _, uid in ipairs(savs) do
+                        if not taken[uid] and not cover.goal[uid] then
+                            local x, _, z = Spring.GetUnitPosition(uid)
+                            local dd = x and (x - p.x) ^ 2 + (z - p.z) ^ 2
+                            if dd and (not bd or dd < bd) then mine, bd = uid, dd end
+                        end
+                    end
+                    if mine then
+                        cover.goal[mine] = { x = p.x, z = p.z, key = key, best = math.sqrt(bd), at = frame }
+                        Spring.GiveOrderToUnit(mine, CMD_MOVE, { p.x, Spring.GetGroundHeight(p.x, p.z) or 0, p.z }, {})
+                        Log("cover" .. mine, frame, string.format("cover: Savior %d -> (%d, %d)", mine, p.x, p.z))
+                    end
+                end
+                if mine then
+                    taken[mine] = true
+                    local g = cover.goal[mine]
+                    local x, _, z = Spring.GetUnitPosition(mine)
+                    local dist = x and math.sqrt((x - g.x) ^ 2 + (z - g.z) ^ 2) or 0
+                    if dist < g.best - 100 then
+                        g.best, g.at = dist, frame
+                    elseif dist > 350 and frame - g.at > M.COVER_STUCK then
+                        cover.blocked[g.key] = true
+                        cover.goal[mine] = nil
+                        want = want - 1
+                        Log("coverblk" .. g.key, frame, string.format(
+                            "cover: no path to (%d, %d); an anti-nuke is built there instead", g.x, g.z))
+                    elseif dist > 150 and frame - g.at > 300 then
+                        Spring.GiveOrderToUnit(mine, CMD_MOVE, { g.x, Spring.GetGroundHeight(g.x, g.z) or 0, g.z }, {})
+                    end
+                end
+            end
+        end
+    end
+    for uid in pairs(cover.goal) do if not Spring.GetUnitDefID(uid) then cover.goal[uid] = nil end end
+    WG.AntiNuke.saviorWant = math.max(0, want)          -- Saviors wanted: points nothing fixed serves and that are reachable
+    WG.AntiNuke.points = #points
+    local nBlocked = 0
+    for _ in pairs(cover.blocked) do nBlocked = nBlocked + 1 end
+    Log("coverplan", frame, string.format("cover plan: %d points, %d fixed anti-nukes, %d Saviors wanted (%d standing), %d unreachable",
+        #points, #fixed, want, #savs, nBlocked))
+end
+
 function M.Update(frame, mb)
     if not myTeamID or frame % M.PERIOD ~= 0 or not mb then return end
     local _, _, _, income = Spring.GetTeamResources(myTeamID, "metal")
@@ -298,6 +467,7 @@ function M.Update(frame, mb)
     local wantAN = 0
     if income >= M.ANTINUKE_INCOME or silosSeen then wantAN = 1 end
     if income >= M.ANTINUKE_SECOND or (silosSeen and income >= M.ANTINUKE_INCOME) then wantAN = 2 end
+    if M.COVER and not M.BUILD_ANTINUKE then CoverUpdate(frame, income, silosSeen) end
     if wantAN > 0 and M.BUILD_ANTINUKE then
         Ensure("antinuke", frame, { M.ANTINUKE_NAME }, wantAN, Anchors(mb, bearing), 250, 1100)
     end
