@@ -40,7 +40,8 @@ local CFG = {
     -- (first ground unit 4:34) and the bank sat at 800-1200 metal for the minute before; a human rush of gators
     -- arrived at 5:28, killed the commander by 6:50 and the bot had 13 army units, 3 of them AA, and no defences.
     -- Finish it by 3:30 (the human reference: 3:57), so the labs have ~1 more minute of ground output.
-    LT                  = { VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30,
+    LT                  = { ECELL = false, SILO_GRIDS = {}, -- pre-v16 grid behaviour, pinned when the framework defaults became v16's
+                             VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30,
                             ENERGY_PUSH = true,     -- LINE_CLICK_v12 (v4e): wind blocks -> fusions while metal floats and energy binds
                             -- LINE_CLICK_v13: grids were starved of cells (2 grids 4:00-7:40, 2-4 idle air cons): look for
                             -- cells whatever the bank, allow cells toward the map interior, open more at once

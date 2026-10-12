@@ -36,24 +36,6 @@ local CFG = {
     LOG_EVERY           = 450,
     SPINE               = true,      -- vehicle lab + the spine (army); false = the economy-only bot
     RECLAIM_STARTER_LAB = true,      -- reclaim the starter bot lab once the air lab is queued and the cons are out
-    -- Overrides of line_transition's LT.CFG.  The vehicle lab (the only ground-unit factory) was finished by 4:30
-    -- (first ground unit 4:34) and the bank sat at 800-1200 metal for the minute before; a human rush of gators
-    -- arrived at 5:28, killed the commander by 6:50 and the bot had 13 army units, 3 of them AA, and no defences.
-    -- Finish it by 3:30 (the human reference: 3:57), so the labs have ~1 more minute of ground output.
-    LT                  = { VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30,
-                            ENERGY_PUSH = true,     -- LINE_CLICK_v12 (v4e): wind blocks -> fusions while metal floats and energy binds
-                            -- LINE_CLICK_v13: grids were starved of cells (2 grids 4:00-7:40, 2-4 idle air cons): look for
-                            -- cells whatever the bank, allow cells toward the map interior, open more at once
-                            COLLECT_ALWAYS = true, GRID_ENEMY_SIDE = 1500,
-                            GRIDS_OPENING = 3, LINE_GATE = false,
-                            -- v15 (2026-10-09, eco bench): grids pick mex/wind/nano by resource pressure and expand as soon as an air con
-                            -- idles.  Eco-only bench: 12:00 income 600 -> ~1500 m/s, 15:00 1400 -> ~5200 (knowledge/eco_scaling_2026-10-09.md)
-                            GRID_BALANCE = true, GRID_INTR_MIN_NANOS = 0, GRID_FAST_INCOME = 90, GRIDS_OPENING_MAX = 8, GRID_FAST_ENERGY = 0.05,
-                            RETROFIT_EARLY = true,
-                            -- v16: these grids are crowned with a nuke silo (built by a T2 con once the grid is up)
-                            SILO_GRIDS = { [6] = true, [12] = true },
-                            -- v16: dedicated energy cells (blueprints/general/energy_cell.lua) once energy binds while metal floats
-                            ECELL = true },
     -- LINE_CLICK_v13: spine overrides (user: army floor 10%, and more responsive production)
     -- LINE_CLICK_v2 (2026-10-08): commander safety, bar_framework/commander_guard.lua.  In the first v2-vs-LINE_CLICK
     -- match an attack group dove into the base at 9:30, found the commander building its lane with 9 enemies near
@@ -72,7 +54,7 @@ local NET_SMOOTH  = 0.1
 function widget:GetInfo()
     return {
         name    = "Macro Controller",
-        desc    = "LINE_BOT: build the line (commander starter + one builder per lane)",
+        desc    = "LINE_CLICK: build the line (commander starter + one builder per lane)",
         author  = "",
         date    = "2026",
         license = "GNU GPL, v3 or later",
@@ -156,7 +138,7 @@ local function BeginBuildOrder()
                        onJobDone = function(j, state) if trans then LT.OnJobDone(trans, j, state) end end,
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
-                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, cfg = CFG.LT, WG = WG }
+                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG }
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.WIND_U = CFG.WIND_U
     crew.reserved = { [2] = true }       -- the nano lane is con #1's, whenever it is released from the starter

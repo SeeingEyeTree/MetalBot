@@ -9,5 +9,5 @@ eco_bench_runs/
 line_run*.json
 
 # Superseded candidate snapshots (local only; LINE_CLICK, LINE_HUMAN, LINE_NOSPINE and the dated ones are tracked)
-candidates/TILE_V2_base/
-candidates/TILE_V2_slots/
+archive/candidates/TILE_V2_base/
+archive/candidates/TILE_V2_slots/

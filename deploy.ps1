@@ -1,4 +1,4 @@
-param([string]$Bot = "DRAGON_BOT")
+param([string]$Bot = "candidates\LINE_CLICK_v16")
 
 $src = "$PSScriptRoot"
 
@@ -62,11 +62,8 @@ $files = @(
     "bar_framework\endgame.lua",
     "bar_framework\defense_crew.lua",
     "bar_framework\commander_guard.lua",
-    "bar_framework\tile_crew.lua",
-    "bar_framework\slot_crew.lua",
     "bar_framework\line_crew.lua",
     "bar_framework\line_transition.lua",
-    "bar_framework\nano_lift.lua",
     "bar_framework\spine.lua",
     "bar_framework\line_fight.lua",
     "bar_framework\click_army.lua",
@@ -85,7 +82,7 @@ $files = @(
     "stances\T1_raid.lua"
 )
 
-# The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).
+# The three controllers come from the bot folder (default candidates\LINE_CLICK_v16; pass -Bot OK_BOT etc.).
 # An absolute path also works. Shared files above always come from the repo root.
 $botDir = if ([System.IO.Path]::IsPathRooted($Bot)) { $Bot } else { Join-Path $src $Bot }
 if (-not (Test-Path $botDir)) {

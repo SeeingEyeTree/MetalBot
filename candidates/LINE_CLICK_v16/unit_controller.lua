@@ -1609,21 +1609,14 @@ function widget:Initialize()
     if CA then
         CA.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards,
                  muster = musterPool, scouts = lineScouts, responding = responding, bombers = bombers,
-                 isHunting = function() return EG and EG.Hunting() or false end,
-                 cfg = { SLOW_SPEED = 0,       -- click_army has no slow group: slow_front.lua runs Lashers/Pounders
-                         -- LINE_CLICK_v2 (2026-10-08): the core is the forward cluster, the commander chase sticks
-                         FORWARD_CORE = true, CMDR_KEEP_FRAC = 0.8, CORE_WAIT_FRAC = 0.35,
-                         -- LINE_CLICK_v8f: go round the enemy's main army, not through it
-                         FLANK = true } }
+                 isHunting = function() return EG and EG.Hunting() or false end }
     end
     DC = Load("defense_crew")
     if DC then DC.Init{ teamID = myTeamID } end
     AW = EI and Load("air_wing")
     if AW then AW.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards, bombers = bombers } end
     SF = EI and Load("slow_front")
-    -- LINE_CLICK_v13 (user): rez bots do their job -- repair under fire, any unit, riskier/wider wrecks; dying is fine
-    if SF then SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY,
-                        cfg = { REZ_BRAVE = true, SAFE_FRAC = 1.5, WRECK_R = 2000 } } end
+    if SF then SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY } end
 end
 
 -- The commander is seen here rather than in UnitFinished: commanders are builders,

@@ -40,7 +40,8 @@ local CFG = {
     -- (first ground unit 4:34) and the bank sat at 800-1200 metal for the minute before; a human rush of gators
     -- arrived at 5:28, killed the commander by 6:50 and the bot had 13 army units, 3 of them AA, and no defences.
     -- Finish it by 3:30 (the human reference: 3:57), so the labs have ~1 more minute of ground output.
-    LT                  = { VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30 },
+    LT                  = { GRIDS_OPENING = 2, GRIDS_OPENING_MAX = 4, GRID_FAST_INCOME = 550, GRID_FAST_ENERGY = 0.20, COLLECT_ALWAYS = false, GRID_ENEMY_SIDE = 0, LINE_GATE = true, GRID_BALANCE = false, GRID_INTR_MIN_NANOS = false, ENERGY_PUSH = false, RETROFIT_EARLY = false, ECELL = false, SILO_GRIDS = {}, -- pre-v16 grid behaviour, pinned when the framework defaults became v16's
+                             VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30 },
 }
 local START_FRAME = 15
 local NET_SMOOTH  = 0.1

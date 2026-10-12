@@ -1,4 +1,4 @@
--- bar_framework/line_transition.lua  (LINE_BOT)
+-- bar_framework/line_transition.lua  (economy line; used by LINE_CLICK_v16)
 -- The line's transition: an air lab, two nanos beside it, then air cons running mex grids.
 --
 --   1. WAIT.  The line builds as usual; no slot is reserved.  Each tick the closest 6 open slots (3x2) to an outer
@@ -24,15 +24,15 @@ LT.CFG = {
     EARLIEST_FRAME = 10 * 30,     -- the bank test is the real gate; this only waits for the outer con to exist
     CLAIM_WHEN_OPEN = 14,         -- hold the site once the lane has this few open slots (6 lab + 2 nano + spare)
     LOG_EVERY      = 450,
-    GRIDS_OPENING  = 2,           -- grids "opening" at once (TILE_BOT's pacing); all there is while the line is unfinished
-    GRIDS_OPENING_MAX = 4,        -- ceiling for the bank / fast triggers once the line is built (a 6:00 log had 13 open)
+    GRIDS_OPENING  = 3,           -- grids "opening" at once; all there is while the line is unfinished
+    GRIDS_OPENING_MAX = 8,        -- ceiling for the bank / fast triggers once the line is built (a 6:00 log had 13 open)
     GRID_BANK      = 500,
     GRID_BANK_GAP  = 15 * 30,
-    GRID_FAST_INCOME = 550,       -- metal income (M/s, smoothed) at which an idle air con opens a grid at once, bank or not:
+    GRID_FAST_INCOME = 90,        -- metal income (M/s, smoothed) at which an idle air con opens a grid at once, bank or not:
                                   -- once units soak up the income the bank sits near 0 and the bank triggers never fire
                                   -- (20:02 match: 750-890 M/s at 14-16 min, bank ~200, one grid opening, 8-10 cells waiting)
     GRID_BANK_FAST = 3000,        -- ...or the bank at which it does so (no 15 s gap)...
-    GRID_FAST_ENERGY = 0.20,      -- ...provided the energy bank is at least this share of storage
+    GRID_FAST_ENERGY = 0.05,      -- ...provided the energy bank is at least this share of storage
     GRID_HANDOFF   = 0.30,
     AIR_CON_RESERVE = 2,
     UPGRADE_CONS_PER_LAB = 2,     -- T2 air cons each advanced air lab builds
@@ -44,33 +44,34 @@ LT.CFG = {
     CONSOLIDATE_SLACK = 1000, CAP_SLACK_FRAC = 0.20, WIND_LATTICE = 48,
     CONSOLIDATE_SCAN = 300, CONSOLIDATE_MAX = 60,
     RECLAIM_TRIGGER_FRAC = 0.20, RECLAIM_BUDGET_FRAC = 0.02, RECLAIM_EVERY = 90,
-    -- ENERGY PUSH (2026-10-08, off by default; LINE_CLICK_v4 turns it on): from ~16:00 of a mirror game metal sat at
+    -- ENERGY PUSH (2026-10-08): from ~16:00 of a mirror game metal sat at
     -- its 30k cap and was wasted (pull 380 of 635 M/s) while energy ran at 93% of income -- army units cost ~15 E per
     -- metal, so energy, not metal, capped spending.  When metal floats and energy is the binding resource, free T2 cons
     -- turn 2x2 blocks of winds into fusions (the consolidation job, before the unit cap), up to EP_INFLIGHT at once;
     -- with no free T2 con an idle advanced air lab makes one.
-    -- GRID EXPANSION (2026-10-08, off by default; LINE_CLICK_v13 turns them on).  In a 30-minute game v12 sat at 2
+    -- GRID EXPANSION (2026-10-08).  In a 30-minute game v12 sat at 2
     -- grids from 4:00 to 7:40 and at 7-8 from 9:30 to 15:00 with 2-4 air cons idle and 0 cells waiting:
     --   COLLECT_ALWAYS: new cells were only looked for while the bank held GRID_BANK metal, and the army spends the
     --     bank -- look whenever the list is empty;
     --   GRID_ENEMY_SIDE: cells were never allowed past the line's enemy-facing edge, i.e. toward the map interior; with
     --     the base ~850 from the map edge that left one row of grids.  Allow cells this many elmos past that edge (0 = old).
-    COLLECT_ALWAYS = false,
-    GRID_ENEMY_SIDE = 0,
+    COLLECT_ALWAYS = true,
+    GRID_ENEMY_SIDE = 1500,
     --   LINE_GATE: while the line is unbuilt only GRIDS_OPENING grids may open (v13 run: 3 grids from 5:00 to 7:30 with 2
     --     air cons idle and cells waiting).  false = the bank / fast rules apply while the line is still being built.
-    LINE_GATE = true,
+    LINE_GATE = false,
     --   GRID_BALANCE / GRID_INTR_MIN_NANOS (user, watching v13): grids were built in blueprint order -- nanos first --
     --     while metal was short.  The metal interrupt only fires under 150 metal banked AND needs 2 nanos in reach of
     --     the mex.  GRID_BALANCE adds the placer's utilisation interrupts (mex when metal is the pressed resource, wind
     --     when energy is, a nano only when neither is used); GRID_INTR_MIN_NANOS = 0 lets an air con place a mex with
-    --     no nano in reach yet.  nil/false = the old behaviour.
-    GRID_BALANCE = false,
-    GRID_INTR_MIN_NANOS = nil,
-    ENERGY_PUSH = false,
+    --     no nano in reach yet.  false / nil = the old behaviour.
+    GRID_BALANCE = true,
+    GRID_INTR_MIN_NANOS = 0,
+    ENERGY_PUSH = true,
     SHARE_GOV = false,            -- bar_framework/spend_governor.lua: make the spine army share bind (pauses grids / tunes the spine)
     FAST_OPEN_CAP = nil,          -- max grids opening at once in the fast-income path (nil = no cap)
     COLLECT_DONE_ONLY = false,    -- new cells only next to grids whose nanos are up (DRAGON_BOT's rule), not next to every assigned grid
+    SILO_GRIDS = { [6] = true, [12] = true },   -- grids crowned with a nuke silo (built by a T2 con once the grid is up)
     CAPSTONE_MAX = nil,           -- grids numbered above this skip their T2 lab capstone
     ENERGY_BUILDING = nil,        -- what a wind block becomes under energy push / consolidation (default corfus; corafus = 3000 E in the same 96x96)
     EARLY_CAPSTONES = nil, EARLY_CAPSTONE_NANOS = 4,   -- the first N grids build their T2 lab once this many nanos stand
@@ -80,20 +81,20 @@ LT.CFG = {
     GRID_HELPERS = false, HELP_NANOS = 2, HELP_MAX = 2,   -- idle air cons guard the builder of a grid with fewer than HELP_NANOS nanos up
     GRID_COMPACT = false,         -- open the candidate cell nearest the line's centre first
     TIGHT_ON_FLOAT = false, TIGHT_FLOAT_FRAC = 0.5, TIGHT_FLOAT_FRAMES = 20 * 30, TIGHT_FLOAT_START = 9 * 60 * 30,   -- see CheckCapPressure
-    RETROFIT_EARLY = false,       -- grids are retrofit-eligible once their nanos are up (not at 70% built / the unit cap going tight)
+    RETROFIT_EARLY = true,       -- grids are retrofit-eligible once their nanos are up (not at 70% built / the unit cap going tight)
     EP_START = 10 * 60 * 30, EP_MFRAC = 0.30, EP_MIN_METAL = 3000,   -- "metal floats"
     EP_EFRAC = 0.50, EP_EPULL = 0.85,                                -- "energy binds": bank under half, pull >= 85% of income
     EP_INFLIGHT = 2, EP_EVERY = 300, EP_CON_EVERY = 1800, EP_CON_BATCH = 1,
-    -- ENERGY CELLS (LINE_CLICK_v16, 2026-10-09; off by default): the mex grids have no room for more fusions, and wind blocks
+    -- ENERGY CELLS (2026-10-09): the mex grids have no room for more fusions, and wind blocks
     -- run out.  When energy binds while metal floats (the ENERGY PUSH test) a free T2 con opens a whole lattice cell for
     -- fusions -- blueprints/general/energy_cell.lua, 12 nanos + 16 fusions, derived from fussion_grid_60x60 -- next to the
     -- grids, on our side of the map.  Prefers wind blocks while some are left, unless T2 cons are idle.
-    ECELL = false, ECELL_MAX_ACTIVE = 2, ECELL_TOTAL = 8, ECELL_EVERY = 300, ECELL_PROBE_MIN = 9,
+    ECELL = true, ECELL_MAX_ACTIVE = 2, ECELL_TOTAL = 8, ECELL_EVERY = 300, ECELL_PROBE_MIN = 9,
     ECELL_ALWAYS_BELOW = 0.35,     -- also when the energy bank is under this share of storage and pull >= income (no metal test)
     AIR_CON_TIMEOUT = 80 * 30,
     -- Vehicle lab (the spine's seed): finished by ~4:30 (the human reference had its lab done at 3:57 and its
     -- units arrived at ~5:30); it is queued backwards from that deadline.  4 slots (2x2) on the other outer lane.
-    VP_DONE_FRAME = 4 * 60 * 30 + 30 * 30,
+    VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30,
     VP_MARGIN     = 10 * 30,
     VP_COLS       = 2,
     VP_NAME       = "corvp",

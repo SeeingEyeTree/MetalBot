@@ -77,18 +77,18 @@ local CFG = {
     -- crew: behind the Lashers
     RECLAIM_MIN   = 20,     -- metal in a wreck before the walk is worth it
     REZ_MIN_COST  = 80,
-    WRECK_R       = 1300,   -- crew works wrecks this close to the Lasher core...
+    WRECK_R       = 2000,   -- crew works wrecks this close to the Lasher core...
     AHEAD_MAX     = 100,    -- ...and no further than this IN FRONT of it (toward the enemy)
-    SAFE_FRAC     = 0.5,    -- skip a wreck covered by more than this x the group's value of enemy guns
+    SAFE_FRAC     = 1.5,    -- skip a wreck covered by more than this x the group's value of enemy guns
     SAFETY_CHECKS = 4,
     REPAIR_R      = 900,
     REPAIR_BELOW  = 0.9,
     SELF_RETREAT  = 0.4,
-    -- REZ_BRAVE (2026-10-08, off by default; LINE_CLICK_v13): the user saw rez bots walk away from a unit under attack
+    -- REZ_BRAVE (2026-10-08): the user saw rez bots walk away from a unit under attack
     -- right next to them -- "they are useless if they are not doing their job; it is fine if they die".  With it on, a
     -- damaged unit in reach is repaired even with enemies near (a rez bot only walks back when it has no job or is
     -- itself nearly dead), ANY of our units counts (not only the slow group), and wrecks may be riskier.
-    REZ_BRAVE     = false,
+    REZ_BRAVE     = true,
     BRAVE_RETREAT = 0.2,     -- REZ_BRAVE: own hp share below which a rez bot still steps back
     BOT_DANGER_R  = 450,    -- an enemy this close to a rez bot sends it back behind the line
     TRAIL         = 350,    -- the crew idles this far behind the Lasher core

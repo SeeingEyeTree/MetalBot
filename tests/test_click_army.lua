@@ -43,7 +43,8 @@ MM.SetHome(W.start[0][1], W.start[0][2])      -- the stub knows the enemy start:
 EI.Init{ UQ = UQ, MM = MM, allyID = 0 }
 local combat, guards, muster, scouts, responding, bombers = {}, {}, {}, {}, {}, {}
 CA.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combat, guards = guards, muster = muster,
-         scouts = scouts, responding = responding, bombers = bombers }
+         scouts = scouts, responding = responding, bombers = bombers,
+         cfg = { SLOW_SPEED = 55 } }     -- the slow-group tests below need it (the bots run with none: SLOW_SPEED = 0)
 
 -- the module learns of deaths the way the unit controller tells it
 W.widgets[1] = { _file = "fake", UnitDestroyed = function(_, uid, defID, team)
@@ -909,7 +910,7 @@ check(valueC <= 3500 + 400, string.format("guard value stays within GUARD_MAX (%
 
 -- LINE_CLICK_v3 (2026-10-08): click_army FORWARD_CORE + commander safety (commander_guard: evade, cloak)
 do
-    local _, _, logV, errV = Smoke("candidates/LINE_CLICK_v3", 14)
+    local _, _, logV, errV = Smoke("archive/candidates/LINE_CLICK_v3", 14)
     for _, e in ipairs(errV) do print("LUA ERROR (LINE_CLICK_v3): " .. e) end
     check(#errV == 0, "LINE_CLICK_v3 widgets run 14 minutes without Lua errors")
     check(not Any(logV, "ERROR loading commander_guard"), "v3: commander_guard loaded")
@@ -923,7 +924,7 @@ end
 -- LINE_CLICK_v3b: the commander stays in its lane and evades only a real dive (value >= 1500): the stub's raid is
 do
     -- 6 Ak (~300), so it must NOT leave
-    local _, _, logB3, errB3 = Smoke("candidates/LINE_CLICK_v3b", 14)
+    local _, _, logB3, errB3 = Smoke("archive/candidates/LINE_CLICK_v3b", 14)
     for _, e in ipairs(errB3) do print("LUA ERROR (LINE_CLICK_v3b): " .. e) end
     check(#errB3 == 0, "LINE_CLICK_v3b widgets run 14 minutes without Lua errors")
     check(not Any(logB3, "%[CG%] .*commander evading"), "v3b: the commander does not run from 6 Ak (under DANGER_VALUE)")
@@ -932,7 +933,7 @@ end
 
 -- LINE_CLICK_v4e: line_transition ENERGY_PUSH on (the stub rarely meets its trigger: this checks the code runs)
 do
-    local _, _, logE, errE = Smoke("candidates/LINE_CLICK_v4e", 14)
+    local _, _, logE, errE = Smoke("archive/candidates/LINE_CLICK_v4e", 14)
     for _, e in ipairs(errE) do print("LUA ERROR (LINE_CLICK_v4e): " .. e) end
     check(#errE == 0, "LINE_CLICK_v4e widgets run 14 minutes without Lua errors")
 end
@@ -940,7 +941,7 @@ end
 -- LINE_CLICK_v5e: the commander helps the outer-lane cons with their jobs (the stub builds instantly, so this
 do
     -- checks the code runs, not that the help happens)
-    local _, _, logH, errH = Smoke("candidates/LINE_CLICK_v5e", 14)
+    local _, _, logH, errH = Smoke("archive/candidates/LINE_CLICK_v5e", 14)
     for _, e in ipairs(errH) do print("LUA ERROR (LINE_CLICK_v5e): " .. e) end
     check(#errH == 0, "LINE_CLICK_v5e widgets run 14 minutes without Lua errors")
     check(Any(logH, "%[CK%] .*group #%d+ launch"), "v5e: a group launches")
@@ -948,7 +949,7 @@ end
 
 -- LINE_CLICK_v12: the overnight combination (FORWARD_CORE + FLANK + ENERGY_PUSH + commander evades real dives)
 do
-    local _, _, log12, err12 = Smoke("candidates/LINE_CLICK_v12", 14)
+    local _, _, log12, err12 = Smoke("archive/candidates/LINE_CLICK_v12", 14)
     for _, e in ipairs(err12) do print("LUA ERROR (LINE_CLICK_v12): " .. e) end
     check(#err12 == 0, "LINE_CLICK_v12 widgets run 14 minutes without Lua errors")
     check(Any(log12, "%[CK%] .*group #%d+ launch"), "v12: a group launches")
@@ -958,18 +959,18 @@ end
 -- LINE_CLICK_v13: grid expansion switches, 10% army floor, Mammoths/Sheldons in the slow group, 30+ rez bots
 -- (brave), Shuriken stun allocation
 do
-    local _, _, log13, err13 = Smoke("candidates/LINE_CLICK_v13", 14)
-    for _, e in ipairs(err13) do print("LUA ERROR (LINE_CLICK_v13): " .. e) end
-    check(#err13 == 0, "LINE_CLICK_v13 widgets run 14 minutes without Lua errors")
-    check(Any(log13, "%[CK%] .*group #%d+ launch"), "v13: a group launches")
+    local _, _, log13, err13 = Smoke("candidates/LINE_CLICK_v16", 14)
+    for _, e in ipairs(err13) do print("LUA ERROR (LINE_CLICK_v16): " .. e) end
+    check(#err13 == 0, "LINE_CLICK_v16 widgets run 14 minutes without Lua errors")
+    check(Any(log13, "%[CK%] .*group #%d+ launch"), "v16: a group launches")
     local rez = 0
     for _, l in ipairs(log13) do if l:find("%[LabCtrl%] .* rez%s+cornecro") then rez = rez + 1 end end
     -- (informational: in the stub the only lab that can make cornecro is the starter bot lab, which is reclaimed;
     -- in a real game the spine's T1 cell has its own bot lab)
-    print(string.format("v13: %d rez bot orders in 14 min (stub)", rez))
+    print(string.format("v16: %d rez bot orders in 14 min (stub)", rez))
 end
 
-local madeB, valueB = Smoke("LINE_BOT", 14)
+local madeB, valueB = Smoke("archive/bots/LINE_BOT", 14)
 print(string.format("guards built in 14 min at 40 m/s: LINE_BOT %d (value %.0f), LINE_CLICK %d (value %.0f)",
     madeB, valueB, madeC, valueC))
 check(madeC <= madeB, "LINE_CLICK builds no more guards than LINE_BOT")

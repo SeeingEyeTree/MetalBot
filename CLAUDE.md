@@ -6,17 +6,19 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 
 ## Main bot and test settings
 
-**`candidates/LINE_CLICK/` is the main bot right now** (updated 2026-10-08). Start new work from it (not TILE_BOT, DRAGON_BOT or SPINE_BOT). Open ideas: `experiment_ideas.md`.
-**`candidates/LINE_CLICK_v12/` beat it 5-0-1 (1.36x END_SCORE, 6 twenty-minute mirror games, both slot orders) in the
-2026-10-08 overnight run** -- LINE_CLICK + click_army FORWARD_CORE and FLANK, line_transition ENERGY_PUSH, and the
-commander evading real dives (commander_guard DANGER_VALUE). Everything tried that night, and the measurement
-lessons: `knowledge/overnight_2026-10-08.md`.
-**Best so far: `candidates/LINE_CLICK_v13d/`** (2026-10-08 daytime, from the user's notes on v12): v12 + grid expansion
-fixes in line_transition (COLLECT_ALWAYS, GRID_ENEMY_SIDE, LINE_GATE off; alone 3-0 vs v12) + Mammoths/Sheldons in the
-slow group, Shuriken stun allocation, brave rez crew. Rejected: 10% army floor, 30 rez bots by 8:00. `LINE_CLICK_v14`
-(grids pick mex/wind/nano by resource pressure + placer order grace) stalled its grids; a placer fix (0be5f6d) is untested.
-Status and next steps: `candidates/LINE_CLICK_v13/TODO.md`. Neither is promoted yet -- the user decides.
-**Git:** work after v12 is on branch `bot-testing-v2` (HEAD moved off `main` mid-session); `main` stops at v12.
+**`candidates/LINE_CLICK_v16/` is the main bot** (user, 2026-10-12: v16 is the best version; future work builds off it).
+It is LINE_CLICK + the v12-v16 changes: forward-core/flanking army, grid expansion fixes, energy push, resource-pressure grids,
+energy cells, capstone silos + anti-nuke, rez bots, depth scouts. Its design notes are in `knowledge/v16_2026-10-09.md`
+(economy bench: `knowledge/eco_scaling_2026-10-09.md`). **Every flag v16 turned on is now the framework default**, so the
+controllers pass no overrides; `candidates/LINE_CLICK` (the older main bot, a regression opponent), `LINE_HUMAN`, `ECO_BENCH`
+and `ARMY_BENCH` pin their old behaviour explicitly (a "pre-v16 ... pinned" comment next to the override).
+`candidates/LINE_CLICK_v17` (paintkid-game fixes) and `candidates/LINE_BOMB` (stance system + T1 bomber rush) derive from v16
+and are untested/in progress; `candidates/RUSH_SPAM` is a deliberately dumb eco-spam opponent. Open ideas: `experiment_ideas.md`.
+**Retired 2026-10-12 (moved, not deleted -- see `archive/README.md`):** LINE_BOT, TILE_BOT, SPINE_BOT, MECH_BOT, DRAGON_BOT and every
+older LINE_CLICK_vN / TILE_V2 candidate now live under `archive/bots/` and `archive/candidates/`. Earlier history (v12, v13d, v14):
+`knowledge/overnight_2026-10-08.md`. Remaining top-level bots: `OK_BOT` (reference), `INACTIVE_BOT` (pure-eco opponent),
+`RAIDER_BOT` / `GROUND_RAIDER_BOT` (exploiter fixtures for `find_bot_weakness`).
+**Git:** work after v12 is on branch `bot-testing-v2` (`main` stops at v12).
 
 **Measurement rules learned 2026-10-08:** grep a run for `Sync error` (`result["desync"]`) before trusting anything past
 ~10 game-min (the stats tracker's `RequestPath` desynced nearly every match until it was switched off); run 20-minute
@@ -36,42 +38,22 @@ A bot is a **folder** containing three Lua widget files:
 
 | File | Responsibility |
 |---|---|
-| `macro_controller.lua` | Economy: commander build order, mex expansion, factory placement |
+| `macro_controller.lua` | Economy: commander build order, the line, mex/wind grids, vehicle lab + spine, commander safety |
 | `lab_controller.lua` | Factory queues: what units each lab builds and in what ratio |
 | `unit_controller.lua` | Combat/scouts: where units move and how they fight |
 
-`OK_BOT/` is the original reference bot. `DRAGON_BOT/` was the main bot (sim-derived
-opening, executed distributed via `blueprint_placer.lua`, then mex-grid scaling — see
-`knowledge/lessons_learned.md`). `RAIDER_BOT/` and `GROUND_RAIDER_BOT/` are DRAGON_BOT-derived
-**exploiter fixtures**, not champion candidates: each is tuned to hit a specific known weakness
-(no AA, no ground defence) as early as possible, so `find_bot_weakness` can test threat response
-on demand instead of waiting for an opponent that might raid. Copy `DRAGON_BOT/` as a starting
-point for a new bot; keep exploiter variants in their own folders rather than merging them.
-`MECH_BOT/` is DRAGON_BOT plus the units-and-scouting parts of `knowledge/game_mechanics.md`
-(recon, raiders, rez bots, reactive AA, commander safety, endgame hunt); its new logic lives in
-MECH-only `bar_framework/` modules, so DRAGON_BOT is unchanged. See `MECH_BOT/GOAL.md` for what
-changed and which tracker fields measure it. It has not been run in a real match yet.
-`TILE_BOT/` is DRAGON_BOT's macro with the spiral opening replaced by a human player's con-bot tile
-opening: the commander builds `bad_com_start`, up to 4 con bots each build a row of a 4x4 block of
-`con_bot_grid` tiles (`bar_framework/tile_crew.lua`), then an air lab hands off to the mex grids.
-Its lab and unit controllers, and the spine (`bar_framework/spine.lua`), are SPINE_BOT's (origin/main).
-See `TILE_BOT/GOAL.md`; `tests/test_tile_bot.lua` checks the block geometry and runs a stub smoke test.
-`LINE_BOT/` is an economy-only bot: a line of mex/wind slots (`bar_framework/line_crew.lua`), then an air lab on the
-6 open slots nearest its outer con and TILE_BOT's grid system (spend-pressure hand-off, capstone, T2 retrofits,
-unit-cap consolidation) in `bar_framework/line_transition.lua`. Army: a vehicle lab on the line (done by 4:30) seeds
-TILE_BOT's spine (`LINE_BOT/SPINE_BRIEF.md` is the history); the starter bot lab is reclaimed to fund it. Stub-tested only so far; `candidates/LINE_NOSPINE` is the economy-only A/B baseline.
-`LINE_BOT/GOAL.md` has the design, measurements and lessons. Deploy it with
-`.\deploy.ps1 -Bot LINE_BOT` (the default bot is DRAGON_BOT); `tests/test_line_crew.lua` runs through lupa's Lua 5.1.
+The controllers are thin; the logic is in `bar_framework/` (see `bar_framework/README.md` for what each module does and
+who uses it). LINE_CLICK_v16's economy is a line of mex/wind slots (`line_crew.lua`), an air lab, then mex grids
+(`line_transition.lua`); the army is a vehicle lab on the line seeding the spine (`spine.lua`), played by `click_army.lua`
+(up to 3 attack groups hitting enemy build power / eco / commander), `slow_front.lua` (Lashers/Pounders/rez bots) and
+`scout_lanes.lua`. Doctrine: win by killing enemy build power/eco/commander, not by trade efficiency. Judge it on enemy
+BP/eco destroyed (`[CK]`, `[SF]` log rows), then A/B on army value. Deploy with `.\deploy.ps1` (default bot is
+`candidates\LINE_CLICK_v16`; `-Bot <folder>` for another). Tests (lupa Lua 5.1, see `tests/LUA_TESTING.md`): `test_click_army`,
+`test_slow_front`, `test_scout_lanes`, `test_line_crew`, `test_click_forward`, `test_line_bomb`.
 
-**`candidates/LINE_HUMAN/` + `human_control_logger.lua`** record how a person controls units (LINE_BOT macro, empty unit controller, the
-person queues and commands the army). Deploy with `.\deploy.ps1 -Bot candidates\LINE_HUMAN`; `python human_control_report.py` and
-`python human_kite_report.py` read the `[HCL]` logs. Details: `candidates/LINE_CLICK/GOAL.md` and the header of `human_control_logger.lua`.
-
-**`candidates/LINE_CLICK/` is the MAIN BOT.** LINE_BOT's economy plus a human-style aggressive army (`bar_framework/click_army.lua`: up to 3
-simultaneous attack groups hitting different enemy targets, ranked by build power + eco; `bar_framework/slow_front.lua`: Lashers/Pounders/rez bots
-played from the user's own games; `bar_framework/scout_lanes.lua`: enemy-side scouting). Doctrine: win by killing enemy build power/eco/commander,
-not by trade efficiency. Judge it on enemy BP/eco destroyed (`[CK]`, `[SF]` log rows), then A/B on army value. Full design, rulings and tunables:
-`candidates/LINE_CLICK/GOAL.md`. Tests (lupa Lua 5.1, see `tests/LUA_TESTING.md`): `test_click_army`, `test_slow_front`, `test_scout_lanes`.
+**`candidates/LINE_HUMAN/` + `human_control_logger.lua`** record how a person controls units (the line economy, empty unit
+controller, the person queues and commands the army). Deploy with `.\deploy.ps1 -Bot candidates\LINE_HUMAN`;
+`python human_control_report.py` and `python human_kite_report.py` read the `[HCL]` logs.
 
 **Stances (2026-10-11):** `stance_editor.html` edits a unit comp (units + share of army spend, plus intent/control notes);
 `python extract_unit_data.py` builds its unit list and pictures from the installed BAR. Saves/exports live in `stances/`
@@ -351,21 +333,14 @@ MetalBot/
   blueprint_gen.py     — turns a build_order_sim.py result into a blueprint .lua + layout image;
                           reserves an exit corridor (M.keepout) for ground-unit factories
   OK_BOT/              — original reference bot (Cortex faction)
-  DRAGON_BOT/          — earlier main bot: sim-derived opening + mex-grid scaling
+  INACTIVE_BOT/        — builds nothing: the opponent for pure-economy runs
   RAIDER_BOT/          — exploiter: air raid (bombers) on an early timer
   GROUND_RAIDER_BOT/   — exploiter: ground raid (Incisors + fighter escort) on an early timer
-  MECH_BOT/            — DRAGON_BOT + game_mechanics units/scouting (see MECH_BOT/GOAL.md)
-  TILE_BOT/            — con-bot tile opening + SPINE_BOT lab/unit controllers (TILE_BOT/GOAL.md)
-    macro_controller.lua
-    lab_controller.lua
-    unit_controller.lua
+  candidates/          — bots under test; LINE_CLICK_v16 is the main one (each folder: macro/lab/unit_controller.lua)
   blueprint_placer.lua — shared helper (distributed build orders, mex grid expansion)
-  bar_framework/       — shared widgets loaded via VFS.Include (escape_guard, nano_broker, ...);
-                          MECH_BOT only: enemy_intel, recon_plan, raid_group, rez_crew,
-                          endgame, commander_guard
+  bar_framework/       — shared modules loaded via VFS.Include; bar_framework/README.md says what each does
   tests/               — plain-Lua tests: spring_stub.lua + test_*.lua (tests/LUA_TESTING.md)
-  archive/             — retired files (old bot.lua, new_bot.lua, original_bot_tmp, unused visualisers); not deployed
-  candidates/          — bots under test; LINE_CLICK is the main one (tracked in git)
+  archive/             — retired bots, candidates, framework modules, tests, root files (archive/README.md); not deployed
   blueprints/          — blueprint .lua files + the build_order_sim.py results they came from
   raid_configs/        — build_order_sim.py `raid` mode configs
   knowledge/raid_runs/ — saved exploiter-bot match results and analysis

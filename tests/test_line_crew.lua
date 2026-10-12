@@ -5,7 +5,7 @@
 --    slots, the nano column, the lanes and the starter never overlap; every slot is in build reach of a stop
 --    of its own lane; every nano spot is in reach of con 1's lane; the commander reaches every starter item
 --    before the first nano from where it stands.
--- 2. A stub smoke run of LINE_BOT/macro_controller.lua (the stub builds instantly: this checks the code paths,
+-- 2. A stub smoke run of candidates/LINE_CLICK_v16/macro_controller.lua (the stub builds instantly: this checks the code paths,
 --    not how it plays).
 
 local S = dofile("tests/spring_stub.lua")
@@ -154,7 +154,7 @@ end
 -- ── smoke run ────────────────────────────────────────────────────────────────
 W.units, W.features, W.orders, W.log, W.errors, W.widgets = {}, {}, {}, {}, {}, {}
 W.frame, WG = 0, {}
-S.LoadWidget("LINE_BOT/macro_controller.lua")
+S.LoadWidget("candidates/LINE_CLICK_v16/macro_controller.lua")
 S.Callin("Initialize")
 S.Spawn("corcom", 0, W.start[0][1], W.start[0][2])
 S.Spawn("corcom", 1, W.start[1][1], W.start[1][2])
@@ -198,7 +198,8 @@ check(any("%[LT%] .*AIR LAB finished"), "air lab finished")
 check(#S.Log("%[LT%] %d+:%d+ lab nano done") == 2, "two nanos beside the air lab")
 check(any("%[LT%] .*first grid cell .*48 elmos beyond the line"), "first grid placed beyond the line")
 check(any("%[LT%] grid 2 at"), "grid expansion continued past the first grid")
-check(any("%[LT%] .*mostly built %-%- retrofit eligible"), "grids become retrofit-eligible at 70%")
+check(any("%[LT%] .*mostly built %-%- retrofit eligible") or any("%[LT%] .*finished %-%- retrofit eligible"),
+      "grids become retrofit-eligible (RETROFIT_EARLY: nanos up; otherwise 70% built)")
 check(any("%[LT%] .*retrofit started"), "a T2 con started a retrofit")
 check(any("%[LT%] .*unit cap tight"), "consolidation switched on when the unit cap got tight")
 check(any("%[LT%] .*consolidating 4 winds"), "a block of 4 winds was consolidated")

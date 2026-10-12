@@ -85,7 +85,7 @@ local CFG = {
     MARGIN          = 200,
     -- The slow group: Mammoths (speed 23) next to gators (85) made every group crawl, so the slow
     -- units get a group of their own and the fast groups keep probing.  Tigers (69) stay fast.
-    SLOW_SPEED      = 55,     -- a unit slower than this belongs to the slow group (Init{cfg={SLOW_SPEED=0}} turns it off)
+    SLOW_SPEED      = 0,      -- a unit slower than this belongs to the slow group; 0 = none (slow_front.lua runs Lashers/Pounders)
     SLOW_MIN_AV     = 2000,   -- the slow group leaves once this much slow value is at the stage
     SLOW_ESCORT_SHARE = 0.35, -- fast units in the slow group: this share of the slow value, no more
     SLOW_ESCORT_WAIT  = 0.5,  -- launch once this share of the wanted escorts is there...
@@ -137,32 +137,32 @@ local CFG = {
     SCOUT_SIDE      = 900,    -- the second scout looks this far to the side
     CALL_SCOUTS_PER_GROUP = 2,
     CALL_SCOUT_MAX  = 6,
-    -- FORWARD_CORE (2026-10-08, off by default = the old behaviour): a group's core is its FORWARD cluster --
+    -- FORWARD_CORE (2026-10-08): a group's core is its FORWARD cluster --
     -- the unit nearest its target (or furthest along home->foe) that has company, and everyone within
     -- CORE_R of it -- not the units around the centroid of everyone.  With 3 groups out every new unit joins
     -- the weakest group from the factory, so the centroid slid back toward home (a group "attacking" a nano
     -- at the enemy base had its centre 11,000 elmos away) and the units at the front were sent back to it:
     -- vs BARb at 20:00, 112k of army stood at mid-map with the enemy commander in sight and 633 value guarding it.
     -- The core's value (not the whole group's, half of which is still walking) decides fights and targets.
-    FORWARD_CORE    = false,
+    FORWARD_CORE    = true,
     CORE_R          = 1500,
     CORE_CLUSTER_R  = 500,    -- the forward unit needs CORE_COMPANY others this close
     CORE_COMPANY    = 2,
     -- Once a group is on the commander it keeps going while the guard is under this share of the core
     -- (CMDR_OPEN_FRAC only decides when it starts).  The guard estimate swings, and every drop-out sent three
     -- groups back across the map (flip-flopped 14:59-15:28 in that game).
-    CMDR_KEEP_FRAC  = nil,    -- nil = CMDR_OPEN_FRAC (old behaviour)
+    CMDR_KEEP_FRAC  = 0.8,    -- nil = CMDR_OPEN_FRAC
     -- FORWARD_CORE: a core holding less than this share of the group's value waits (FIGHT where it stands) for
     -- the rest to catch up, unless it is already at its target.  nil = never waits.
-    CORE_WAIT_FRAC  = nil,
+    CORE_WAIT_FRAC  = 0.35,
     CORE_WAIT_R     = 4000,   -- ...counting only the units this close to the core
-    -- FLANK (2026-10-08, off by default): go round the enemy's main army instead of through it.  In the mirror
+    -- FLANK (2026-10-08): go round the enemy's main army instead of through it.  In the mirror
     -- both stages sit ~45% of the way across, ~1300 elmos apart, and every group walked into the other side's staged
     -- army: 70-80% of a group lost in ~2 min for 450-2100 value killed by 16:30.  User: "gators are fast: group
     -- quickly, flank the enemy army, reach eco".  When the path to the target passes within FLANK_CLEAR of the
     -- biggest recently seen enemy army cluster (worth >= FLANK_MIN_FRAC of the core), the group heads for a waypoint
     -- FLANK_OFFSET to one side of it (the side is kept per group) until it is past the cluster.
-    FLANK           = false,
+    FLANK           = true,
     FLANK_CLEAR     = 1800,
     FLANK_OFFSET    = 2800,
     FLANK_MIN_FRAC  = 0.5,

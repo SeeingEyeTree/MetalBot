@@ -36,7 +36,7 @@ local CFG = {
     LOG_EVERY           = 450,
     SPINE               = true,      -- vehicle lab + the spine (army); false = the economy-only bot
     RECLAIM_STARTER_LAB = true,      -- reclaim the starter bot lab once the air lab is queued and the cons are out
-    LT                  = nil,       -- overrides of line_transition's LT.CFG
+    LT                  = { GRIDS_OPENING = 2, GRIDS_OPENING_MAX = 4, GRID_FAST_INCOME = 550, GRID_FAST_ENERGY = 0.20, COLLECT_ALWAYS = false, GRID_ENEMY_SIDE = 0, LINE_GATE = true, GRID_BALANCE = false, GRID_INTR_MIN_NANOS = false, ENERGY_PUSH = false, RETROFIT_EARLY = false, ECELL = false, SILO_GRIDS = {} },   -- pre-v16 grid behaviour, pinned when the framework defaults became v16's       -- overrides of line_transition's LT.CFG
 }
 local START_FRAME = 15
 local NET_SMOOTH  = 0.1

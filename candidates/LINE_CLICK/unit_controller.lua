@@ -1366,10 +1366,11 @@ function widget:Initialize()
         CA.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards,
                  muster = musterPool, scouts = lineScouts, responding = responding, bombers = bombers,
                  isHunting = function() return EG and EG.Hunting() or false end,
-                 cfg = { SLOW_SPEED = 0 } }    -- click_army has no slow group: slow_front.lua runs Lashers/Pounders
+                 cfg = { SLOW_SPEED = 0, FORWARD_CORE = false, FLANK = false, CMDR_KEEP_FRAC = false, CORE_WAIT_FRAC = false } }   -- pre-v16 army behaviour, pinned    -- click_army has no slow group: slow_front.lua runs Lashers/Pounders
     end
     SF = EI and Load("slow_front")
-    if SF then SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY } end
+    if SF then SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY,
+                        cfg = { REZ_BRAVE = false, SAFE_FRAC = 0.5, WRECK_R = 1300 } } end   -- pre-v16 values, pinned
 end
 
 -- The commander is seen here rather than in UnitFinished: commanders are builders,

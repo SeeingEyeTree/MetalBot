@@ -1,4 +1,4 @@
--- bar_framework/line_crew.lua  (LINE_BOT)
+-- bar_framework/line_crew.lua  (economy line; used by LINE_CLICK_v16)
 -- THE LINE: a strip of slots that starts at the first nano and runs away from the commander's starter,
 -- four lanes (corridors), one builder per lane, nanos added only when build power is the limit.
 --
