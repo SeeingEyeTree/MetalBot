@@ -66,6 +66,25 @@ local RR = {
     ok         = false,     -- economy allows one (not stalled, bank above MIN_METAL)
     mine       = {},        -- [unitID] = true: alive ring radar units
 }
+-- STANCE_BOT raid response (user, 2026-10-12).  The unit controller publishes mb.raid (intruder clusters: value, channel,
+-- speed) and mb.airLosses (own air units shot down by enemy fighters, last 30 s).  While a raid is live:
+--   * the T1 air lab queues only stunners (Shurikens) -- or fighters when the raid is air / our air units are dying to
+--     enemy fighters -- ahead of everything else it was doing;
+--   * slow units (Lasher/Pounder...) are swapped for fast ones until the fast value ORDERED since the raid began is
+--     NEED_MULT x the raiders' value, then the mix goes back to the stance.
+local RAID = {
+    TTL        = 300,    -- frames mb.raid stays live after the last intruder sighting
+    AIR_LOSSES = 2,      -- air units lost to enemy fighters (30 s) that put the air lab on fighters
+    NEED_MULT  = 2.0,    -- fast value to order, in raider value (matches the unit controller's RESPOND_NEED_MULT)
+    FAST_SPEED = 60,     -- elmos/s: a unit at least this fast can answer a raid
+    STUN_MAX   = 30,     -- Shurikens held/ordered above this: stop adding stunners
+    live = false, since = -1e9, lastLive = -1e9, fastOrdered = 0, stunOrdered = 0, need = 0, swap = false, airLab = false, fighters = false,
+}
+local function IsFastDef(defID)
+    local d = defID and UnitDefs[defID]
+    return d ~= nil and (d.speed or 0) >= RAID.FAST_SPEED and not d.isBuilder and d.weapons ~= nil and #d.weapons > 0
+end
+
 -- LINE_CLICK -- home-guard air (Shuriken corbw, Wasp corape).  They are fast, so they slow a raid
 -- down, which is what a guard is for.  The old rule built one whenever metal looked like it was
 -- floating, and "floating" included income > pull + 15, which is true all through the build-up:
@@ -279,6 +298,12 @@ end
 local function NoteOrder(defID, frame)
     local kind = KindOf(defID)
     if kind then ordered[#ordered + 1] = { defID = defID, kind = kind, frame = frame } end
+    if RAID.live and UnitDefs[defID] and UnitDefs[defID].name == "corbw" then
+        RAID.stunOrdered = RAID.stunOrdered + ((UnitDefs[defID].metalCost or 0) + (UnitDefs[defID].energyCost or 0) / 70)
+    end
+    if RAID.live and IsFastDef(defID) then
+        RAID.fastOrdered = RAID.fastOrdered + ((UnitDefs[defID].metalCost or 0) + (UnitDefs[defID].energyCost or 0) / 70)
+    end
 end
 
 local armyCache = {}    -- [labDefID] = {cheap=defID, main=defID, floating=defID} or false
@@ -472,6 +497,7 @@ end
 -- plant has ordered is under SLOW_SHARE (after a first fast unit).  Returns the slow pick or nil.
 local function SlowPick(picks)
     if not (picks.slowSupport or picks.slowScreen) then return nil end
+    if RAID.swap then return nil end
     local tot = mix.fastV + mix.slowV
     if tot <= 0 or mix.slowV / tot >= SLOW_SHARE then return nil end
     if picks.slowSupport and (not picks.slowScreen or mix.support < SUPPORT_PER_SCREEN * (mix.screen + 1)) then
@@ -506,7 +532,9 @@ local function StancePick(labDefID)
     local ST = WG and WG.Strategy
     if not ST then return nil end
     local set = CanBuildSet(labDefID)
-    local defID = ST:Pick(function(d) return set[d] end)
+    local defID
+    if RAID.swap then defID = ST:Pick(function(d) return set[d] and IsFastDef(d) end) end
+    if not defID then defID = ST:Pick(function(d) return set[d] end) end
     if defID then ST:Note(defID) end
     return defID
 end
@@ -546,6 +574,30 @@ end
 -- A lab of the slot spine (bar_framework/slot_spine.lua): cons first (the spine asks for them), then, for T2 labs, the
 -- stance's units.  T1 labs (and the adopted vehicle plant) take their stance units in the normal picks below, after
 -- scouts, the defence floor and the standing roles.
+-- Saviors (cormabm, mobile anti-nuke, built by the T2 vehicle plant): how many we want at this income / enemy silos seen.
+local function SaviorWant()
+    local _, _, _, inc = Spring.GetTeamResources(myTeamID, "metal")
+    inc = inc or 0
+    local mb = WG and WG.MetalBot
+    local silos = mb and mb.intel and mb.intel.silos or 0
+    local want = 0
+    if inc >= 350 or silos > 0 then want = 1 end
+    if inc >= 800 or (silos > 0 and inc >= 350) then want = 2 end
+    if inc >= 1500 or (silos > 1 and inc >= 800) then want = 3 end
+    return want
+end
+local function SaviorHave(labID)
+    local id = UnitDefNames.cormabm and UnitDefNames.cormabm.id
+    if not id then return 0 end
+    local n = #(Spring.GetTeamUnitsByDefs(myTeamID, { id }) or {})
+    for lab in pairs(labs) do
+        for _, c in ipairs(spGetFactoryCommands and spGetFactoryCommands(lab, -1) or {}) do
+            if c.id == -id then n = n + 1 end
+        end
+    end
+    return n
+end
+
 local function ServiceSpineLab(SP, labID, labDefID, frame, t1)
     if not spGetUnitDefID(labID) then return end
     if SP.IsLeaving and SP.IsLeaving(labID) then return end
@@ -556,6 +608,12 @@ local function ServiceSpineLab(SP, labID, labDefID, frame, t1)
     local have = cmds and #cmds or 0
     local depth = SP.CFG.QUEUE_DEPTH
     local ordered = 0
+    local sav = UnitDefNames.cormabm
+    if sav and not t1 and LabCanBuild(labDefID, "cormabm") and SaviorHave() < SaviorWant() then
+        spGiveOrderToUnit(labID, -sav.id, {}, {})
+        ordered = ordered + 1
+        have = have + 1
+    end
     for _ = have + 1, depth do
         local defID = SP.NextOrder(labID, labDefID)
         if not defID and not t1 and SP.Share() > 0 and not (SP.Held and SP.Held()) then
@@ -777,6 +835,26 @@ function widget:GameFrame(frame)
 
     local enemyGround = (mb and mb.intel and mb.intel.groundValue) or 0
 
+    -- STANCE_BOT raid state (see RAID)
+    do
+        local raid = mb and mb.raid
+        local live = raid ~= nil and frame - raid.frame <= RAID.TTL and (raid.value or 0) > 0
+        local airLosing = mb ~= nil and (mb.airLosses or 0) >= RAID.AIR_LOSSES
+        -- a new raid starts the counts over; flickering in and out of sight inside 30 s is the same raid
+        if live and frame - RAID.lastLive > 900 then RAID.since, RAID.fastOrdered, RAID.stunOrdered = frame, 0, 0 end
+        if live then RAID.lastLive = frame end
+        if RAID.live ~= live or RAID.fighters ~= (airLosing or (live and raid.channel == "air")) then
+            Spring.Echo(string.format("[LabCtrl] %d:%02d raid %s: value %.0f %s, air losses %d",
+                math.floor(frame / 1800), math.floor(frame / 30) % 60, live and "ON" or "over",
+                raid and raid.value or 0, raid and raid.channel or "-", mb and mb.airLosses or 0))
+        end
+        RAID.live = live
+        RAID.need = live and (raid.value or 0) * RAID.NEED_MULT or 0
+        RAID.swap = live and raid.channel ~= "air" and RAID.fastOrdered < RAID.need
+        RAID.airLab = live or airLosing
+        RAID.fighters = airLosing or (live and raid.channel == "air")
+    end
+
     -- Counts include what is already ordered, and are bumped as orders go out below,
     -- so two labs in the same tick cannot both answer the same shortfall.
     local fighterValue  = Have("fighter", frame, true)
@@ -817,6 +895,12 @@ function widget:GameFrame(frame)
         -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab
         -- is being reclaimed -- nothing of ours goes in (or ahead of) either queue then.
         local airConsFirst = WG and WG.TileLabHold and WG.TileLabHold(labID)
+        -- STANCE_BOT: a raid outranks the macro's hold on the T1 air lab (it owes air cons all game); the stunner / fighter
+        -- goes in AHEAD of the queue (the busy-lab branch inserts one at a time), so the cons are delayed by one build at most.
+        local liftedHold = false
+        if airConsFirst and RAID.airLab and not isSpine and UnitDefs[labDefID] and UnitDefs[labDefID].name == "corap" then
+            airConsFirst, liftedHold = false, true
+        end
         local picks  = (not isSpine or t1Spine) and not recent and not airConsFirst and not leaving
                        and spGetUnitDefID(labID) and GetArmyPicks(labDefID)
         -- army_share is 0 for the first minutes: a T1 spine lab then makes scouts only.
@@ -857,6 +941,17 @@ function widget:GameFrame(frame)
                 floor, floorWhy = defender, "floor-defender"
             end
             local canScout = not rush and scoutRoom > 0 and #cache.scouts > 0
+            -- STANCE_BOT: the T1 air lab (builds Shurikens, no ground units) makes stunners -- or fighters -- while raided
+            local raidChoice = nil
+            if RAID.airLab and not isSpine and picks.cheap and not picks.vcheap and not picks.vmain
+               and UnitDefs[picks.cheap] and UnitDefs[picks.cheap].name == "corbw" then
+                if RAID.fighters and picks.fighter then raidChoice = picks.fighter
+                elseif not RAID.fighters and Have("shuri", frame) < RAID.STUN_MAX and RAID.stunOrdered < math.max(RAID.need, 2 * UnitValue(picks.cheap)) then
+                    raidChoice = picks.cheap
+                end
+            end
+            -- the hold was lifted only for the raid answer: nothing else goes into that lab
+            if liftedHold and not raidChoice then def, floor, canScout = nil, nil, false end
 
             if QueueEmpty(labID) then
                 -- rush -> ONE early scout -> floor -> more scouts -> surplus army.  The
@@ -865,6 +960,7 @@ function widget:GameFrame(frame)
                 -- the lab can actually build it: letting it block the busy-lab branch
                 -- below deadlocked a busy air lab -- no scout, and no fighter either.)
                 local choice, why = def, defWhy
+                if raidChoice then choice, why = raidChoice, "raid-air" end
                 if not choice and canScout and scoutsHave == 0 then
                     choice, why = CheapestScout(cache.scouts), "scout"
                 end
@@ -903,7 +999,7 @@ function widget:GameFrame(frame)
                         if choice then NoteMix(picks, choice) end
                     end
                 -- Air labs: guards, only up to the standing size.  No "floating" rule, no Dragons.
-                elseif not choice and not t1Spine and not stalled and guardWant - guardHave > 0
+                elseif not choice and not t1Spine and not stalled and not liftedHold and guardWant - guardHave > 0
                        and (picks.cheap or picks.main) then
                     local flip = armyFlip[labID]
                     armyFlip[labID] = not flip
@@ -950,6 +1046,7 @@ function widget:GameFrame(frame)
                 -- and waits for that unit to actually start before inserting again, so
                 -- the economy's own units are delayed by one build at most.
                 local ins, insWhy = def or floor, def and defWhy or floorWhy
+                if raidChoice then ins, insWhy = raidChoice, "raid-air" end
                 -- Hunting: bombers go ahead of the queue too; the game is already won
                 -- and the only thing left to buy is the commander kill.
                 if not ins and bomberRoom > 0 and picks.bomber then

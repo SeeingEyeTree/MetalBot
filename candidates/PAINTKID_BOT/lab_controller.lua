@@ -509,6 +509,30 @@ end
 -- A lab of the slot spine (bar_framework/slot_spine.lua): cons first (the spine asks for them), then, for T2 labs, the
 -- stance's units.  T1 labs (and the adopted vehicle plant) take their stance units in the normal picks below, after
 -- scouts, the defence floor and the standing roles.
+-- Saviors (cormabm, mobile anti-nuke, built by the T2 vehicle plant): how many we want at this income / enemy silos seen.
+local function SaviorWant()
+    local _, _, _, inc = Spring.GetTeamResources(myTeamID, "metal")
+    inc = inc or 0
+    local mb = WG and WG.MetalBot
+    local silos = mb and mb.intel and mb.intel.silos or 0
+    local want = 0
+    if inc >= 350 or silos > 0 then want = 1 end
+    if inc >= 800 or (silos > 0 and inc >= 350) then want = 2 end
+    if inc >= 1500 or (silos > 1 and inc >= 800) then want = 3 end
+    return want
+end
+local function SaviorHave(labID)
+    local id = UnitDefNames.cormabm and UnitDefNames.cormabm.id
+    if not id then return 0 end
+    local n = #(Spring.GetTeamUnitsByDefs(myTeamID, { id }) or {})
+    for lab in pairs(labs) do
+        for _, c in ipairs(spGetFactoryCommands and spGetFactoryCommands(lab, -1) or {}) do
+            if c.id == -id then n = n + 1 end
+        end
+    end
+    return n
+end
+
 local function ServiceSpineLab(SP, labID, labDefID, frame, t1)
     if not spGetUnitDefID(labID) then return end
     if SP.IsLeaving and SP.IsLeaving(labID) then return end
@@ -518,6 +542,12 @@ local function ServiceSpineLab(SP, labID, labDefID, frame, t1)
     local have = cmds and #cmds or 0
     local depth = SP.CFG.QUEUE_DEPTH
     local ordered = 0
+    local sav = UnitDefNames.cormabm
+    if sav and not t1 and LabCanBuild(labDefID, "cormabm") and SaviorHave() < SaviorWant() then
+        spGiveOrderToUnit(labID, -sav.id, {}, {})
+        ordered = ordered + 1
+        have = have + 1
+    end
     for _ = have + 1, depth do
         local defID = SP.NextOrder(labID, labDefID)
         if not defID and not t1 and SP.Share() > 0 and not (SP.Held and SP.Held()) then

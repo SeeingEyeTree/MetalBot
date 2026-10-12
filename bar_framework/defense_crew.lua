@@ -30,6 +30,7 @@ M.AA_MAX            = 14
 M.AA_RING_MIN       = 110     -- AA sits this far from a factory / the commander...
 M.AA_RING_MAX       = 420     -- ...and at most this far
 M.ANTINUKE_NAME     = "corfmd"
+M.MOBILE_ANTINUKE   = "cormabm"   -- Savior, built by the lab controller from a T2 vehicle plant (spine bots)
 M.ANTINUKE_INCOME   = 350     -- metal/s before the first anti-nuke (about the T2 economy)
 M.ANTINUKE_SECOND   = 1200    -- ...the second
 M.ANTINUKE_STOCK    = 3       -- missiles kept stockpiled/queued
@@ -301,7 +302,7 @@ function M.Update(frame, mb)
         Ensure("antinuke", frame, { M.ANTINUKE_NAME }, wantAN, Anchors(mb, bearing), 250, 1100)
     end
     if wantAN > 0 or not M.BUILD_ANTINUKE then
-        Stockpile({ M.ANTINUKE_NAME }, M.ANTINUKE_STOCK)
+        Stockpile({ M.ANTINUKE_NAME, M.MOBILE_ANTINUKE }, M.ANTINUKE_STOCK)   -- the Savior (cormabm) is a mobile anti-nuke
         Assist({ M.ANTINUKE_NAME })
     end
 

@@ -146,8 +146,7 @@ local function BeginBuildOrder()
                        onJobDone = function(j, state) if trans then LT.OnJobDone(trans, j, state) end end,
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
-                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG,
-                    cfg = { ANTINUKE_GRIDS = { [4] = true, [9] = true } } }
+                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG }
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.MIN_NANOS = CFG.STARTER_NANOS or 0        -- PAINTKID_BOT: the nano row grows to this many nanos before the build power rule
     LC.WIND_U = CFG.WIND_U

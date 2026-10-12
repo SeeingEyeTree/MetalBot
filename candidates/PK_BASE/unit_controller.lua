@@ -1742,6 +1742,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         return
     end
     if not d.speed or d.speed <= 0 then return end
+    if d.name == "cormabm" then return end          -- Savior (mobile anti-nuke): stays by the lab, defense_crew stockpiles it
     if RADAR_PLANE_NAMES[d.name] then radarPlanes[unitID] = true; return end
     if UQ and UQ.is_bomber(unitDefID) then bombers[unitID] = true; return end
 
