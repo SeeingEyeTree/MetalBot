@@ -15,7 +15,7 @@ import single_client as sc  # noqa: E402
 ENGINE = r"""
 local units = { [1] = {team=0, def=10}, [2] = {team=1, def=11}, [3] = {team=1, def=12}, [4] = {team=1, def=13} }
 -- LOS bits as seen by allyteam 0: 2 in LOS, 3 unseen, 4 radar only. Allyteam 1 sees everything.
-local los0 = { [2] = 1 + 4, [3] = 0, [4] = 2 }
+los0 = { [2] = 1 + 4, [3] = 0, [4] = 2 }   -- global: tests change it
 orders, echoes = {}, {}
 local function list(f) local r = {} for u = 1, 4 do if f(u) then r[#r + 1] = u end end return r end
 Spring = {
@@ -88,6 +88,11 @@ def main():
     assert run(w0, "return Spring.GetUnitDefID(2)") == 11
     assert run(w0, "return Spring.GetUnitDefID(3)") is None
     assert run(w0, "return Spring.GetUnitDefID(4)") is None, "untyped blip"
+    lua.execute("los0[4] = 2 + 4")       # seen in LOS once, radar contact lost since: the engine hides its type
+    assert run(w0, "return Spring.GetUnitDefID(4)") is None, "seen-before blip without continuous radar"
+    lua.execute("los0[4] = 2 + 4 + 8")   # seen in LOS and on radar ever since: typed
+    assert run(w0, "return Spring.GetUnitDefID(4)") == 13, "typed blip"
+    lua.execute("los0[4] = 2")
     assert run(w0, "return (Spring.GetUnitPosition(4))") == 400, "blip has a position"
     assert run(w0, "return (Spring.GetUnitHealth(4))") is None, "blip has no health"
     assert run(w0, "return Spring.GetUnitCommands(2)") is None, "enemy commands are hidden"

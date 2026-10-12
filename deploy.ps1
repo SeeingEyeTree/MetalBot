@@ -34,6 +34,7 @@ $files = @(
     "blueprints\general\build_order_blueprint.lua",
     "blueprints\general\mex_grid_alab.lua",
     "blueprints\general\upgrade.lua",
+    "blueprints\general\energy_cell.lua",
     "blueprints\general\raider_blueprint.lua",
     "blueprints\general\ground_raider_blueprint.lua",
     "blueprints\general\bad_com_start.lua",
@@ -59,6 +60,7 @@ $files = @(
     "bar_framework\raid_group.lua",
     "bar_framework\rez_crew.lua",
     "bar_framework\endgame.lua",
+    "bar_framework\defense_crew.lua",
     "bar_framework\commander_guard.lua",
     "bar_framework\tile_crew.lua",
     "bar_framework\slot_crew.lua",
@@ -69,7 +71,18 @@ $files = @(
     "bar_framework\line_fight.lua",
     "bar_framework\click_army.lua",
     "bar_framework\scout_lanes.lua",
-    "bar_framework\slow_front.lua"
+    "bar_framework\slow_front.lua",
+    "bar_framework\air_wing.lua",
+    "bar_framework\spend_governor.lua",
+    "bar_framework\stance_loader.lua",
+    "bar_framework\phase_plan.lua",
+    "bar_framework\bomb_run.lua",
+    "bar_framework\lab_recycler.lua",
+    "stances\T1_defense.lua",
+    "stances\T1_bombing_run.lua",
+    "stances\T2_defense.lua",
+    "stances\Late_game.lua",
+    "stances\T1_raid.lua"
 )
 
 # The three controllers come from the bot folder (default DRAGON_BOT; pass -Bot OK_BOT etc.).

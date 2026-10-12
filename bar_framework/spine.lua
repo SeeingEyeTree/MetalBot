@@ -47,6 +47,8 @@ M.CFG = {
     START_FRAME       = 5400,   -- army_share is 0 before this (3:00).  The T2 labs wait for ground
                                 -- army value, and only T1 labs can make it, so it starts early.
     FLOOR             = 0.20,   -- army_share from START_FRAME on
+    SCHEDULE          = nil,    -- eco bench: {{frame, share}, ...} replaces START_FRAME/FLOOR (see the schedule policy)
+    STRICT            = false,  -- eco bench: no threat / unit-cap override of the schedule
     EXPAND_FROM       = 5400,   -- T2+ cells may open from here (3:00)
     EXPAND_MARGIN     = 1.0,    -- open another cell while capacity < margin x income
     MAX_OPENING       = 2,      -- cells under construction at once
@@ -94,10 +96,40 @@ M.CFG = {
     STORE_INFLIGHT_MAX = 4,     -- released storages that may be unfinished at once
     GEN_COVER         = 0.25,   -- generation floor: eco pull + this share of full army spend
     STORE_UNIT        = "corestor",
+    -- FLOAT RELEASE (LINE_CLICK_v17, user 2026-10-09).  Holding nanos/labs back only makes sense while ECONOMY is what
+    -- limits spending.  When metal AND energy both sit above FLOAT_FRAC of storage for FLOAT_FRAMES nothing is limiting,
+    -- so every restriction comes off: army share 1, every held lab released (no army-value / delay gate), every held
+    -- nano built ahead of need (also in cells without a lab yet, and the T1 cell's), nanos kept active instead of
+    -- parked, and the next cell opens without waiting for the T1 labs.  Clears when either resource drops under
+    -- FLOAT_CLEAR_FRAC.  Off by default so older bots are unchanged.
+    FLOAT_RELEASE     = false,
+    -- "Floating" must be a real surplus, not a few hundred metal in a small early storage (the first try, 25% of
+    -- storage, switched on at 3:59 with 400 metal banked and opened a T2 cell on 57 M/s income): metal at least
+    -- FLOAT_FRAC_M of storage AND at least max(FLOAT_MIN_METAL, FLOAT_INCOME_SECS x income); energy at least
+    -- FLOAT_FRAC_E of storage; none of it before FLOAT_FROM.
+    FLOAT_FROM        = 9000,   -- 5:00
+    FLOAT_FRAC_M      = 0.50,
+    FLOAT_FRAC_E      = 0.40,
+    FLOAT_MIN_METAL   = 1000,
+    FLOAT_INCOME_SECS = 20,
+    FLOAT_FRAMES      = 150,    -- 5 s
+    FLOAT_CLEAR_FRAC  = 0.12,
+    FLOAT_NANO_BATCH  = 8,      -- held nanos released per control tick while floating
+    FLOAT_INFLIGHT_MAX = 16,    -- ...and the unfinished ones allowed at once
+    -- PRESSURE = a threat is up (threat level > 0) or metal and energy float.  Under pressure the T1 cell's held nanos
+    -- and second lab are released at once, and up to SURGE_MAX extra T1 cells (two T1 labs each) open while the ground
+    -- army value is below a T2 lab's cost.  T2/T3 labs keep their army-value gate: a ~3k, minutes-long lab cannot
+    -- defend, and is for when there is no pressure (user, 2026-10-09).
+    PRESSURE_T1_NANOS = 14,     -- T1 nanos (built + under way, incl. core) that pressure may build
+    PRESSURE_BANK     = 400,    -- ...and only while the bank holds this much metal (or metal and energy float)
+    SURGE_MAX         = 2,
+    SURGE_FROM        = 7200,   -- 4:00
+    SURGE_MIN_BANK    = 300,    -- metal in the bank for a surge when not floating
 }
 
 -- Blueprint file (blueprints/general/<name>.lua) for each kind of cell.
-M.BLUEPRINT = { T1 = "T1Spine", T2 = "T2Spine", T3 = "T3Spine" }
+M.BLUEPRINT = { T1 = "T1Spine", T2 = "T2Spine", T3 = "T3Spine",
+                AIR = "T1Air" }     -- LINE_BOMB: the bomber lab cell (M.OpenAirCell); unused until asked for
 
 -- The unit each lab type is sized and stocked with.  First name that exists wins.
 -- (corsumo = Mammoth, correap = Tiger, cordemon = Demon.)  T1 labs are not listed:
@@ -123,6 +155,15 @@ local threatLevel, threatLast = 0, -1e9
 
 M.policies = {
     { name = "schedule", fn = function(share, c)
+        -- SCHEDULE (eco bench): {{frame, share}, ...} ascending; the last entry at or before this frame wins, 0 before the
+        -- first.  With STRICT the threat and cap policies below leave it alone, so the bench can check that the
+        -- bot spends the share it is given.
+        local sched = M.CFG.SCHEDULE
+        if sched then
+            local s = 0
+            for _, e in ipairs(sched) do if c.frame >= e[1] then s = e[2] end end
+            return s
+        end
         if c.frame < M.CFG.START_FRAME then return 0 end
         return M.CFG.FLOOR
     end },
@@ -131,6 +172,7 @@ M.policies = {
     -- build nanos for a fight that is over in a minute).
     { name = "threat", fn = function(share, c)
         c.baseShare = share
+        if M.CFG.STRICT then return share end
         local K = M.CFG
         local sig = 0
         if c.threatUrgency == "rush" then sig = K.THREAT_RUSH
@@ -144,9 +186,14 @@ M.policies = {
         end
         return math.max(share, threatLevel)
     end },
+    { name = "float", fn = function(share, c)
+        -- Metal and energy both floating: nothing is limiting, spend without restriction (FLOAT_RELEASE).
+        if c.floating and not M.CFG.STRICT then return 1 end
+        return share
+    end },
     { name = "cap_override", fn = function(share, c)
         -- Near the unit cap, units are the only thing worth spending on.
-        if c.capPressure then return 1 end
+        if c.capPressure and not M.CFG.STRICT then return 1 end
         return share
     end },
 }
@@ -322,7 +369,7 @@ function M.Init(env)
         local cap, n = M.LayoutCapacity(layout.layout or layout)
         S.capByKind[kind] = cap
         -- Metal/s one extra nano lets a T2/T3 lab absorb: sizes the throttle below.
-        if kind ~= "T1" and n > 0 then
+        if kind ~= "T1" and kind ~= "AIR" and n > 0 then
             local r = cap / n
             if not S.nanoRate or r < S.nanoRate then S.nanoRate = r end
         end
@@ -340,6 +387,12 @@ function M.Init(env)
         end
     end
     S.R = cnt > 0 and sum / cnt or 15
+    -- Cheapest T2 lab the army-value gate protects (used by the T1 surge).
+    S.t2LabCost = 0
+    for _, nm in ipairs({ "coralab", "coravp" }) do
+        local ud = UnitDefNames[nm]
+        if ud and (ud.metalCost or 0) > 0 and (S.t2LabCost == 0 or ud.metalCost < S.t2LabCost) then S.t2LabCost = ud.metalCost end
+    end
     local sd = UnitDefNames[M.CFG.STORE_UNIT]
     S.storePer = (sd and sd.energyStorage and sd.energyStorage > 0) and sd.energyStorage or 6000
     return S
@@ -350,7 +403,7 @@ function M.State() return S end
 local function Cfg() return M.CFG end
 
 local function NextKind()
-    local n = S.opened + 1
+    local n = S.opened - (S.surges or 0) - (S.extra or 0) + 1      -- surge T1 cells and the air cell are not part of the plan
     return Cfg().PLAN[n] or Cfg().DEFAULT_KIND
 end
 
@@ -502,18 +555,26 @@ local function InMap(env, x, z)
     return x >= m and z >= m and x <= env.mapX - m and z <= env.mapZ - m
 end
 
-local function OpenCell(kind)
+-- `custom` = { layout, ax, az } places a ready-made layout at a given anchor without taking a stack position (the
+-- lab recycler's swap cells).  kind AIR / SWAP cells are "air" cells: nothing in them is held back (they are the
+-- pre-built build power), their nanos are not throttled or parked, and their labs run through the normal lab picks.
+local function OpenCell(kind, surge, custom)
     local env = S.env
-    local layout = env.blueprints and env.blueprints[kind]
+    local layout = custom and custom.layout or (env.blueprints and env.blueprints[kind])
     if not layout then return nil end
+    local isAir = (kind == "AIR" or kind == "SWAP")
     -- Skip positions that fall off the map rather than stalling the whole spine.
     local ax, az
-    for _ = 1, 2 * Cfg().STACK_HALF + 1 do
-        S.opened = S.opened + 1
-        ax, az = M.CellAnchor(S.geo, env.baseX, env.baseZ, S.opened)
-        if math.abs(M.StackOffset(S.opened)) > Cfg().STACK_HALF then return nil end
-        if InMap(env, ax, az) and (not env.CellOK or env.CellOK(ax, az)) then break end
-        ax = nil
+    if custom then
+        ax, az = custom.ax, custom.az
+    else
+        for _ = 1, 2 * Cfg().STACK_HALF + 1 do
+            S.opened = S.opened + 1
+            ax, az = M.CellAnchor(S.geo, env.baseX, env.baseZ, S.opened)
+            if math.abs(M.StackOffset(S.opened)) > Cfg().STACK_HALF then return nil end
+            if InMap(env, ax, az) and (not env.CellOK or env.CellOK(ax, az)) then break end
+            ax = nil
+        end
     end
     if not ax then return nil end
 
@@ -524,12 +585,15 @@ local function OpenCell(kind)
     for _, item in ipairs(st.queue) do
         if item.cls == "factory" then item.f = S.geo.facing end
     end
-    local cell = { kind = kind, ax = ax, az = az, state = st, index = S.opened,
-                   key = env.AnchorKey(ax, az), settled = false, done = false }
+    local cell = { kind = kind, ax = ax, az = az, state = st, index = custom and (custom.index or S.opened) or S.opened,
+                   key = env.AnchorKey(ax, az), settled = false, done = false, surge = surge or nil,
+                   air = isAir or nil, rot = S.geo.rot }
     S.cells[#S.cells + 1] = cell
-    if Cfg().THROTTLE_NANOS then HoldNanos(cell) end
-    if kind == "T1" or Cfg().LAB_GATE_AV then HoldLabs(cell) end
-    HoldStorage(cell)
+    if not isAir then
+        if Cfg().THROTTLE_NANOS then HoldNanos(cell) end
+        if kind == "T1" or Cfg().LAB_GATE_AV then HoldLabs(cell) end
+        HoldStorage(cell)
+    end
     st.onComplete = function() cell.done = true end
     for _ = 1, Cfg().AIR_CONS_PER_CELL do env.QueueAirCon() end
     Spring.Echo(string.format(
@@ -572,6 +636,54 @@ function M.OpenFirst()
     if not S or not S.started or not S.firstDeferred then return false end
     S.firstDeferred = false
     return OpenCell("T1") ~= nil
+end
+
+-- LINE_BOMB: the bomber lab cell (blueprints/general/T1Air.lua): corap labs + nanos, all built at once.  It takes the next
+-- free stack position but is not part of the T1/T2/T2 plan.  Returns the cell or nil.
+function M.OpenAirCell()
+    if not S or not S.started or S.firstDeferred then return nil end
+    if S.airCell then return S.airCell end
+    local cell = OpenCell("AIR", true)
+    if cell then
+        S.extra = (S.extra or 0) + 1
+        S.airCell = cell
+        Spring.Echo(string.format("[SPINE] AIR cell #%d at (%d, %d)", cell.index, cell.ax, cell.az))
+    end
+    return cell
+end
+
+-- A second layout on an air cell's anchor (the recycler's T2 lab swap).  `layout` entries are {n, x, z, f} relative to
+-- the anchor like any blueprint.  Returns the cell or nil.
+function M.OpenSwapCell(layout, ax, az)
+    if not S or not S.started or not layout then return nil end
+    local cell = OpenCell("SWAP", true, { layout = { layout = layout }, ax = ax, az = az, index = S.airCell and S.airCell.index or 0 })
+    if cell then Spring.Echo(string.format("[SPINE] SWAP cell at (%d, %d), %d items", ax, az, #cell.state.queue)) end
+    return cell
+end
+
+function M.AirCell() return S and S.airCell or nil end
+function M.IsAirLab(labID) local L = S and S.labs[labID]; return L ~= nil and L.air == true end
+
+-- Air-cell labs and nanos that stand (finished): { {uid, defID, x, z, name}, ... }, { {uid, defID, x, z}, ... }.
+function M.AirUnits()
+    local labs, nanos = {}, {}
+    if not S then return labs, nanos end
+    for uid, L in pairs(S.labs) do
+        if L.air and Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            labs[#labs + 1] = { uid = uid, defID = Spring.GetUnitDefID(uid), x = x, z = z, name = L.name }
+        end
+    end
+    for uid, n in pairs(S.nanos) do
+        local cell = S.cells[n.cell]
+        if cell and cell.air and Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            nanos[#nanos + 1] = { uid = uid, defID = Spring.GetUnitDefID(uid), x = x, z = z }
+        end
+    end
+    table.sort(labs, function(a, b) return a.uid < b.uid end)
+    table.sort(nanos, function(a, b) return a.uid < b.uid end)
+    return labs, nanos
 end
 
 -- A lab the host built itself (LINE_BOT's vehicle plant on the line).  It is not inside any cell, but the spine
@@ -760,7 +872,7 @@ local function UpdateNanos()
         else
             n.mode = ModeOf(uid, n)
             local cell = S.cells[n.cell]
-            if cell and cell.kind ~= "T1" and cell.settled
+            if cell and cell.kind ~= "T1" and not cell.air and cell.settled
                and not Spring.GetUnitIsBeingBuilt(uid) then
                 n.lab = NearestLab(uid, n)
                 if n.lab then
@@ -786,8 +898,9 @@ local function UpdateNanos()
     end
     S.builtCapacity = cap
 
-    local want = S.share * S.income
+    local want = S.share * S.income * (S.boost or 1)
     local f = (cap > 0) and math.min(1, want / cap) or 0
+    if S.floating and cap > 0 then f = 1 end      -- floating: no nano is parked
 
     local moves, active, parked, leak = 0, 0, 0, 0
     for lid, g in pairs(byLab) do
@@ -853,9 +966,10 @@ end
 
 local function ThrottleNanos()
     if not Cfg().THROTTLE_NANOS then return end
+    local K = Cfg()
     local allowed, inflight = 0, 0
     for _, cell in ipairs(S.cells) do
-        if cell.kind ~= "T1" then
+        if cell.kind ~= "T1" and not cell.air then
             for _, it in ipairs(cell.state.queue) do
                 if it.cls == "nano" and it.act ~= "reclaim" and not IsHeld(it)
                    and it.status ~= "skipped" then
@@ -865,13 +979,42 @@ local function ThrottleNanos()
             end
         end
     end
+    -- PRESSURE (a threat is up, or metal and energy float): more nanos on the T1 labs are the one way to turn metal into
+    -- defenders quickly.  A T2 lab cannot rush (it costs ~3k, takes minutes, and its units arrive after the fight), so
+    -- T2/T3 stay behind their army-value gate and only T1 cells give up their held nanos here.
+    if S.pressure and K.FLOAT_RELEASE then
+        local t1Built, t1Inflight = 0, 0
+        for _, cell in ipairs(S.cells) do
+            if cell.kind == "T1" then
+                for _, it in ipairs(cell.state.queue) do
+                    if it.cls == "nano" and it.act ~= "reclaim" and not IsHeld(it) and it.status ~= "skipped" then
+                        if it.status == "built" then t1Built = t1Built + 1 else t1Inflight = t1Inflight + 1 end
+                    end
+                end
+            end
+        end
+        S.t1Nanos = t1Built + t1Inflight
+        -- Nanos are paid for out of surplus only (a first try released all 24 at 8:00 on ~170 M/s income -- 5k of eco
+        -- spent on nanos the T1 labs could not absorb -- and v17 lost the mirror), and only as many as T1 labs can use.
+        local k1 = math.min(K.FLOAT_NANO_BATCH, K.FLOAT_INFLIGHT_MAX - t1Inflight, K.PRESSURE_T1_NANOS - S.t1Nanos)
+        if not S.floating and (S.bank or 0) < K.PRESSURE_BANK then k1 = 0 end
+        for _, cell in ipairs(S.cells) do
+            if k1 <= 0 then break end
+            if cell.kind == "T1" and cell.held and #cell.held > 0 then k1 = k1 - ReleaseHeld(cell, k1) end
+        end
+    end
     -- After the first mex grids are mostly built the nanos for 100% spend are let go
     -- whatever the share; before that, only what the (non-threat) share needs.
-    local nanoShare = S.mexReady and 1 or (S.baseShare or S.share)
-    local need = math.ceil(Cfg().NANO_HEADROOM * nanoShare * S.income / S.nanoRate - 1e-9)
+    local floating = S.floating
+    local nanoShare = (S.mexReady or floating) and 1 or math.max(S.baseShare or S.share, S.nanoFloor or 0)
+    local need = math.ceil(K.NANO_HEADROOM * nanoShare * S.income * (S.boost or 1) / S.nanoRate - 1e-9)
+    -- Floating: build the held nanos of a cell whose lab stands ahead of need, whatever the share says.
+    if floating then need = allowed + K.FLOAT_NANO_BATCH end
     S.nanoAllowed, S.nanoNeed = allowed, need
     if allowed >= need then return end
-    local k = math.min(Cfg().NANO_BATCH, need - allowed, Cfg().NANO_INFLIGHT_MAX - inflight)
+    local batch = floating and K.FLOAT_NANO_BATCH or K.NANO_BATCH
+    local inflightMax = floating and K.FLOAT_INFLIGHT_MAX or K.NANO_INFLIGHT_MAX
+    local k = math.min(batch, need - allowed, inflightMax - inflight)
     for _, cell in ipairs(S.cells) do
         if k <= 0 then break end
         if cell.kind ~= "T1" and cell.held and #cell.held > 0 and CellHasLab(cell) then
@@ -891,7 +1034,10 @@ local function ThrottleLabs()
             local release, why = false, nil
             if cell.kind == "T1" then
                 if not cell.firstLabFrame and CellHasLab(cell) then cell.firstLabFrame = S.frame end
-                if S.share > 0 and cell.firstLabFrame
+                -- Under pressure the second T1 lab does not wait out its delay (a T1 lab is cheap and quick).
+                if S.pressure and K.FLOAT_RELEASE and cell.firstLabFrame then
+                    release, why = true, "pressure (" .. (S.floating and "floating" or "threat") .. ")"
+                elseif S.share > 0 and cell.firstLabFrame
                    and S.frame - cell.firstLabFrame >= K.T1_LAB2_DELAY then
                     release, why = true, string.format("army share %.0f%%, first lab up %d frames",
                         S.share * 100, S.frame - cell.firstLabFrame)
@@ -988,6 +1134,30 @@ local function MaybeExpand()
     OpenCell(kind)
 end
 
+-- T1 SURGE (FLOAT_RELEASE): under pressure with the T2 labs still behind their army-value gate, the way to spend
+-- quickly is another T1 cell (two cheap labs, ~1 minute to build), not a T2 cell.  Opens one at a time, only when
+-- the T1 cell's own held nanos have been let go, and the bank is there to pay (or is floating anyway).
+local function MaybeSurge(res)
+    local K, env = Cfg(), S.env
+    if not (K.FLOAT_RELEASE and S.pressure) then return end
+    if (S.surges or 0) >= K.SURGE_MAX or S.opened >= 2 * K.STACK_HALF + 1 then return end
+    if S.frame < K.SURGE_FROM or CellsBuilding() > 0 or env.CapPressure() then return end
+    if not T1LabsReady() then return end
+    for _, cell in ipairs(S.cells) do
+        if cell.kind == "T1" and cell.held and #cell.held > 0 then return end     -- nanos on the T1 labs first
+        if cell.kind == "T1" and cell.heldLabs and #cell.heldLabs > 0 then return end
+    end
+    local av = env.GroundArmyValue and env.GroundArmyValue() or 0
+    if av >= K.LAB_GATE_MARGIN * (S.t2LabCost or 0) then return end   -- the T2 labs are open to us anyway
+    if not S.floating and (res and res.metal or 0) < K.SURGE_MIN_BANK then return end
+    local cell = OpenCell("T1", true)
+    if cell then
+        S.surges = (S.surges or 0) + 1
+        Spring.Echo(string.format("[SPINE] T1 SURGE #%d: pressure (%s), ground army value %.0f < T2 lab cost %.0f",
+            S.surges, S.floating and "floating" or "threat", av, S.t2LabCost or 0))
+    end
+end
+
 -- ── Update ───────────────────────────────────────────────────────────────────
 
 local function ComputeShare(c)
@@ -1020,10 +1190,37 @@ function M.Update(frame, res)
         end
     end
 
+    local K = Cfg()
+    if K.FLOAT_RELEASE and res and (res.metalStorage or 0) > 0 and (res.energyStorage or 0) > 0 then
+        local mf, ef = (res.metal or 0) / res.metalStorage, (res.energy or 0) / res.energyStorage
+        if not S.floating then
+            local minMetal = math.max(K.FLOAT_MIN_METAL, K.FLOAT_INCOME_SECS * (S.income or 0))
+            if frame >= K.FLOAT_FROM and mf >= K.FLOAT_FRAC_M and (res.metal or 0) >= minMetal
+               and ef >= K.FLOAT_FRAC_E then
+                S.floatSince = S.floatSince or frame
+                if frame - S.floatSince >= K.FLOAT_FRAMES then
+                    S.floating = true
+                    Spring.Echo(string.format("[SPINE] %d:%02d FLOAT on: metal %.0f%% energy %.0f%% of storage -- spine restrictions off",
+                        math.floor(frame / 1800), math.floor(frame / 30) % 60, mf * 100, ef * 100))
+                end
+            else
+                S.floatSince = nil
+            end
+        elseif mf < K.FLOAT_CLEAR_FRAC or ef < K.FLOAT_CLEAR_FRAC then
+            S.floating, S.floatSince = false, nil
+            Spring.Echo(string.format("[SPINE] %d:%02d FLOAT off: metal %.0f%% energy %.0f%%",
+                math.floor(frame / 1800), math.floor(frame / 30) % 60, mf * 100, ef * 100))
+        end
+    end
+
     if frame % Cfg().UPDATE_EVERY ~= 0 then return end
 
     local allPending = {}
-    for _, cell in ipairs(S.cells) do
+    -- air cells first: the recycler's swap cell must get a con before the T2/T3 cells take them all
+    local ordered = {}
+    for _, cell in ipairs(S.cells) do if cell.air then ordered[#ordered + 1] = cell end end
+    for _, cell in ipairs(S.cells) do if not cell.air then ordered[#ordered + 1] = cell end end
+    for _, cell in ipairs(ordered) do
         if not cell.done then
             ServiceCellBuilders(cell)
             for defID in pairs(PendingDefs(cell.state)) do allPending[defID] = true end
@@ -1052,12 +1249,18 @@ function M.Update(frame, res)
         frame = frame, income = S.income, capPressure = S.env.CapPressure(),
         capacity = S.capacity, builtCapacity = S.builtCapacity,
         cells = S.cells, threatUrgency = urgency, threatCount = nThreats or 0,
+        floating = S.floating,
     }
     S.share = ComputeShare(c)
     S.baseShare = c.baseShare or S.share
     S.capacity = AssignedCapacity()
+    -- Pressure = metal and energy floating, or the unit controller says we are outmatched / thinly covered (not merely
+    -- "an enemy scout is inside the line").
+    S.pressure = (S.floating or threatLevel >= Cfg().THREAT_BUILD) and true or false
+    S.bank = res and res.metal or 0
 
     MaybeExpand()
+    MaybeSurge(res)
     ThrottleLabs()
     ThrottleNanos()
     ThrottleStorage(res)
@@ -1089,7 +1292,8 @@ function M.Update(frame, res)
             S.nanoAllowed or 0, S.nanoNeed or 0,
             S.storeAllowed or 0, S.storeNeed or 0, S.storeTarget or 0,
             S.energyHave or 0, S.energyNeed or 0,
-            S.mexReady and " MEXREADY" or "",
+            (S.mexReady and " MEXREADY" or "") .. (S.floating and " FLOATING" or "")
+            .. (S.pressure and " PRESSURE" or "") .. ((S.surges or 0) > 0 and (" SURGES=" .. S.surges) or ""),
             S.leak > 0 and (" PARK-LEAK=" .. S.leak) or ""))
     end
 end
@@ -1113,7 +1317,7 @@ function M.OnUnitFinished(uid, defID, x, z)
     local ci = InCell(x, z)
     if not ci then return end
     if d.isFactory then
-        S.labs[uid] = { cell = ci, name = d.name, conMade = 0 }
+        S.labs[uid] = { cell = ci, name = d.name, conMade = 0, air = S.cells[ci] and S.cells[ci].air or nil }
     elseif IsNanoDef(d) then
         S.nanos[uid] = { cell = ci }
     end
@@ -1147,7 +1351,7 @@ function M.IsLab(labID) return S ~= nil and S.labs[labID] ~= nil end
 -- runs the rest of what it makes through the normal picks.
 function M.IsT1Lab(labID)
     local L = S and S.labs[labID]
-    return L ~= nil and M.T1_CONS[L.name] ~= nil
+    return L ~= nil and (M.T1_CONS[L.name] ~= nil or L.air == true)
 end
 
 local function DemandCon(labDefID)
@@ -1195,7 +1399,7 @@ function M.NextOrder(labID, labDefID)
     end
     local con = consOK and DemandCon(labDefID) or nil
     if con then S.conOrders = (S.conOrders or 0) + 1; return con end
-    if S.share > 0 and M.LAB_UNITS[L.name] then
+    if S.share > 0 and not S.hold and M.LAB_UNITS[L.name] then
         local u = RefUnit(L.name)
         if u then return u.id end
     end
@@ -1203,6 +1407,17 @@ function M.NextOrder(labID, labDefID)
 end
 
 function M.Share() return S and S.share or 0 end
+
+-- Pre-built build power: nanos for this share of income are released ahead of need whatever the current share is
+-- (LINE_BOMB sets it from the plan so a jump in army spend can be spent at once).  0 = off.
+function M.SetNanoFloor(f) if S then S.nanoFloor = f end end
+
+-- Spend governor hooks (bar_framework/spend_governor.lua): a multiplier on the army demand the nano throttle sizes to,
+-- and whether the schedule is authoritative (the lab controller then builds nothing at share 0).
+function M.SetBoost(b) if S then S.boost = b end end
+function M.SetHold(h) if S then S.hold = h and true or false end end      -- army over its share: labs queue nothing new
+function M.Held() return S ~= nil and S.hold == true end
+function M.Strict() return M.CFG.STRICT == true end
 
 -- Snapshot for logging and tests.
 function M.Status()

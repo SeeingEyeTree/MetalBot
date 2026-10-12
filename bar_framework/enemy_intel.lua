@@ -102,6 +102,16 @@ local function Class(defID)
             c.interceptor = math.max(c.interceptor, wd.coverageRange or wd.range or 2000)
         end
     end
+    -- A nuke launcher: stockpiles a targetable missile that is not itself an interceptor.
+    if d.canStockpile and not mobile and (d.metalCost or 0) >= 1500 then
+        for i = 1, #(d.weapons or {}) do
+            local w  = d.weapons[i]
+            local wd = w and w.weaponDef and WeaponDefs and WeaponDefs[w.weaponDef]
+            if wd and wd.targetable and wd.targetable ~= 0 and not (wd.interceptor and wd.interceptor ~= 0) then
+                c.silo = true
+            end
+        end
+    end
     -- An air factory is one that builds anything that flies.
     if c.factory then
         for _, opt in ipairs(d.buildOptions or {}) do
@@ -317,7 +327,10 @@ end
 function M.Summary(frame)
     local labs = M.Labs()
     local cx, cz, cf = M.Commander()
+    local silos = 0
+    for _, rec in pairs(seen) do if rec.c.silo then silos = silos + 1 end end
     return {
+        silos        = silos,
         airValue     = M.AirValue(frame),
         groundValue  = M.GroundValue(frame),
         labs         = labs.total,

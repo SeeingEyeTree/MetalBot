@@ -1,0 +1,16 @@
+{
+  "name": "light_raid",
+  "notes": {
+    "intent": "The current LINE_CLICK_v16 army: light raiding. Three fast groups raid the enemy economy and build power (mexes, wind, nanos, labs, constructors) and run away from anything that out-trades them; one slow group (Lashers + Pounders, with rez bots) applies steady pressure and holds ground. Win by killing enemy eco/BP/commander, not by trade efficiency.",
+    "control": "Fast units (Shuriken, Wasp, Incisor, Raider): split into up to 3 attack groups, each sent at a different enemy target ranked by build power + eco value. Hit and retreat; do not fight into defences or a bigger army. Slow group (Lasher, Pounder): move together as one blob, Pounders in front, Lashers 2:1 behind them, staying with the rez bots. See click_army.lua and slow_front.lua.",
+    "share": "Army share set elsewhere (spine schedule/threat policies); about 20% floor from 3:00."
+  },
+  "units": [
+    {"n": "corbw", "share": 0.20, "locked": false, "note": "Shuriken: stun raiders, hit eco/BP"},
+    {"n": "corape", "share": 0.25, "locked": false, "note": "Wasp: air raiders, main fast group"},
+    {"n": "corgator", "share": 0.10, "locked": false, "note": "Incisor: cheap fast vehicle"},
+    {"n": "corraid", "share": 0.10, "locked": false, "note": "Raider: fast vehicle"},
+    {"n": "cormist", "share": 0.2333, "locked": false, "note": "Lasher: slow group support, 2 per Pounder"},
+    {"n": "corlevlr", "share": 0.1167, "locked": false, "note": "Pounder: slow group screen"}
+  ]
+}

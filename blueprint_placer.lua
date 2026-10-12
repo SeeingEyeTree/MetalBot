@@ -344,6 +344,28 @@ function M.BalanceInterrupts(opts)
     return list
 end
 
+-- Stall rule (LT GRID_STALL_RULE): metal stalling -> build a mex; energy stalling -> build a wind; neither stalling ->
+-- build a nano.  A resource is stalling when its bank is low (the default interrupts' test) and the smoothed pull is at
+-- or over the smoothed income.  Both stalling: energy first (a mex adds energy upkeep).  Nothing here preempts.
+function M.StallRuleInterrupts()
+    local function stalls(res)
+        local ms, es = res.metalStorage or 0, res.energyStorage or 0
+        local mi, mp = res.metalIncomeS or res.metalIncome or 0, res.metalPullS or res.metalPull or 0
+        local ei, ep = res.energyIncomeS or res.energyIncome or 0, res.energyPullS or res.energyPull or 0
+        local m = ms > 0 and res.metal < math.min(METAL_LOW_ABS, ms * METAL_LOW_FRAC) and mp >= mi * 0.95
+        local e = es > 0 and (res.energy / es) < ENERGY_LOW_FRAC and ep >= ei * 0.95
+        return m, e
+    end
+    return {
+        { name = "stall_energy", priority = 0.7, buildType = "energy", noPreempt = true,
+          check = function(state, res, frame) local _, e = stalls(res); return e end },
+        { name = "stall_metal", priority = 0.6, buildType = "metal", noPreempt = true,
+          check = function(state, res, frame) local m, e = stalls(res); return m and not e end },
+        { name = "stall_none_nano", priority = 0.5, buildType = "nano", noPreempt = true,
+          check = function(state, res, frame) local m, e = stalls(res); return not m and not e end },
+    }
+end
+
 -- ── Internal helpers ──────────────────────────────────────────────────────────
 
 local function EvalInterrupts(state, res, frame)
@@ -628,6 +650,7 @@ local function AdvanceQueue(state, res, frame)
         if task and CountNanosInRange(task.wx, task.wz) >= (state.interruptMinNanos or 2) then
             IssueBuildTask(builderID, task)
             state.currentTask = task
+            if intr.onIssue then pcall(intr.onIssue, state, task, frame) end
             return
         end
     end

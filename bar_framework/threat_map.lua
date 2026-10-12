@@ -242,15 +242,43 @@ local function IsOwnCombatant(defID)
        and not UQ.is_commander(defID)
 end
 
+-- Our combatants, scanned once per game frame and shared by every OwnStrength / AvailableStrength call in it.
+-- ProductionUrgency runs AvailableStrength per incident (twice for "unknown") and is itself called several
+-- times a tick (PublishState, EchoThreat per incident, threat_log): each call rescanned every team unit, and late
+-- in a game that was most of the unit controller's time. Same frame = same units and positions, so the
+-- results are identical. Entries keep GetTeamUnits order (same float summation order); a position is
+-- fetched once per frame, on first use. OnUnitDestroyed drops the snapshot in case it was built mid-frame.
+local ownSnap, ownSnapFrame = nil, nil
+
+local function OwnCombatants()
+    local f = Spring.GetGameFrame()
+    if ownSnap and ownSnapFrame == f then return ownSnap end
+    local list = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        local defID = Spring.GetUnitDefID(uid)
+        if IsOwnCombatant(defID) then
+            list[#list + 1] = { uid = uid, defID = defID,
+                                air = ChannelValue(defID, "air"), ground = ChannelValue(defID, "ground"),
+                                speed = math.max(1, UQ.max_speed(defID)) }
+        end
+    end
+    ownSnap, ownSnapFrame = list, f
+    return list
+end
+
+-- ChannelValue treats every channel other than "air" as ground.
+local function SnapValue(e, channel)
+    if channel == "air" then return e.air end
+    return e.ground
+end
+
 -- What we could bring against a channel anywhere on the map, ignoring distance.
 -- Context only -- never use it to decide whether to build, because an army on the
 -- far side of the map is not defending anything.
 function M.OwnStrength(channel)
     local total = 0
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
-        local defID = Spring.GetUnitDefID(uid)
-        if IsOwnCombatant(defID) then total = total + ChannelValue(defID, channel) end
-    end
+    local list = OwnCombatants()
+    for i = 1, #list do total = total + SnapValue(list[i], channel) end
     return total
 end
 
@@ -262,17 +290,20 @@ end
 -- almost anywhere, while an 85-speed Incisor covers ~2550 and is only ever local.
 function M.AvailableStrength(channel, x, z)
     local total = 0
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
-        local defID = Spring.GetUnitDefID(uid)
-        if IsOwnCombatant(defID) then
-            local v = ChannelValue(defID, channel)
-            if v > 0 then
-                local ux, _, uz = Spring.GetUnitPosition(uid)
-                if ux then
-                    local d = math.sqrt((ux - x) ^ 2 + (uz - z) ^ 2)
-                    local eta = (d / math.max(1, UQ.max_speed(defID))) * 30
-                    if eta <= M.RESPONSE_HORIZON then total = total + v end
-                end
+    local list = OwnCombatants()
+    for i = 1, #list do
+        local e = list[i]
+        local v = SnapValue(e, channel)
+        if v > 0 then
+            if e.px == nil then
+                local ux, _, uz = Spring.GetUnitPosition(e.uid)
+                e.px, e.pz = ux or false, uz
+            end
+            local ux, uz = e.px, e.pz
+            if ux then
+                local d = math.sqrt((ux - x) ^ 2 + (uz - z) ^ 2)
+                local eta = (d / e.speed) * 30
+                if eta <= M.RESPONSE_HORIZON then total = total + v end
             end
         end
     end
@@ -457,6 +488,7 @@ end
 -- raising a 470-point "respond" threat at 2:38 -- minutes before an Incisor could
 -- cross the map.
 function M.OnUnitDestroyed(unitID, defID, isMine, frame, attackerID)
+    ownSnap = nil
     if not isMine then
         contacts[unitID] = nil
         return

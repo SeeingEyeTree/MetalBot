@@ -194,6 +194,10 @@ def analyze(demo_json: dict, checkpoints_s=(120, 240, 450, 600)) -> dict:
     winning_ally_teams = info["meta"].get("winningAllyTeamIds", [])
 
     team_ids = sorted({p["teamId"] for p in players})
+    if not team_ids:
+        # bot_testing.py --server single: the only player is a spectator and NullAI leads the teams; take the
+        # teams from the stats block (Gaia has none).
+        team_ids = sorted(int(t) for t in team_stats)
     teams = [build_team_summary(tid, players, team_stats, checkpoints_s) for tid in team_ids]
 
     fc_time = first_contact_time(team_stats)

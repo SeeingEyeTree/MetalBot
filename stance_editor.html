@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stance Editor</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2128;--border:#30363d;--text:#c9d1d9;--dim:#8b949e;--blue:#1f6feb;--green:#2ea043;--amber:#d29922;--red:#f85149}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:12px "Segoe UI",system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+button,input,select,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:4px 8px}
+button{cursor:pointer}button:hover{border-color:var(--dim)}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+button.success{background:var(--green);border-color:var(--green);color:#fff}
+button.danger{color:var(--red)}
+button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+#toolbar{display:flex;gap:6px;align-items:center;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap}
+#toolbar .sp{flex:1}
+#main{flex:1;display:flex;min-height:0}
+#left{width:340px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel)}
+#center{flex:1;overflow:auto;padding:10px;min-width:380px}
+#right{width:360px;border-left:1px solid var(--border);background:var(--panel);overflow:auto;padding:10px}
+#filters{padding:8px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
+.pills{display:flex;gap:4px;flex-wrap:wrap}
+.pill{padding:2px 8px;border-radius:10px;font-size:11px}
+#cards{flex:1;overflow:auto;padding:6px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;align-content:start}
+.card{display:flex;gap:6px;align-items:center;padding:4px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;cursor:pointer}
+.card:hover{border-color:var(--blue)}
+.card.in{border-color:var(--green)}
+.card img,.row img{width:40px;height:40px;object-fit:cover;border-radius:3px;background:#0006;flex:none}
+.card .t{min-width:0}.card .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.dim{color:var(--dim);font-size:11px}
+#count{padding:4px 8px;color:var(--dim);border-top:1px solid var(--border)}
+.row{display:grid;grid-template-columns:40px 1.3fr 90px 1fr 70px 60px;gap:8px;align-items:center;padding:6px;background:var(--panel);border:1px solid var(--border);border-radius:4px;margin-bottom:6px}
+.row .nm{min-width:0}.row .nm b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row input[type=number]{width:70px}.row input[type=range]{width:100%}
+.row .note{grid-column:2/-1}
+.row .note input{width:100%}
+.hdr{display:grid;grid-template-columns:40px 1.3fr 90px 1fr 70px 60px;gap:8px;padding:0 6px 4px;color:var(--dim);font-size:11px}
+#bar{display:flex;height:14px;border-radius:3px;overflow:hidden;margin:0 0 10px;background:var(--panel)}
+#bar div{height:100%}
+h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+h3:first-child{margin-top:0}
+label{display:block;margin:6px 0 2px;color:var(--dim)}
+#right input[type=text],#right textarea{width:100%}
+textarea{resize:vertical;min-height:90px}
+#empty{color:var(--dim);padding:30px;text-align:center;border:1px dashed var(--border);border-radius:6px}
+.tag{display:inline-block;padding:0 5px;border-radius:3px;background:#ffffff14;color:var(--dim);font-size:10px;margin-right:3px}
+.overlay{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center}
+.overlay.hidden{display:none}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:560px;max-height:80vh;overflow:auto}
+.modal h2{margin:0 0 8px}
+.modal p{margin:6px 0}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button onclick="newStance()">New</button>
+  <button onclick="loadFile()">Load</button>
+  <button class="primary" onclick="saveJson()">Save JSON</button>
+  <button class="success" onclick="exportLua()">Export Lua</button>
+  <button id="bUndo" onclick="undo()">Undo</button>
+  <button id="bRedo" onclick="redo()">Redo</button>
+  <button onclick="normalizeAll()" title="Make all shares equal">Equalise</button>
+  <span class="sp"></span>
+  <span id="status" class="dim"></span>
+  <button onclick="showM('help')">?</button>
+  <input type="file" id="fileIn" accept=".json" style="display:none">
+</div>
+<div id="main">
+  <div id="left">
+    <div id="filters">
+      <input type="text" id="q" placeholder="Search name or internal name..." autocomplete="off">
+      <div class="pills" id="pF"></div>
+      <div class="pills" id="pT"></div>
+      <div class="pills" id="pK"></div>
+      <div class="pills" id="pR"></div>
+    </div>
+    <div id="cards"></div>
+    <div id="count"></div>
+  </div>
+  <div id="center">
+    <div id="bar"></div>
+    <div class="hdr"><span></span><span>Unit</span><span>Cost (M / value)</span><span>Share of army spend</span><span>Units / 1000 M</span><span></span></div>
+    <div id="rows"></div>
+    <div id="empty">Click a unit on the left to add it to the comp.</div>
+  </div>
+  <div id="right">
+    <h3>Stance</h3>
+    <label>Name</label><input type="text" id="sName" placeholder="light_raid">
+    <label>What is this stance trying to do?</label>
+    <textarea id="sIntent" placeholder="Intent: the plan, what it beats, when it should be used..."></textarea>
+    <label>How should the units be controlled?</label>
+    <textarea id="sControl" placeholder="Control: groups, targets, retreat/kite rules, who escorts whom..."></textarea>
+    <label>Suggested army share (note only; the overall share is controlled elsewhere)</label>
+    <input type="text" id="sShare" placeholder="e.g. 40% early, 60% once nanos are up">
+    <h3>Summary</h3>
+    <div id="sum" class="dim"></div>
+  </div>
+</div>
+
+<div id="m-help" class="overlay hidden" onclick="if(event.target===this)hideM('help')"><div class="modal">
+  <h2>Stance Editor</h2>
+  <p>Click a unit to add it. Set each unit's <b>share</b> of the army spend; shares always total 100%. Typing or dragging one share rescales the other unlocked units in proportion. The padlock keeps a unit's share fixed.</p>
+  <p><b>Units / 1000 M</b> is what the controller will aim for: the metal-equivalent value (metal + energy/70) of each unit is divided into its share of spend.</p>
+  <p>The overall army share is not set here. The notes boxes explain the stance to whoever implements it.</p>
+  <p><b>Save JSON</b> keeps everything for re-editing. <b>Export Lua</b> writes the file the bot reads (put it in <code>stances/</code>). Run <code>python extract_unit_data.py</code> to refresh units and pictures from your installed BAR. Autosaves to this browser.</p>
+  <button onclick="hideM('help')">Close</button>
+</div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const el=(t,a={},...k)=>{const e=document.createElement(t);for(const x in a){if(x==='class')e.className=a[x];else if(x.startsWith('on'))e[x]=a[x];else e.setAttribute(x,a[x])}k.flat().forEach(c=>e.append(c));return e};
+const FAC={arm:'Armada',cor:'Cortex',leg:'Legion'};
+const COLORS=['#58a6ff','#3fb950','#d29922','#f778ba','#a371f7','#ff7b72','#56d4dd','#e3b341','#7ee787','#ffa657'];
+const val=u=>u.metal+u.energy/70;
+let UNITS=[],BY={};
+let st={name:'',intent:'',control:'',share:'',units:[]};   // units: {n,pct,locked,note}
+let hist=[],fut=[];
+const flt={F:new Set(),T:new Set(),K:new Set(),R:new Set()};
+
+const KIND={Mobile:u=>u.mobile,Structure:u=>!u.mobile,Air:u=>u.air,Naval:u=>u.naval,Land:u=>u.mobile&&!u.air&&!u.naval,Builder:u=>u.builder,Factory:u=>u.factory,Armed:u=>u.armed};
+const ROLE={'Hits air':u=>u.hitsAir,'Hits ground':u=>u.hitsGround,'Cheap (<150 M)':u=>u.metal<150,'Mid (150-600 M)':u=>u.metal>=150&&u.metal<=600,'Expensive (>600 M)':u=>u.metal>600};
+
+function pills(id,items,set,cb){const c=$(id);c.innerHTML='';items.forEach(([k,label])=>{const b=el('button',{class:'pill'+(set.has(k)?' on':''),onclick:()=>{set.has(k)?set.delete(k):set.add(k);pills(id,items,set,cb);cb()}},label);c.append(b)})}
+
+function matches(u){
+  const q=$('q').value.trim().toLowerCase();
+  if(q&&!(u.name.includes(q)||u.display.toLowerCase().includes(q)||(u.desc||'').toLowerCase().includes(q)))return false;
+  if(flt.F.size&&!flt.F.has(u.faction))return false;
+  if(flt.T.size&&!flt.T.has(u.tech))return false;
+  for(const k of flt.K)if(!KIND[k](u))return false;
+  for(const k of flt.R)if(!ROLE[k](u))return false;
+  return true;
+}
+function renderCards(){
+  const c=$('cards');c.innerHTML='';
+  const inComp=new Set(st.units.map(x=>x.n));
+  const list=UNITS.filter(u=>!u.commander&&matches(u));
+  list.slice(0,300).forEach(u=>{
+    const t=`${u.display} (${u.name})\n${FAC[u.faction]} T${u.tech}  ${u.metal} M / ${u.energy} E\n${u.desc||''}`;
+    c.append(el('div',{class:'card'+(inComp.has(u.name)?' in':''),title:t,onclick:()=>addUnit(u.name)},
+      el('img',{src:'stance_editor/pics/'+u.name+'.png',loading:'lazy',onerror:function(){this.style.visibility='hidden'}}),
+      el('div',{class:'t'},el('div',{class:'n'},u.display),el('div',{class:'dim'},`T${u.tech} · ${u.metal} M`))));
+  });
+  $('count').textContent=`${list.length} units`+(list.length>300?' (showing first 300; refine search)':'');
+}
+
+/* ---- comp model ---- */
+function push(){hist.push(JSON.stringify(st));if(hist.length>100)hist.shift();fut=[]}
+function undo(){if(!hist.length)return;fut.push(JSON.stringify(st));st=JSON.parse(hist.pop());syncMeta();render()}
+function redo(){if(!fut.length)return;hist.push(JSON.stringify(st));st=JSON.parse(fut.pop());syncMeta();render()}
+function addUnit(n){
+  if(st.units.some(x=>x.n===n)){return}
+  push();
+  const k=st.units.length;
+  st.units.push({n,pct:0,locked:false,note:''});
+  rebalanceNew(k);render();
+}
+function rebalanceNew(k){ // give the new unit an equal slice, scale the others down
+  const U=st.units,nUnl=U.length;
+  const share=100/nUnl;
+  U.forEach((u,i)=>{if(i!==k&&!u.locked)u.pct*= (100-share-U.filter((x,j)=>j!==k&&x.locked).reduce((s,x)=>s+x.pct,0))/Math.max(1e-9,U.filter((x,j)=>j!==k&&!x.locked).reduce((s,x)=>s+x.pct,0)||1)});
+  U[k].pct=share;fix();
+}
+function fix(){ // make the total exactly 100 by scaling unlocked units
+  const U=st.units;if(!U.length)return;
+  let lock=U.filter(u=>u.locked).reduce((s,u)=>s+u.pct,0),unl=U.filter(u=>!u.locked);
+  if(lock>100){const f=100/lock;U.filter(u=>u.locked).forEach(u=>u.pct*=f);lock=100}
+  const cur=unl.reduce((s,u)=>s+u.pct,0),want=100-lock;
+  if(!unl.length)return;
+  if(cur<=1e-9)unl.forEach(u=>u.pct=want/unl.length);else unl.forEach(u=>u.pct*=want/cur);
+}
+function setPct(i,p){
+  const U=st.units;p=Math.max(0,Math.min(100,+p||0));
+  const others=U.filter((u,j)=>j!==i&&!u.locked);
+  const lock=U.filter((u,j)=>j!==i&&u.locked).reduce((s,u)=>s+u.pct,0);
+  if(!others.length){U[i].pct=100-lock;return}
+  p=Math.min(p,100-lock);
+  U[i].pct=p;
+  const cur=others.reduce((s,u)=>s+u.pct,0),want=100-lock-p;
+  if(cur<=1e-9)others.forEach(u=>u.pct=want/others.length);else others.forEach(u=>u.pct*=want/cur);
+}
+function normalizeAll(){if(!st.units.length)return;push();st.units.forEach(u=>{u.locked=false;u.pct=100/st.units.length});render()}
+function ratios(){ // units per 1000 M of army spend
+  return st.units.map(x=>{const u=BY[x.n];return u?(x.pct/100*1000)/val(u):0});
+}
+
+function render(){
+  renderCards();
+  const rows=$('rows');rows.innerHTML='';
+  $('empty').style.display=st.units.length?'none':'block';
+  const r=ratios();
+  $('bar').innerHTML='';
+  st.units.forEach((x,i)=>{
+    const u=BY[x.n]||{display:x.n,name:x.n,metal:0,energy:0,tech:1,faction:x.n.slice(0,3)};
+    const color=COLORS[i%COLORS.length];
+    $('bar').append(el('div',{style:`width:${x.pct}%;background:${color}`,title:`${u.display} ${x.pct.toFixed(1)}%`}));
+    const rng=el('input',{type:'range',min:0,max:100,step:0.5,value:x.pct});
+    const num=el('input',{type:'number',min:0,max:100,step:0.5,value:x.pct.toFixed(1)});
+    rng.onpointerdown=()=>push();
+    rng.oninput=()=>{setPct(i,rng.value);refreshShares()};
+    num.onchange=()=>{push();setPct(i,num.value);render()};
+    const lock=el('button',{class:x.locked?'on':'',title:'Lock this share',onclick:()=>{push();x.locked=!x.locked;render()}},x.locked?'Locked':'Lock');
+    const del=el('button',{class:'danger',onclick:()=>{push();st.units.splice(i,1);fix();render()}},'Remove');
+    const note=el('input',{type:'text',placeholder:'Control note for this unit (optional)',value:x.note||''});
+    note.onchange=()=>{push();x.note=note.value;save()};
+    const row=el('div',{class:'row',style:`border-left:4px solid ${color}`},
+      el('img',{src:'stance_editor/pics/'+u.name+'.png',onerror:function(){this.style.visibility='hidden'}}),
+      el('div',{class:'nm'},el('b',{},u.display),el('span',{class:'dim'},`${u.name} · T${u.tech}`)),
+      el('div',{},`${u.metal} M`,el('br'),el('span',{class:'dim'},`value ${val(u).toFixed(0)}`)),
+      el('div',{},rng,num),
+      el('div',{class:'ratio'},r[i].toFixed(2)),
+      el('div',{},lock,del),
+      el('div',{class:'note'},note));
+    row._rng=rng;row._num=num;row._ratio=row.querySelector('.ratio');
+    rows.append(row);
+  });
+  summary();save();
+  $('bUndo').disabled=!hist.length;$('bRedo').disabled=!fut.length;
+}
+function refreshShares(){ // cheap update while dragging a slider
+  const r=ratios();
+  [...$('rows').children].forEach((row,i)=>{
+    row._rng.value=st.units[i].pct;row._num.value=st.units[i].pct.toFixed(1);row._ratio.textContent=r[i].toFixed(2);
+  });
+  [...$('bar').children].forEach((d,i)=>d.style.width=st.units[i].pct+'%');
+  summary();save();
+}
+function summary(){
+  const U=st.units;if(!U.length){$('sum').textContent='No units yet.';return}
+  const avg=U.reduce((s,x)=>s+(BY[x.n]?x.pct/100*BY[x.n].metal:0),0);
+  const air=U.reduce((s,x)=>s+(BY[x.n]&&BY[x.n].air?x.pct:0),0);
+  const fast=U.reduce((s,x)=>s+(BY[x.n]&&BY[x.n].speed>=100?x.pct:0),0);
+  const hitsAir=U.reduce((s,x)=>s+(BY[x.n]&&BY[x.n].hitsAir?x.pct:0),0);
+  $('sum').innerHTML=`${U.length} unit types<br>Spend-weighted unit cost: ${avg.toFixed(0)} M<br>Air: ${air.toFixed(0)}% of spend<br>Fast (speed 100+): ${fast.toFixed(0)}%<br>Can hit air: ${hitsAir.toFixed(0)}%`;
+}
+
+/* ---- meta, persistence ---- */
+function syncMeta(){$('sName').value=st.name;$('sIntent').value=st.intent;$('sControl').value=st.control;$('sShare').value=st.share}
+['sName','sIntent','sControl','sShare'].forEach(id=>$(id).addEventListener('input',()=>{
+  st.name=$('sName').value;st.intent=$('sIntent').value;st.control=$('sControl').value;st.share=$('sShare').value;save()}));
+function save(){try{localStorage.setItem('stanceEditor',JSON.stringify(st));$('status').textContent=(st.name||'unnamed')+' · autosaved'}catch(e){}}
+function newStance(){if(st.units.length&&!confirm('Discard the current stance?'))return;push();st={name:'',intent:'',control:'',share:'',units:[]};syncMeta();render()}
+function dl(name,text,type){const a=el('a',{href:URL.createObjectURL(new Blob([text],{type})),download:name});document.body.append(a);a.click();a.remove()}
+const slug=()=>(st.name||'stance').trim().replace(/[^A-Za-z0-9_-]+/g,'_');
+function toJson(){return JSON.stringify({name:st.name,notes:{intent:st.intent,control:st.control,share:st.share},
+  units:st.units.map(x=>({n:x.n,share:+(x.pct/100).toFixed(4),locked:!!x.locked,note:x.note||''}))},null,2)}
+function saveJson(){dl(slug()+'.json',toJson(),'application/json')}
+function loadFile(){$('fileIn').click()}
+$('fileIn').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{
+  try{const j=JSON.parse(t);push();
+    st={name:j.name||'',intent:(j.notes||{}).intent||'',control:(j.notes||{}).control||'',share:(j.notes||{}).share||'',
+        units:(j.units||[]).map(u=>({n:u.n,pct:(u.share||0)*100,locked:!!u.locked,note:u.note||''}))};
+    fix();syncMeta();render()}catch(err){alert('Could not read that file: '+err.message)}
+  e.target.value=''})};
+const lq=s=>{let d='=';while(s.includes(']'+d+']'))d+='=';return '['+d+'['+s+']'+d+']'};
+function toLua(){
+  const r=ratios(),tot=r.reduce((a,b)=>a+b,0)||1;
+  const L=['-- Generated by stance_editor.html. share = fraction of army spend; ratio = unit-count weight (share/cost, sums to 1);','-- perK = units per 1000 metal-equivalent of army spend (metal + energy/70).','local M = {}',
+    'M.name = '+JSON.stringify(st.name||slug()),'M.intent = '+lq(st.intent),'M.control = '+lq(st.control),'M.suggestedShare = '+lq(st.share),'M.units = {'];
+  st.units.forEach((x,i)=>{const u=BY[x.n];
+    L.push(`  { n = ${JSON.stringify(x.n)}, share = ${(x.pct/100).toFixed(4)}, ratio = ${(r[i]/tot).toFixed(4)}, perK = ${r[i].toFixed(3)}, cost = ${u?val(u).toFixed(1):0}, note = ${lq(x.note||'')} },`)});
+  L.push('}','return M','');
+  return L.join('\n')}
+function exportLua(){dl(slug()+'.lua',toLua(),'text/plain')}
+
+/* ---- init ---- */
+function showM(n){$('m-'+n).classList.remove('hidden')}function hideM(n){$('m-'+n).classList.add('hidden')}
+$('q').addEventListener('input',renderCards);
+document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='z'&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();undo()}
+  if(e.ctrlKey&&e.key==='y'&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();redo()}});
+function initFilters(){
+  pills('pF',Object.entries(FAC),flt.F,renderCards);
+  pills('pT',[[1,'T1'],[2,'T2'],[3,'T3']],flt.T,renderCards);
+  pills('pK',Object.keys(KIND).map(k=>[k,k]),flt.K,renderCards);
+  pills('pR',Object.keys(ROLE).map(k=>[k,k]),flt.R,renderCards);
+}
+async function init(){
+  try{
+    const r=await fetch('stance_editor/units.json');UNITS=await r.json();
+  }catch(e){
+    // file:// blocks fetch in some browsers: fall back to a picker
+    $('cards').append(el('div',{class:'dim',style:'padding:10px'},'Could not load stance_editor/units.json from disk. Pick it: ',
+      el('input',{type:'file',accept:'.json',onchange:ev=>ev.target.files[0].text().then(t=>{UNITS=JSON.parse(t);start()})})));
+    return;
+  }
+  start();
+}
+function start(){
+  BY={};UNITS.forEach(u=>BY[u.name]=u);
+  try{const s=localStorage.getItem('stanceEditor');if(s){const j=JSON.parse(s);if(j&&j.units)st=j}}catch(e){}
+  initFilters();syncMeta();render();
+}
+init();
+</script>
+</body>
+</html>

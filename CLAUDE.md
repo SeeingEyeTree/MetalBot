@@ -25,9 +25,10 @@ slot orders; never `Stop-Process` spring-headless by name (other sessions run ma
 `series.py` (batch of matches), `match_summary.py`, `h2h_report.py`; `--bot2 AI:BARb` plays BAR's native AI (weak vs
 LINE_CLICK: a regression check, not a strength measure); `ab_test.py --end-minutes/--keep`.
 
-**All testing uses a 5000 unit cap** (`maxunits=5000` in the harness's modoptions; BAR's default is
-2000). The larger cap makes a bigger economy worth building. Results from before this change were
-measured under the 2k cap and are not directly comparable.
+**All testing uses a 3000 unit cap** (`maxunits=3000` in the harness's modoptions; BAR's default is
+2000; changed from 5000 on 2026-10-09 because 5k made the late game too slow, per the user). The larger
+cap makes a bigger economy worth building. Results from before this change were measured under the 2k
+or 5k cap and are not directly comparable.
 
 ## Bot structure
 
@@ -71,6 +72,10 @@ simultaneous attack groups hitting different enemy targets, ranked by build powe
 played from the user's own games; `bar_framework/scout_lanes.lua`: enemy-side scouting). Doctrine: win by killing enemy build power/eco/commander,
 not by trade efficiency. Judge it on enemy BP/eco destroyed (`[CK]`, `[SF]` log rows), then A/B on army value. Full design, rulings and tunables:
 `candidates/LINE_CLICK/GOAL.md`. Tests (lupa Lua 5.1, see `tests/LUA_TESTING.md`): `test_click_army`, `test_slow_front`, `test_scout_lanes`.
+
+**Stances (2026-10-11):** `stance_editor.html` edits a unit comp (units + share of army spend, plus intent/control notes);
+`python extract_unit_data.py` builds its unit list and pictures from the installed BAR. Saves/exports live in `stances/`
+(README there). The bot does not read them yet; next steps in `knowledge/stance_next_steps.md`. Baseline is LINE_CLICK_v16.
 
 ### Key Lua API calls used by bots
 
@@ -130,10 +135,36 @@ Things that bit while building it (details in the `single_client.py` docstring):
 - BAR's stock automation widgets (nano turrets on FIGHT etc.) do nothing for a spectator; each team gets a shimmed
   copy (`STOCK_WIDGETS`). Without them the bots spent ~35% less by 5:00.
 - It pins its main thread to core 8 (`main_core_masks(4)[3]`); the engine default core is the one a normal match's P0 gets.
-Results are **not comparable** with normal-mode results (less order lag). First mirror batch (6 x 20-min LINE_CLICK,
-main PC): slot0/slot1 END_SCORE 0.96, 1.21, 1.04, 0.99, 1.03, 0.59 -- geo-mean 0.95 (no slot-0 edge seen; normal mode
-gives slot 0 ~1.4x here), per-game spread ~1.28x, scores 78-110k, no desyncs possible. Six games are not a noise floor:
-keep pairing slot orders and add mirrors before trusting a small A/B difference in this mode.
+- LuaUI garbage outran BAR's per-Update collector at high game speed (1.2 GB, LUA_ERRMEM after END_SCORE, process
+  never quit); `GC_WIDGET` now collects per sim frame (peak ~550 MB, `[MEM]` rows). BAR fixes the all-Lua limit at
+  1536 MB in modrules, so it cannot be raised. `result["lua_failure"]` flags any Lua OOM or removed match widget.
+- Radar blips show a unit type only with the engine's rule (seen in LOS **and** on radar ever since, bits 4+8).
+- Speed (2026-10-08): single mode disables BAR's ~193 display-only widgets (`UI_WIDGET_PREFIXES`; AdvPlayersList
+  alone cost ~8 s a game), and `bar_framework/threat_map.lua` scans our combatants once per frame instead of once per
+  incident per call (identical results, `tests/test_threat_map_cache.py`) -- that loop was most of the unit
+  controller's time. LuaUI time per 20-min LINE_CLICK_v12 vs LINE_CLICK game 170 s -> 25-56 s; game-minutes 1->20
+  took 319 s before, 164 s after (one game each, games vary ~1.5x). Simulation is now the main cost.
+- **Run single matches in parallel -- the remaining big speed-up.** Each match is one engine process on one core
+  (~4 GB RAM; this PC has 8 physical cores). `claim_core()` locks a free physical core per match
+  (`%TEMP%\metalbot_single_core_<n>.lock`, released when the process exits; cores 8, 6, 4, ... first, the three a
+  normal match pins last), so just start several `bot_testing.py --server single` runs at once. Measured 2026-10-08:
+  3 full 20-min v12 vs LINE_CLICK games side by side took 272 s in total (247-271 s each vs ~212 s alone: shared
+  memory bandwidth costs ~20% per match) = **~2.3x throughput**, all ended cleanly. Limit by RAM (~4 GB each, more in
+  long games) and leave cores for anything else running. `series.py` is still sequential; launch several series (or
+  match processes) yourself. Not worth it: more bot Lua work (all widget Lua is ~20% of a game now, <1.25x even if
+  removed) or a higher `--target-lag` (the governor only limits the first ~8 min; after that the sim is CPU-bound).
+- Long games: from ~30 game-min the sim runs at ~1x with big armies, so a 60-min game takes roughly 40-60 min wall;
+  pass `--duration` of ~5400+ (the default backstop for `--end-minutes 60` is ~27 min). Two 60-min attempts ended
+  cleanly on commander kills at 32 and 39 min (lag <=50 frames, LuaUI <=390 MB); a full 60:00 run is still unchecked.
+**Validation (2026-10-08, main PC):** behaviour matches normal mode (spent 3.0k/9.8k/26.7k at 3/5/8 min vs
+2.9k/9.1k/25.5k; army at 10:00 11.2k vs 11.4k); fog audit (engine LOS bits vs LOS map at unit positions) agrees on
+1993/1994 in-LOS checks, ~93% of enemy checks hidden; per-team metal/energy match the replay's engine team stats within
+~1%; order lag p90 19-31 frames all game; zero Lua errors. Mirrors (6 x 20 min LINE_CLICK): slot0/slot1 END_SCORE
+0.96, 1.21, 1.04, 0.99, 1.03, 0.59 -- geo-mean 0.95, no slot-0 edge, per-game spread ~1.28x. v12 vs LINE_CLICK
+(12 games): v12 3 commander kills, score-game geo-mean 0.96 -- the TreeServer 1.36x did NOT reproduce, but normal mode
+on the main PC didn't either (2 games, geo-mean 0.89). **Normal mode's late game runs under huge order lag on the main
+PC** (governor at its 2x floor from ~12 min: lag ~160 frames at 15:00, 600-850 at 18:00, slot 1 worse); single mode
+holds ~20-30 frames all game, so the two modes are not comparable and 20-min normal-mode results are partly a lag test.
 
 ### Remote test machine: TreeServer (Windows laptop)
 

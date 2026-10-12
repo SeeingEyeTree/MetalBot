@@ -117,6 +117,7 @@ class MatchResult:
     threat_log:         list = field(default_factory=list)  # raw [TML] rows (bar_framework/threat_log.lua), own team per process
     phi:                dict = field(default_factory=dict)  # bot_score.py state value per team per checkpoint (report only)
     desync:             "dict | None" = None   # first "Sync error": {"player", "frame"}; numbers after it are suspect
+    lua_failure:        "dict | None" = None   # first Lua OOM / removed bot widget: {"what", "frame"}; bots stopped there
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -147,6 +148,7 @@ class MatchResult:
             "threat_log":        self.threat_log,
             "phi":               self.phi,
             "desync":            self.desync,
+            "lua_failure":       self.lua_failure,
         }
 
 
@@ -678,6 +680,14 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
             shutil.rmtree(str(bps_dst))
         shutil.copytree(str(bps_src), str(bps_dst))
 
+    # stances/ unit-comp files (read by bar_framework/stance_loader.lua)
+    st_src = REPO_DIR / "stances"
+    if st_src.is_dir():
+        st_dst = widgets_dir / "stances"
+        st_dst.mkdir(exist_ok=True)
+        for lua_file in st_src.glob("*.lua"):
+            (st_dst / lua_file.name).write_bytes(lua_file.read_bytes())
+
     # bar_framework/ shared Lua utilities
     # Loaded in bot code via: VFS.Include("LuaUI/Widgets/bar_framework/<file>.lua")
     fw_src = REPO_DIR / "bar_framework"
@@ -895,17 +905,31 @@ def _ai_block(ai: "dict | None", name1: str) -> str:
             f"        [OPTIONS]\n        {{\n            profile={ai['profile']};\n        }}\n    }}\n")
 
 
+def start_pos_override():
+    """METALBOT_STARTPOS="x0,z0;x1,z1" (elmos) moves the two start positions (StartPosType=3, script-given).
+    Returns (StartPosType, [extra TEAM0 lines, extra TEAM1 lines]); (0, ["", ""]) when unset."""
+    v = os.environ.get("METALBOT_STARTPOS", "").strip()
+    if not v:
+        return 0, ["", ""]
+    out = []
+    for part in v.split(";")[:2]:
+        x, z = [float(t) for t in part.split(",")]
+        out.append(f"        StartPosX={x:g};\n        StartPosZ={z:g};\n")
+    return 3, out
+
+
 def _common_script_body(game_type, map_name, save_replay,
                         name0: str = "BotCtrl", name1: str = "BotB",
                         speeds: tuple = (100, 100), spectator: "str | None" = None,
                         ai: "dict | None" = None) -> str:
     record = "1" if save_replay else "0"
+    sp_type, sp = start_pos_override()
     spec = (f"    [PLAYER2]\n    {{\n        name={spectator};\n        team=0;\n"
             "        spectator=1;\n    }\n") if spectator else ""
     p1_spec = "        spectator=1;\n" if ai else ""
     return (
         f"    GameType={game_type};\n    MapName={map_name};\n"
-        "    StartPosType=0;\n    FixedRNGSeed=1;\n"
+        f"    StartPosType={sp_type};\n    FixedRNGSeed=1;\n"
         f"    RecordDemo={record};\n    GameStartDelay=0;\n"
         "    NoHelperAIs=0;\n\n"
         "    [MODOPTIONS]\n    {\n"
@@ -913,19 +937,20 @@ def _common_script_body(game_type, map_name, save_replay,
         # the hosting process's setminspeed/setmaxspeed (Game Ender or Speed Governor) move
         # it within that. Equal values pin the speed. Engine speed control can still slow
         # the sim below minspeed when a client cannot keep up -- it ignores minspeed.
-        # maxunits=5000: all testing uses a 5k unit cap (BAR's default is 2k) so a larger
-        # economy is worth building. The tracker's unit_cap field reads it back.
-        f"        deathmode=com;\n        maxunits=5000;\n"
+        # maxunits=3000: all testing uses a 3k unit cap (BAR's default is 2k) so a larger
+        # economy is worth building. 5k (used until 2026-10-09) made the late game too slow.
+        # The tracker's unit_cap field reads it back.
+        f"        deathmode=com;\n        maxunits=3000;\n"
         f"        maxspeed={speeds[1]:g};\n        minspeed={speeds[0]:g};\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"
         "    [ALLYTEAM0] { numallies=0; }\n    [ALLYTEAM1] { numallies=0; }\n\n"
         "    [TEAM0]\n    {\n"
         "        teamleader=0;\n        allyteam=0;\n"
-        "        side=Cortex;\n        rgbcolor=0.2 0.4 0.9;\n    }\n"
+        "        side=Cortex;\n        rgbcolor=0.2 0.4 0.9;\n" + sp[0] + "    }\n"
         "    [TEAM1]\n    {\n"
         "        teamleader=1;\n        allyteam=1;\n"
-        "        side=Cortex;\n        rgbcolor=0.9 0.2 0.2;\n    }\n\n"
+        "        side=Cortex;\n        rgbcolor=0.9 0.2 0.2;\n" + sp[1] + "    }\n\n"
         # fullview=1 on BOTH players, kept symmetric so neither bot plays fogged while the
         # other sees the map. It is NOT relied on for stats: it has been observed not to
         # give cross-team visibility headless, so every process scores only its own team.
@@ -1354,7 +1379,8 @@ def run_match(
             raise ValueError("--server single does not support a native AI opponent")
         from single_client import run_match_single
         return run_match_single(bot0_dir, bot1_dir, duration, map_name, save_replay, verbose,
-                                end_frame, eco_weight, max_speed, profile, min_speed, target_lag)
+                                end_frame, eco_weight, max_speed, profile, min_speed, target_lag,
+                                pin_cores)
 
     bot0_files = sorted(Path(bot0_dir).glob("*.lua"))
     bot1_files = [] if ai1 else sorted(Path(bot1_dir).glob("*.lua"))
