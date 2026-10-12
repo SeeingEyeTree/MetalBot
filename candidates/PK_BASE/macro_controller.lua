@@ -556,7 +556,7 @@ function widget:Initialize()
     local okD, rD = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/defense_crew.lua")
     if okD and rD then
         DC = rD
-        DC.Init{ teamID = myTeamID }
+        DC.Init{ teamID = myTeamID, WG = WG }
         DC.BUILD_AA, DC.BUILD_ANTINUKE = false, false   -- loose flak / anti-nukes removed for now; anti-nukes are grid capstones
         DC.SILO_INCOME, DC.SILO_SECOND = 1e12, 1e12     -- silos are grid capstones (line_transition SILO_GRIDS), not loose sites
     else

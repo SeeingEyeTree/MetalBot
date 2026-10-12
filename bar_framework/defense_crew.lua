@@ -56,7 +56,7 @@ local CMD_INSERT    = (CMD and CMD.INSERT) or 1
 local CMD_ATTACK    = (CMD and CMD.ATTACK) or 20
 local CMD_STOCKPILE = (CMD and CMD.STOCKPILE) or 100
 
-function M.Init(opts) myTeamID = opts.teamID end
+function M.Init(opts) myTeamID = opts.teamID; M.WG = opts.WG end
 
 local function Clock(frame) return string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60) end
 
@@ -351,8 +351,10 @@ local function KeyOf(p) return math.floor(p.x / 400) .. ":" .. math.floor(p.z / 
 local function CoverUpdate(frame, income, silosSeen)
     if frame - cover.last < M.COVER_PERIOD then return end
     cover.last = frame
-    WG.AntiNuke = WG.AntiNuke or {}
-    if income < M.ANTINUKE_INCOME and not silosSeen then WG.AntiNuke.saviorWant = 0; return end
+    local G = M.WG
+    if not G then return end
+    G.AntiNuke = G.AntiNuke or {}
+    if income < M.ANTINUKE_INCOME and not silosSeen then G.AntiNuke.saviorWant = 0; return end
     local R = CoverRadius(M.MOBILE_ANTINUKE) * M.COVER_FRAC
     local points = M.CoverPoints(CoverItems(), R, M.COVER_MAX)
     cover.points = points
@@ -428,8 +430,8 @@ local function CoverUpdate(frame, income, silosSeen)
         end
     end
     for uid in pairs(cover.goal) do if not Spring.GetUnitDefID(uid) then cover.goal[uid] = nil end end
-    WG.AntiNuke.saviorWant = math.max(0, want)          -- Saviors wanted: points nothing fixed serves and that are reachable
-    WG.AntiNuke.points = #points
+    G.AntiNuke.saviorWant = math.max(0, want)          -- Saviors wanted: points nothing fixed serves and that are reachable
+    G.AntiNuke.points = #points
     local nBlocked = 0
     for _ in pairs(cover.blocked) do nBlocked = nBlocked + 1 end
     Log("coverplan", frame, string.format("cover plan: %d points, %d fixed anti-nukes, %d Saviors wanted (%d standing), %d unreachable",
@@ -467,7 +469,10 @@ function M.Update(frame, mb)
     local wantAN = 0
     if income >= M.ANTINUKE_INCOME or silosSeen then wantAN = 1 end
     if income >= M.ANTINUKE_SECOND or (silosSeen and income >= M.ANTINUKE_INCOME) then wantAN = 2 end
-    if M.COVER and not M.BUILD_ANTINUKE then CoverUpdate(frame, income, silosSeen) end
+    if M.COVER and not M.BUILD_ANTINUKE then
+        local okC, errC = pcall(CoverUpdate, frame, income, silosSeen)
+        if not okC then Log("covererr", frame, "cover error: " .. tostring(errC)) end
+    end
     if wantAN > 0 and M.BUILD_ANTINUKE then
         Ensure("antinuke", frame, { M.ANTINUKE_NAME }, wantAN, Anchors(mb, bearing), 250, 1100)
     end
