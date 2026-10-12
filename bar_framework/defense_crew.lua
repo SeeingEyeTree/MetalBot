@@ -244,7 +244,7 @@ end
 -- Big structures (silo, anti-nuke) take minutes with one constructor: idle constructors help.
 M.ASSIST_MAX = 8
 local CMD_REPAIR = (CMD and CMD.REPAIR) or 40
-local function Assist(names)
+local function Assist(names, maxDist)
     local _, units = CountOf(names)
     for _, target in ipairs(units) do
         if not IsDone(target) then
@@ -257,7 +257,7 @@ local function Assist(names)
                    and not (d.customParams and d.customParams.iscommander) then
                     local q = Spring.GetUnitCommands(uid, 1)
                     local ux, _, uz = Spring.GetUnitPosition(uid)
-                    if tx and ux and (not q or #q == 0) and (ux - tx) ^ 2 + (uz - tz) ^ 2 <= 2500 ^ 2 then
+                    if tx and ux and (not q or #q == 0) and (ux - tx) ^ 2 + (uz - tz) ^ 2 <= (maxDist or 2500) ^ 2 then
                         Spring.GiveOrderToUnit(uid, CMD_REPAIR, { target }, {})
                         helpers = helpers + 1
                     end
@@ -277,7 +277,7 @@ M.COVER_FRAC       = 0.85     -- share of the interceptor's radius used for the 
 M.COVER_CELL       = 240      -- structures are bucketed into cells this wide before the cover is planned
 M.COVER_STUCK      = 1200     -- frames a Savior may take without getting closer before its point counts as unreachable
 M.COVER_FALLBACK_R = { cormabm = 1200, corfmd = 2000 }
-local cover = { goal = {}, blocked = {}, last = -1e9, points = {} }
+local cover = { goal = {}, blocked = {}, fails = {}, last = -1e9, points = {} }
 local CMD_MOVE = (CMD and CMD.MOVE) or 10
 
 -- Coverage radius of an anti-nuke def (weapon coverageRange, else the fallback table).
@@ -348,6 +348,127 @@ end
 
 local function KeyOf(p) return math.floor(p.x / 400) .. ":" .. math.floor(p.z / 400) end
 
+-- A corfmd where a Savior cannot walk: the nearest workable site (free, else one covered by our own structures, which are
+-- reclaimed first), built by a lead T2 con -- air cons preferred, they need no path -- with idle cons guarding it so the
+-- anti-nuke is built by several at once.
+M.COVER_HELPERS    = 3
+M.COVER_JOB_TTL    = 5400
+local CMD_RECLAIM = (CMD and CMD.RECLAIM) or 90
+local CMD_GUARD   = (CMD and CMD.GUARD) or 25
+
+local function CoverSite(defID, px, pz)
+    local d = UnitDefs[defID]
+    local half = d and math.max(d.xsize or 8, d.zsize or d.ysize or 8) * 4 or 32
+    local reclaimSite
+    for r = 0, 420, 60 do
+        for k = 0, (r == 0 and 0 or 15) do
+            local a = k * math.pi / 8
+            local x, z = px + math.cos(a) * r, pz + math.sin(a) * r
+            local y = Spring.GetGroundHeight(x, z) or 0
+            local ok = Spring.TestBuildOrder(defID, x, y, z, 0)
+            if ok == 3 or ok == 1 then return x, y, z, {} end
+            if ok == 2 and not reclaimSite then
+                -- our own structures in the footprint: reclaim them (never a factory or the commander)
+                local blockers, bad = {}, false
+                for _, uid in ipairs(Spring.GetUnitsInCylinder(x, z, half + 24, myTeamID) or {}) do
+                    local bd = UnitDefs[Spring.GetUnitDefID(uid) or 0]
+                    if bd and (bd.speed or 0) == 0 then
+                        if bd.isFactory then bad = true else blockers[#blockers + 1] = uid end
+                    elseif bd and bd.customParams and bd.customParams.iscommander then
+                        bad = true
+                    end
+                end
+                if not bad and #blockers > 0 then reclaimSite = { x = x, y = y, z = z, blockers = blockers } end
+            end
+        end
+    end
+    if reclaimSite then return reclaimSite.x, reclaimSite.y, reclaimSite.z, reclaimSite.blockers end
+end
+
+-- Constructors that can build defID, best first: idle air cons, idle ground cons, then busy ones.
+local function CoverBuilders(defID, x, z)
+    local list = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        local bd = Spring.GetUnitDefID(uid)
+        local d = bd and UnitDefs[bd]
+        if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
+           and IsDone(uid) and CanBuild(bd, defID) then
+            local ux, _, uz = Spring.GetUnitPosition(uid)
+            if ux then
+                local q = Spring.GetUnitCommands(uid, 1)
+                local busy = q and #q > 0
+                local score = (d.canFly and 0 or 1e7) + (busy and 2e7 or 0) + math.sqrt((ux - x) ^ 2 + (uz - z) ^ 2)
+                list[#list + 1] = { uid = uid, score = score, busy = busy }
+            end
+        end
+    end
+    table.sort(list, function(a, b) return a.score < b.score end)
+    return list
+end
+
+local function CoverBuild(frame, p, nFixed)
+    local defID = DefID(M.ANTINUKE_NAME)
+    if not defID then return end
+    local job = cover.job
+    if job then
+        -- finished one near the job?  expired?  lead gone or idle?
+        local _, units = CountOf({ M.ANTINUKE_NAME })
+        for _, uid in ipairs(units) do
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x and (x - job.x) ^ 2 + (z - job.z) ^ 2 <= 500 ^ 2 and IsDone(uid) then
+                Log("covjobdone" .. job.key, frame, string.format("cover: anti-nuke finished at (%d, %d)", job.x, job.z))
+                cover.job = nil
+                return
+            end
+        end
+        if frame - job.since > M.COVER_JOB_TTL then
+            cover.fails[job.key] = (cover.fails[job.key] or 0) + 1
+            Log("covjobexp" .. job.key .. frame, frame, string.format("cover: anti-nuke at (%d, %d) timed out", job.x, job.z))
+            cover.job = nil
+            return
+        end
+        if not Spring.GetUnitDefID(job.lead) then cover.job = nil; return end
+        local q = Spring.GetUnitCommands(job.lead, 1)
+        if (not q or #q == 0) and frame - job.since > 150 and frame - job.lastSend > 240 then
+            job.lastSend = frame
+            Spring.GiveOrderToUnit(job.lead, -defID, { job.x, job.y, job.z, 0 }, {})
+        end
+        return
+    end
+    local key = KeyOf(p)
+    if (cover.fails[key] or 0) >= 3 then return end
+    local x, y, z, blockers = CoverSite(defID, p.x, p.z)
+    if not x then
+        Log("covnosite" .. key, frame, string.format("cover: no site (even reclaiming) for an anti-nuke near (%d, %d)", p.x, p.z))
+        cover.fails[key] = (cover.fails[key] or 0) + 1
+        return
+    end
+    local builders = CoverBuilders(defID, x, z)
+    if #builders == 0 then
+        Log("covnobuilder", frame, "cover: no constructor can build an anti-nuke (needs a T2 con)")
+        return
+    end
+    local lead = builders[1]
+    local opts = lead.busy and { "shift" } or {}
+    for i, b in ipairs(blockers) do
+        Spring.GiveOrderToUnit(lead.uid, CMD_RECLAIM, { b }, (i == 1 and not lead.busy) and {} or { "shift" })
+    end
+    Spring.GiveOrderToUnit(lead.uid, -defID, { x, y, z, 0 }, (#blockers > 0 or lead.busy) and { "shift" } or {})
+    local helpers = 0
+    for i = 2, #builders do
+        local b = builders[i]
+        if helpers >= M.COVER_HELPERS then break end
+        if not b.busy then
+            Spring.GiveOrderToUnit(b.uid, CMD_GUARD, { lead.uid }, {})
+            helpers = helpers + 1
+        end
+    end
+    cover.job = { x = x, y = y, z = z, key = key, lead = lead.uid, since = frame, lastSend = frame }
+    Log("covjob" .. key .. frame, frame, string.format(
+        "cover: anti-nuke at (%d, %d): lead con %d (%s), %d helpers, %d structures to reclaim first",
+        x, z, lead.uid, (UnitDefs[Spring.GetUnitDefID(lead.uid)] or {}).canFly and "air" or "ground", helpers, #blockers))
+end
+
 local function CoverUpdate(frame, income, silosSeen)
     if frame - cover.last < M.COVER_PERIOD then return end
     cover.last = frame
@@ -384,8 +505,8 @@ local function CoverUpdate(frame, income, silosSeen)
             local key = KeyOf(p)
             if cover.blocked[key] then
                 -- unreachable on foot: an anti-nuke is built there by a T2 con
-                Ensure("cover", frame, { M.ANTINUKE_NAME }, #fixed + 1, { { x = p.x, z = p.z, bearing = 0 } }, 0, 360)
-                Assist({ M.ANTINUKE_NAME })
+                CoverBuild(frame, p, #fixed)
+                Assist({ M.ANTINUKE_NAME }, 1e9)
             else
                 want = want + 1
                 -- a Savior already heading for (or standing at) this point keeps it; else the nearest free one takes it
