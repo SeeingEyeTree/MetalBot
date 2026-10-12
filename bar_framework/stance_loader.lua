@@ -17,10 +17,12 @@ local M = {}
 
 local DIRS = { "LuaUI/Widgets/stances/", "stances/" }
 
+-- The one value formula (metal + energy/70): the editor's val() and lab_controller's UnitValue use the same.
 local function Value(defID)
     local d = defID and UnitDefs and UnitDefs[defID]
     return d and ((d.metalCost or 0) + (d.energyCost or 0) / 70) or 0
 end
+M.Value = Value
 
 -- Tolerates a stance given as a table already (tests) and a missing VFS.
 function M.Load(name)
@@ -39,12 +41,14 @@ function M.Prepare(raw)
     if type(raw) ~= "table" or type(raw.units) ~= "table" then return nil end
     local st = { name = raw.name or "?", intent = raw.intent, control = raw.control,
                  suggestedShare = tonumber(tostring(raw.suggestedShare or ""):match("(%d+)%D*$")) or nil,
-                 units = {}, byName = {} }
+                 units = {}, byName = {}, byDef = {} }
     local sum = 0
     for _, u in ipairs(raw.units) do
         local ud = UnitDefNames and UnitDefNames[u.n]
         if ud and (u.share or 0) > 0 then
-            st.units[#st.units + 1] = { n = u.n, defID = ud.id, share = u.share, note = u.note }
+            -- behaviors = {"kite", ...} and cfg = {kite = {step = 400}} plug the unit into behavior_host (strategy.lua)
+            st.units[#st.units + 1] = { n = u.n, defID = ud.id, share = u.share, note = u.note,
+                                        behaviors = u.behaviors, cfg = u.cfg }
             sum = sum + u.share
         end
     end
@@ -52,6 +56,7 @@ function M.Prepare(raw)
     for _, u in ipairs(st.units) do
         u.share = u.share / sum
         st.byName[u.n] = u
+        st.byDef[u.defID] = u
     end
     return st
 end
@@ -70,16 +75,24 @@ end
 -- Returns defID, or nil when the lab can build nothing in the stance.
 -- positiveOnly: take a unit only while it is BELOW its share (nil when everything the lab can build is at or over its
 -- share) -- for labs that should stop rather than overbuild.
-function M.Pick(st, ledger, canBuild, skip, positiveOnly)
+-- weights (optional): { [unit name] = multiplier } applied to the shares at run time, then renormalised (strategy.lua's
+-- `weights` hook: more AA once enemy air shows up, more raiders when their eco is exposed...).
+function M.Pick(st, ledger, canBuild, skip, positiveOnly, weights)
     if not (st and ledger) then return nil end
     local best, bestGap
     local total = math.max(ledger.total, 1)
+    local wsum = 0
+    if weights then
+        for _, u in ipairs(st.units) do wsum = wsum + u.share * (weights[u.n] or 1) end
+        if wsum <= 0 then weights = nil end
+    end
     for _, u in ipairs(st.units) do
         if (not skip or not skip[u.defID]) and canBuild(u.defID) then
             -- gap = value the unit should have by now minus what it has; the first order of a
             -- stance (total 0) goes to the largest share.
-            local gap = u.share * total - (ledger.byDef[u.defID] or 0)
-            if ledger.total <= 0 then gap = u.share end
+            local share = weights and u.share * (weights[u.n] or 1) / wsum or u.share
+            local gap = share * total - (ledger.byDef[u.defID] or 0)
+            if ledger.total <= 0 then gap = share end
             if (not positiveOnly or gap > 0) and (not bestGap or gap > bestGap) then best, bestGap = u.defID, gap end
         end
     end

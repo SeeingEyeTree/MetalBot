@@ -92,6 +92,8 @@ local function Class(defID)
         -- Damage-value inputs for bar_framework/click_army.lua: how much build power / income
         -- killing this unit takes away.
         bp        = d.buildSpeed or 0,
+        radarR    = d.radarRadius or 0,        -- radar / jammer reach (structures only matter: see RadarCovers)
+        jamR      = d.jammerRadius or 0,
         eco       = (d.extractsMetal or 0) > 0 or (d.energyMake or 0) > 0
                     or (d.windGenerator or 0) > 0 or (d.tidalGenerator or 0) > 0,
     }
@@ -323,6 +325,90 @@ function M.Count()
     return n
 end
 
+-- ── Facts for strategy hooks (game_state.lua) ────────────────────────────────
+
+-- Does an enemy radar we know of (a structure; mobile radars move) see this spot?
+function M.RadarCovers(x, z)
+    for _, rec in pairs(seen) do
+        local r = rec.c.radarR
+        if r and r > 0 and not rec.c.mobile then
+            local dx, dz = rec.x - x, rec.z - z
+            if dx * dx + dz * dz <= r * r then return true end
+        end
+    end
+    return false
+end
+
+-- The most valuable enemy economy structures seen (mex, generators, factories-excluded): { {uid,x,z,value}, ... } best first.
+function M.EcoTargets(n)
+    local out = {}
+    for uid, rec in pairs(seen) do
+        local c = rec.c
+        if c.eco and not c.mobile and not c.armed then
+            out[#out + 1] = { uid = uid, x = rec.x, z = rec.z, value = c.value }
+        end
+    end
+    table.sort(out, function(a, b) if a.value ~= b.value then return a.value > b.value end return a.uid < b.uid end)
+    while n and #out > n do table.remove(out) end
+    return out
+end
+
+-- Clusters of the enemy's armed mobile ground units seen within maxAge: { {x, z, value, n, density}, ... } densest first.
+-- density = value per 100x100 elmos of the cluster's radius, a rough "worth one big area weapon" number.
+function M.Blobs(frame, radius, maxAge)
+    radius, maxAge = radius or 300, maxAge or 900
+    local pts = {}
+    for _, rec in pairs(seen) do
+        local c = rec.c
+        if c.mobile and c.armed and not c.scout and not c.commander and not c.air and frame - rec.frame <= maxAge then
+            pts[#pts + 1] = { x = rec.x, z = rec.z, v = c.value, uid = rec.uid }
+        end
+    end
+    table.sort(pts, function(a, b) return a.uid < b.uid end)
+    local out, used = {}, {}
+    for i, p in ipairs(pts) do
+        if not used[i] then
+            local sx, sz, sv, n = 0, 0, 0, 0
+            for j, q in ipairs(pts) do
+                if not used[j] and (p.x - q.x) ^ 2 + (p.z - q.z) ^ 2 <= radius * radius then
+                    used[j] = true
+                    sx, sz, sv, n = sx + q.x * q.v, sz + q.z * q.v, sv + q.v, n + 1
+                end
+            end
+            if sv > 0 then out[#out + 1] = { x = sx / sv, z = sz / sv, value = sv, n = n, density = sv / (radius * radius / 10000) } end
+        end
+    end
+    table.sort(out, function(a, b) return a.value > b.value end)
+    return out
+end
+
+-- Plain numbers for hooks: what the enemy has that we have to plan around.
+function M.Facts(frame)
+    local f = { antiNuke = 0, aaStatic = 0, aaMobile = 0, aaDedicated = 0, radars = 0, jammers = 0,
+                ecoValue = 0, ecoStructs = 0, staticDef = 0, t2Units = 0, airFactories = 0 }
+    for _, rec in pairs(seen) do
+        local c = rec.c
+        if c.interceptor and c.interceptor > 0 then f.antiNuke = f.antiNuke + 1 end
+        if c.armed and c.hitsAir and not c.scout then
+            local w = c.aaOnly and 1 or M.NONSPECIALIST_AA
+            if c.mobile then
+                if frame - rec.frame <= M.MOBILE_MEMORY then f.aaMobile = f.aaMobile + c.value * w end
+            else
+                f.aaStatic = f.aaStatic + c.value * w
+            end
+            if c.aaOnly then f.aaDedicated = f.aaDedicated + c.value end
+        end
+        if c.radarR > 0 and not c.mobile then f.radars = f.radars + 1 end
+        if c.jamR > 0 then f.jammers = f.jammers + 1 end
+        if c.eco and not c.mobile and not c.armed then f.ecoValue, f.ecoStructs = f.ecoValue + c.value, f.ecoStructs + 1 end
+        if c.armed and not c.mobile then f.staticDef = f.staticDef + c.value end
+        if c.mobile and c.tech >= 2 and c.armed then f.t2Units = f.t2Units + 1 end
+        if c.airFactory then f.airFactories = f.airFactories + 1 end
+    end
+    f.aaValue = f.aaStatic + f.aaMobile
+    return f
+end
+
 -- Plain numbers for other widgets (WG.MetalBot.intel); tables of unit records stay here.
 function M.Summary(frame)
     local labs = M.Labs()
@@ -343,6 +429,7 @@ function M.Summary(frame)
         commanderX   = cx, commanderZ = cz, commanderFrame = cf,
         known        = M.Count(),
         frame        = frame,
+        facts        = M.Facts(frame),
     }
 end
 

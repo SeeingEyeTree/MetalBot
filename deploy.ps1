@@ -68,6 +68,7 @@ $files = @(
     "bar_framework\line_fight.lua",
     "bar_framework\click_army.lua",
     "bar_framework\scout_lanes.lua",
+    "bar_framework\scout_rings.lua",
     "bar_framework\slow_front.lua",
     "bar_framework\air_wing.lua",
     "bar_framework\spend_governor.lua",
@@ -96,6 +97,20 @@ foreach ($f in $files) {
     New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
     Copy-Item (Join-Path $src $f) $target -Force
     Write-Host "Copied $f"
+}
+
+# Everything under bar_framework\ (including behaviors\), stances\ and blueprints\general\ is copied too, so a new
+# module or behavior needs no entry in the list above.
+foreach ($dir in @("bar_framework", "stances", "blueprints\general")) {
+    $root = Join-Path $src $dir
+    if (-not (Test-Path $root)) { continue }
+    Get-ChildItem $root -Recurse -Filter *.lua | ForEach-Object {
+        $rel = $_.FullName.Substring($src.Length).TrimStart('\')
+        $target = Join-Path $dst $rel
+        New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+        Copy-Item $_.FullName $target -Force
+    }
+    Write-Host "Copied $dir\ (all .lua)"
 }
 
 foreach ($f in @("macro_controller.lua", "lab_controller.lua", "unit_controller.lua")) {

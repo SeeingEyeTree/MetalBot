@@ -37,6 +37,7 @@ local CFG = {
     STAGE_FRAC    = 0.40,   -- the stage is this far along home->foe (the human gathered at ~45-50%)
     STAGE_SPACING = 60,
     STAGE_JOIN_R  = 1200,   -- "at the stage" = this close
+    DIRECT        = false,  -- PAINTKID_BOT: no staging -- the group marches on the objective as soon as a unit exists, never regroups
     LAUNCH_AV     = 1500,   -- leave once this much value is at the stage (~7 Lashers/Pounders)
     FORCE_AV      = 4000,   -- ...whatever is still walking in
     BLIND_FRAME   = 12 * 60 * 30,   -- act on the mirror guess of the enemy start only after this long
@@ -121,6 +122,9 @@ local lastBackF, backHold = -1e9, 0
 local lastKiteLog = -1e9
 local stats = { advance = 0, kite = 0, stand = 0, rez = 0, reclaim = 0, repair = 0, dive = 0 }
 
+local holdFn    -- optional (uid, frame) -> true: another controller (behavior_host's kite) has this unit; leave it alone
+function M.SetHold(fn) holdFn = fn end
+
 local function Alive(uid) return Spring.GetUnitDefID(uid) ~= nil end
 local function Dist(ax, az, bx, bz) local dx, dz = ax - bx, az - bz; return math.sqrt(dx * dx + dz * dz) end
 local function Log(frame, fmtStr, ...)
@@ -169,6 +173,7 @@ end
 
 -- One order, de-duplicated: the same command to (nearly) the same place is not repeated until the heartbeat.
 local function Order(frame, uid, cmd, x, z, tid)
+    if holdFn and holdFn(uid, frame) then return false end
     local l = last[uid]
     if l and l.cmd == cmd and l.tid == tid then
         if frame - l.f < CFG.HEARTBEAT and (tid or Dist(x, z, l.x, l.z) <= CFG.REISSUE_EPS) then return false end
@@ -185,6 +190,7 @@ end
 
 -- Stop where it stands and fire: a FIGHT order onto its own spot (kept while it stays near it).
 local function Stand(frame, u)
+    if holdFn and holdFn(u.uid, frame) then return end
     local l = last[u.uid]
     if l and l.cmd == CMD_FIGHT and not l.tid and Dist(u.x, u.z, l.x, l.z) <= CFG.REISSUE_EPS
        and frame - l.f < CFG.HEARTBEAT then
@@ -323,7 +329,7 @@ end
 local function PickObjective(frame, cx, cz, val)
     -- A wreck field on the way, else the enemy base.  (Enemies in sight are fought directly, see UpdateLashers; a
     -- "strongest cluster" objective jumped around every few seconds in the first real game.)
-    local f = PickField(frame, cx, cz, val)
+    local f = (not CFG.DIRECT) and PickField(frame, cx, cz, val) or nil     -- DIRECT: straight to the base, no wreck-field stops
     local kind, o = "field", f
     if not o then o = EnemyBase(frame); kind = "base" end
     local x, z = MM.Clamp(o.x, o.z, CFG.MARGIN)
@@ -579,7 +585,7 @@ local function UpdateGroup(frame, list)
         for _, u in ipairs(list) do
             if Dist(u.x, u.z, stageX, stageZ) <= CFG.STAGE_JOIN_R then av = av + u.v end
         end
-        if foeKnown and (av >= CFG.LAUNCH_AV or av >= CFG.FORCE_AV) then
+        if CFG.DIRECT or (foeKnown and (av >= CFG.LAUNCH_AV or av >= CFG.FORCE_AV)) then
             launched, peak, obj = true, total, nil
             ScanWrecks(frame, gx, gz)             -- the first objective is picked on fresh information
             pickF = -1e9
@@ -595,7 +601,7 @@ local function UpdateGroup(frame, list)
     end
 
     peak = math.max(peak, total)
-    if peak >= CFG.SPENT_MIN_PEAK and total < CFG.SPENT_FRAC * peak then
+    if not CFG.DIRECT and peak >= CFG.SPENT_MIN_PEAK and total < CFG.SPENT_FRAC * peak then
         launched = false
         Log(frame, "slow group spent (%d of peak %d): regrouping at the stage", total, peak)
         return gx, gz, total, nil, nil, nil

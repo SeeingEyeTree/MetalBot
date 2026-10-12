@@ -694,8 +694,11 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
     if fw_src.is_dir():
         fw_dst = widgets_dir / "bar_framework"
         fw_dst.mkdir(exist_ok=True)
-        for lua_file in fw_src.glob("*.lua"):
-            (fw_dst / lua_file.name).write_bytes(lua_file.read_bytes())
+        # recursive: bar_framework/behaviors/*.lua (behavior_host plug-ins) ride along
+        for lua_file in fw_src.rglob("*.lua"):
+            out = fw_dst / lua_file.relative_to(fw_src)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(lua_file.read_bytes())
 
 
 def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
@@ -911,6 +914,8 @@ def start_pos_override():
     v = os.environ.get("METALBOT_STARTPOS", "").strip()
     if not v:
         return 0, ["", ""]
+    if v.lower() == "paintkid":     # the paintkid replay's spawns (x ~1.9k / 9.2k, z ~6k): ~7.3k apart instead of the 12.8k corners
+        v = "1932,6082;9230,5857"
     out = []
     for part in v.split(";")[:2]:
         x, z = [float(t) for t in part.split(",")]

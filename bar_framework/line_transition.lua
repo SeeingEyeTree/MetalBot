@@ -71,6 +71,7 @@ LT.CFG = {
     SHARE_GOV = false,            -- bar_framework/spend_governor.lua: make the spine army share bind (pauses grids / tunes the spine)
     FAST_OPEN_CAP = nil,          -- max grids opening at once in the fast-income path (nil = no cap)
     COLLECT_DONE_ONLY = false,    -- new cells only next to grids whose nanos are up (DRAGON_BOT's rule), not next to every assigned grid
+    ANTINUKE_GRIDS = nil,   -- grids crowned with an anti-nuke (corfmd) the same way, e.g. { [4] = true, [9] = true }; nil = none
     SILO_GRIDS = { [6] = true, [12] = true },   -- grids crowned with a nuke silo (built by a T2 con once the grid is up)
     CAPSTONE_MAX = nil,           -- grids numbered above this skip their T2 lab capstone
     ENERGY_BUILDING = nil,        -- what a wind block becomes under energy push / consolidation (default corfus; corafus = 3000 E in the same 96x96)
@@ -472,12 +473,15 @@ local function ApplyCapstone(T, st, conID)
             -- SILO_GRIDS (LINE_CLICK_v16): these grids are crowned with a nuke silo instead of the T2 air lab.  The grid's
             -- own T1 air con cannot place it, so the entry is retired here and a free T2 con builds it once the grid is up.
             local gridNo = T.gridsAssigned
-            local siloUD = T.CFG.SILO_GRIDS and T.CFG.SILO_GRIDS[gridNo] and UnitDefNames["corsilo"]
+            local capName = (T.CFG.SILO_GRIDS and T.CFG.SILO_GRIDS[gridNo] and "corsilo")
+                         or (T.CFG.ANTINUKE_GRIDS and T.CFG.ANTINUKE_GRIDS[gridNo] and "corfmd") or nil
+            local siloUD = capName and UnitDefNames[capName]
             if siloUD then
                 local wx, wz = T.BP.SnapToBuildGrid(siloUD.id, item.wx, item.wz)
                 item.built, item.status = true, "skipped"
-                T.siloPending[#T.siloPending + 1] = { x = wx, z = wz, f = item.f or 0, key = Key(st.anchorX, st.anchorZ), grid = gridNo }
-                Spring.Echo(string.format("[LT] grid %d capstone: corsilo at (%d, %d), waits for a T2 con", gridNo, wx, wz))
+                T.siloPending[#T.siloPending + 1] = { x = wx, z = wz, f = item.f or 0, key = Key(st.anchorX, st.anchorZ), grid = gridNo,
+                                                      name = capName }
+                Spring.Echo(string.format("[LT] grid %d capstone: %s at (%d, %d), waits for a T2 con", gridNo, capName, wx, wz))
                 return
             end
             if T.CFG.CAPSTONE_MAX and gridNo > T.CFG.CAPSTONE_MAX then
@@ -608,15 +612,15 @@ local function TryAssignSilos(T)
         local conID = T.freeT2Cons[1]
         if not Spring.GetUnitDefID(conID) then
             table.remove(T.freeT2Cons, 1)
-        elseif T.gridFinished[job.key] and T.BP.CanBuild(Spring.GetUnitDefID(conID), UnitDefNames["corsilo"].id) then
+        elseif T.gridFinished[job.key] and T.BP.CanBuild(Spring.GetUnitDefID(conID), UnitDefNames[job.name or "corsilo"].id) then
             table.remove(T.freeT2Cons, 1)
             table.remove(T.siloPending, i)
             Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
-            local st = T.BP.New({ layout = { { n = "corsilo", x = 0, z = 0, f = job.f } } }, conID, job.x, job.z, 0, {})
+            local st = T.BP.New({ layout = { { n = job.name or "corsilo", x = 0, z = 0, f = job.f } } }, conID, job.x, job.z, 0, {})
             st.clearBlockers = true
             T.siloJobs[#T.siloJobs + 1] = st
-            Spring.Echo(string.format("[LT] %s silo capstone (grid %d) started at (%d, %d) by con %d", Clock(T.frame),
-                job.grid, job.x, job.z, conID))
+            Spring.Echo(string.format("[LT] %s %s capstone (grid %d) started at (%d, %d) by con %d", Clock(T.frame),
+                job.name or "corsilo", job.grid, job.x, job.z, conID))
         else
             i = i + 1
         end

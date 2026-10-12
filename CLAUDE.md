@@ -58,6 +58,16 @@ controller, the person queues and commands the army). Deploy with `.\deploy.ps1 
 **Stances (2026-10-11):** `stance_editor.html` edits a unit comp (units + share of army spend, plus intent/control notes);
 `python extract_unit_data.py` builds its unit list and pictures from the installed BAR. Saves/exports live in `stances/`
 (README there). The bot does not read them yet; next steps in `knowledge/stance_next_steps.md`. Baseline is LINE_CLICK_v16.
+**Strategy framework (2026-10-12, built, not yet in a bot):** `bar_framework/behavior_host.lua` + `behaviors/` (plug-and-play unit control:
+`kite` backs off from ANY approaching enemy, threat-weighted; `stun_target`; per-unit tunables, stackable), `strategy.lua` (stances +
+run-time hooks `army_share` / `weights` / `switch`, `InstallSpine`), `game_state.lua`. Stance units can carry `behaviors`/`cfg` (editor boxes).
+Docs: `bar_framework/behaviors/README.md`. Tests: `python tests/run_lua.py tests/test_behavior_host.lua` (also `test_strategy.lua`). Next: port a
+bot (copy v17 -> v18) onto it and A/B.
+`bar_framework/slot_spine.lua` + `blueprints/general/NanoBlock.lua` (2026-10-12): the new spine -- 16-nano blocks with 2 lab slots in front; labs are
+picked from the stance's units (`Cover`/`Counts`), swapped by reclaim when the comp changes, nanos always built ahead and re-guarding the new lab
+(`Strategy:InstallSlotSpine`). Test: `tests/test_slot_spine.lua` (fake placer).
+`candidates/STANCE_BOT/` = v16 + these systems (stance `stances/line_ground.lua`); ~even vs v16 (2-2 at 30 min). Session notes, results and to-do:
+`knowledge/session_2026-10-12_stance_framework.md`; batch tester `runs_stance/batch.py`.
 
 ### Key Lua API calls used by bots
 

@@ -20,7 +20,7 @@ class StanceTests(unittest.TestCase):
             for u in j["units"]:
                 self.assertIn(u["n"], names, f)
 
-    def test_lua_export(self):
+    def export(self, extra_js=""):
         node = shutil.which("node")
         if not node:
             self.skipTest("node not installed")
@@ -37,17 +37,30 @@ global.localStorage={getItem(){return null},setItem(){}};
 %s
 UNITS=JSON.parse(fs.readFileSync('%s','utf8'));BY={};UNITS.forEach(u=>BY[u.name]=u);
 const j=JSON.parse(fs.readFileSync('%s','utf8'));
-st={name:j.name,intent:j.notes.intent,control:j.notes.control,share:j.notes.share,units:j.units.map(u=>({n:u.n,pct:u.share*100,locked:false,note:u.note}))};
+st={name:j.name,intent:j.notes.intent,control:j.notes.control,share:j.notes.share,units:j.units.map(u=>({n:u.n,pct:u.share*100,locked:false,note:u.note,beh:u.beh||'',ov:u.ov||''}))};
+%s
 process.stdout.write(toLua());
-""" % (js, units, seed)
+""" % (js, units, seed, extra_js)
         out = subprocess.run([node, "-e", harness], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
-        M = LuaRuntime().execute(out.stdout)
+        return LuaRuntime().execute(out.stdout)
+
+    def test_lua_export(self):
+        M = self.export()
         self.assertEqual(M.name, "light_raid")
         us = list(M.units.values())
         self.assertEqual(len(us), 6)
         self.assertAlmostEqual(sum(u.ratio for u in us), 1.0, delta=0.01)
         self.assertAlmostEqual(sum(u.share for u in us), 1.0, delta=0.01)
+        self.assertIsNone(us[0].behaviors)
+
+    def test_behaviors_export(self):
+        M = self.export("st.units[0].beh='kite, advance';st.units[0].ov='kite.step=400, kite.mobile_only=false, stun.tag=x';")
+        u = list(M.units.values())[0]
+        self.assertEqual(list(u.behaviors.values()), ["kite", "advance"])
+        self.assertEqual(u.cfg.kite.step, 400)
+        self.assertFalse(u.cfg.kite.mobile_only)
+        self.assertEqual(u.cfg.stun.tag, "x")
 
 
 if __name__ == "__main__":

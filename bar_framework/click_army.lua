@@ -168,6 +168,18 @@ local CFG = {
     FLANK_MIN_FRAC  = 0.5,
     FLANK_CLUSTER_R = 1200,
     FLANK_MAX_AGE   = 600,    -- frames: a cluster seen longer ago than this is not steered round
+    -- DIRECT (PAINTKID_BOT, user 2026-10-12): no stage, no groups, no squads, no steering.  The ground army is run by a STACK
+    -- of plug-in behaviours (bar_framework/behaviors/, run by behavior_host.lua), first claim wins:
+    --   pick_target -> commander_strike -> flank -> spread -> run_by -> attack_target
+    -- The bot chooses the stack and its tunables (unit_controller passes cfg = { DIRECT = true, ARMY_BEHAVIORS = ..., ARMY_BEHAVIOR_CFG = ... });
+    -- remove a name to switch that behaviour off.  What uses what: `python behavior_usage.py`.
+    LAB_BP_R        = 650,    -- build power (nanos, cons) within this of an enemy factory is the TOP target, above everything else
+    DIRECT          = false,
+    ARMY_BEHAVIORS  = { "pick_target", "commander_strike", "flank", "spread", "run_by", "attack_target" },
+    ARMY_BEHAVIOR_CFG = {},   -- { flank = { every = 4 }, ... } tunables per behaviour (see each file's cfg)
+    -- Bombers as behaviours too: { "bomber_run" } replaces the built-in UpdateBombers (empty = the built-in one).
+    BOMBER_BEHAVIORS  = {},
+    BOMBER_BEHAVIOR_CFG = {},
 }
 M.CFG = CFG
 
@@ -381,9 +393,10 @@ local function Members()
     local ground, air = {}, {}
     for uid, defID in pairs(combat) do
         if Alive(uid) and not guards[uid] and not muster[uid] and not scouts[uid]
-           and not responding[uid] and not squad[uid] then
+           and not responding[uid] and (CFG.DIRECT or not squad[uid]) then
             local role = ARMY.RoleOf(uid)
-            if role == nil or role == "BLOB" or role == "LINE" then
+            -- DIRECT: a hurt squad (role RETREAT, squad[uid]) stays in the list so the squad_retreat behaviour can release it
+            if role == nil or role == "BLOB" or role == "LINE" or (CFG.DIRECT and role == "RETREAT" and squad[uid]) then
                 local x, _, z = Spring.GetUnitPosition(uid)
                 if x then
                     local hp, mhp = Spring.GetUnitHealth(uid)
@@ -1131,6 +1144,135 @@ end
 -- ── Entry points ──────────────────────────────────────────────────────────────
 
 -- Call every 30 frames, after the planners that outrank this one.
+-- DIRECT mode: the ground army is a stack of behaviours (CFG.ARMY_BEHAVIORS) on one behavior_host.  Orders go out through
+-- army_broker (Claim), so retreat / respond still outrank them; the host's own de-duplication is off for that reason.
+local armyHost, armyCtx, armyShared
+local hostLogF = -99999
+
+-- The best `k` different targets (at least DIFF_R apart), best first.  Build power NEAR AN ENEMY LAB (a nano, con or other
+-- builder within LAB_BP_R of a factory) always outranks everything else: killing it starves the lab, so it is returned first
+-- (t.labBP = true) whatever its distance or defence.  `avoid`: a target whose neighbourhood is skipped.  `groupValue`
+-- (optional) discounts targets whose armed defence is above TARGET_DEF_MAX x the army (not for lab build power).
+local function RankTargets(frame, cx, cz, k, groupValue, avoid)
+    local raw = EI.RaidTargets(frame)
+    local labs = {}
+    for _, t in ipairs(raw) do if t.factory and not t.mobile then labs[#labs + 1] = t end end
+    local list = {}
+    for _, t in ipairs(raw) do
+        local score = DamageValue(t) / (1 + Dist(cx, cz, t.x, t.z) / CFG.DIST_SCALE)
+        if t.mobile then score = score * CFG.MOBILE_FACTOR end
+        t.labBP = false
+        if (t.bp or 0) > 0 and not t.factory then
+            for _, l in ipairs(labs) do
+                if Dist(t.x, t.z, l.x, l.z) <= CFG.LAB_BP_R then t.labBP = true; break end
+            end
+        end
+        if t.labBP then
+            score = score + 1e9
+        elseif groupValue and EI.ThreatAt(frame, t.x, t.z, "ground") > CFG.TARGET_DEF_MAX * groupValue then
+            score = score * CFG.DEF_PENALTY
+        end
+        if not (avoid and Dist(t.x, t.z, avoid.x, avoid.z) < CFG.DIFF_R) then list[#list + 1] = { t = t, s = score } end
+    end
+    table.sort(list, function(a, b) if a.s ~= b.s then return a.s > b.s end return (a.t.uid or 0) < (b.t.uid or 0) end)
+    local out = {}
+    for _, e in ipairs(list) do
+        if #out >= k then break end
+        local near = false
+        for _, o in ipairs(out) do if Dist(e.t.x, e.t.z, o.x, o.z) < CFG.DIFF_R then near = true; break end end
+        if not near then out[#out + 1] = e.t end
+    end
+    return out
+end
+
+local function TopTargets(frame, cx, cz, k, avoid) return RankTargets(frame, cx, cz, k, nil, avoid) end
+
+local function NewArmyHost()
+    local okH, BH = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/behavior_host.lua")
+    if not (okH and BH) then Spring.Echo("[CK] behavior_host failed to load: " .. tostring(BH)); return end
+    local curFrame = 0
+    armyShared = {}
+    armyHost = BH.New{
+        cfg = { HEARTBEAT = 1, REISSUE_EPS = 0, REISSUE_GAP = 0 },     -- Claim() de-duplicates; a unit released by retreat must be re-ordered
+        give = function(uid, cmd, params)
+            if #params == 1 then Claim(curFrame, uid, cmd, nil, nil, params[1])
+            else Claim(curFrame, uid, cmd, params[1], params[3]) end
+        end,
+    }
+    armyCtx = {
+        shared = armyShared,
+        Foe = function() return MM.Foe() end,
+        Clamp = function(x, z) return MM.Clamp(x, z, CFG.MARGIN) end,
+        Alive = Alive,
+        Log = function(frame, f, ...) Log(frame, "direct: " .. f, ...) end,
+        ArmedValueNear = function(frame, x, z, r, skipUid) return ArmedValueNear(frame, x, z, r, nil, skipUid) end,
+        Cluster = EnemyArmyCluster,         -- biggest recently seen enemy army cluster: x, z, value
+        squad = squad,                      -- [uid] = frame it began retreating (the unit controller reads it too)
+        Retreat = function(frame, uid)
+            local hx, hz = MM.PointAt(0.10 * MM.Dist(), 0)
+            ARMY.Claim(ARMY.PRIO.RETREAT, uid, { role = "RETREAT", cmd = CMD_MOVE, x = hx, z = hz }, frame)
+        end,
+        EndRetreat = function(uid) if ARMY.RoleOf(uid) == "RETREAT" then ARMY.Release(uid) end end,
+        Release = function(uid) if ARMY.RoleOf(uid) == "BLOB" then ARMY.Release(uid) end end,
+        Home = function() return MM.Home() end,
+        AirThreatAt = function(frame, x, z) return EI.ThreatAt(frame, x, z, "air") end,
+        Hunting = function() return isHunting() end,
+        Rank = RankTargets,                 -- Rank(frame, cx, cz, k, groupValue, avoid) -> k different targets, lab build power first
+        TopTargets = TopTargets,
+        Commander = function(frame, value, keeping) return CommanderTarget(frame, value, keeping) end,
+        ThreatAt = function(frame, x, z) return EI.ThreatAt(frame, x, z, "ground") end,
+    }
+    for _, name in ipairs(CFG.ARMY_BEHAVIORS) do armyHost:Use(name) end
+    for _, name in ipairs(CFG.BOMBER_BEHAVIORS) do armyHost:Use(name) end
+    local parts = {}
+    for _, name in ipairs(CFG.ARMY_BEHAVIORS) do
+        local b = armyHost.reg[name]
+        local cfg = {}
+        for k, v in pairs(b and b.cfg or {}) do cfg[k] = v end
+        for k, v in pairs(CFG.ARMY_BEHAVIOR_CFG[name] or {}) do cfg[k] = v end
+        parts[#parts + 1] = name .. (b and b.Describe and (" (" .. b.Describe(cfg) .. ")") or "")
+    end
+    Spring.Echo("[CK] army behaviour stack: " .. table.concat(parts, " > "))
+    armyHost.setFrame = function(f) curFrame = f end
+end
+
+-- Run the army stack over `ground`; units that left the list are dropped from the host.
+local function RunArmyBehaviors(frame, ground)
+    if not armyHost then NewArmyHost() end
+    if not armyHost then return end
+    armyHost.setFrame(frame)
+    local present = {}
+    if CFG.DIRECT then
+        for _, u in ipairs(ground) do
+            present[u.uid] = true
+            if not armyHost:Has(u.uid) then armyHost:Assign(u.uid, CFG.ARMY_BEHAVIORS, CFG.ARMY_BEHAVIOR_CFG) end
+        end
+    end
+    if #CFG.BOMBER_BEHAVIORS > 0 and bombers then
+        for uid in pairs(bombers) do
+            if Alive(uid) then
+                present[uid] = true
+                if not armyHost:Has(uid) then armyHost:Assign(uid, CFG.BOMBER_BEHAVIORS, CFG.BOMBER_BEHAVIOR_CFG) end
+            end
+        end
+    end
+    for uid in pairs(armyHost.units) do if not present[uid] then armyHost:Remove(uid) end end
+    local acted = armyHost:Update(frame, armyCtx)
+    if frame - hostLogF >= 900 then
+        hostLogF = frame
+        local by, n = {}, 0
+        for _, name in pairs(acted) do by[name] = (by[name] or 0) + 1; n = n + 1 end
+        local parts = {}
+        local order = {}
+        for _, name in ipairs(CFG.ARMY_BEHAVIORS) do order[#order + 1] = name end
+        for _, name in ipairs(CFG.BOMBER_BEHAVIORS) do order[#order + 1] = name end
+        for _, name in ipairs(order) do if by[name] then parts[#parts + 1] = name .. " " .. by[name] end end
+        local sh = armyShared
+        Log(frame, "direct jobs: %d units | %s | army av=%d, enemy av at target=%d", n, table.concat(parts, ", "),
+            sh.total or 0, sh.enemyV or 0)
+    end
+end
+
 function M.Update(frame)
     if not (MM and ARMY and EI and MM.Ready()) then return end
 
@@ -1148,6 +1290,8 @@ function M.Update(frame)
     local foeKnown = src ~= "mirror" or frame >= CFG.BLIND_DIVE_FRAME
 
     local ground, air = Members()
+    if CFG.DIRECT or #CFG.BOMBER_BEHAVIORS > 0 then RunArmyBehaviors(frame, ground) end
+    if CFG.DIRECT then ground = {} end       -- nothing is left for the group logic
     UpdateSquads(frame, ground)
 
     -- who belongs where
@@ -1271,7 +1415,7 @@ function M.Update(frame)
         end
     end
 
-    UpdateBombers(frame)
+    if #CFG.BOMBER_BEHAVIORS == 0 then UpdateBombers(frame) end
 
     if frame % 1800 == 900 and (totals.launches > 0 or stageAV > 0) then
         Log(frame, "totals: launches=%d kills=%d bp=%d value=%d | lost %d units/%d value | groups=%d stage av=%d reinforcing av=%d",

@@ -15,6 +15,9 @@ local M = {}
 
 -- â”€â”€ Tunables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+M.BUILD_AA          = true    -- false: no loose flak/AA (the slot-spine bots build none for now)
+M.BUILD_ANTINUKE    = true    -- false: no loose anti-nukes (they are grid capstones: line_transition ANTINUKE_GRIDS);
+                              -- anti-nukes that stand are still stockpiled and helped
 M.PERIOD            = 60      -- frames between build passes
 M.ALARM_TTL         = 900     -- an air alarm counts for this long after its last sighting
 M.AA_NAMES          = { "corflak", "corrl" }   -- flak first (T2 builders), the T1 Defender otherwise
@@ -285,7 +288,7 @@ function M.Update(frame, mb)
     if alarmOn then
         wantAA = math.min(M.AA_MAX, math.max(M.AA_ALARM_MIN, wantAA + M.AA_ALARM_BONUS))
     end
-    if wantAA > 0 then
+    if wantAA > 0 and M.BUILD_AA then
         Ensure("aa", frame, M.AA_NAMES, wantAA, Anchors(mb, bearing), M.AA_RING_MIN, M.AA_RING_MAX)
     end
 
@@ -294,8 +297,10 @@ function M.Update(frame, mb)
     local wantAN = 0
     if income >= M.ANTINUKE_INCOME or silosSeen then wantAN = 1 end
     if income >= M.ANTINUKE_SECOND or (silosSeen and income >= M.ANTINUKE_INCOME) then wantAN = 2 end
-    if wantAN > 0 then
+    if wantAN > 0 and M.BUILD_ANTINUKE then
         Ensure("antinuke", frame, { M.ANTINUKE_NAME }, wantAN, Anchors(mb, bearing), 250, 1100)
+    end
+    if wantAN > 0 or not M.BUILD_ANTINUKE then
         Stockpile({ M.ANTINUKE_NAME }, M.ANTINUKE_STOCK)
         Assist({ M.ANTINUKE_NAME })
     end

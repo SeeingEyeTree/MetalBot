@@ -19,13 +19,17 @@ default only when it wants to differ (pass `cfg = {...}` to `Init`/`LT.New`; the
 | | `line_fight`, `army_broker` | spine push/retreat logic; single owner of orders to combat units |
 | | `air_wing` | standing air wing (fighters, bombers) |
 | | `rez_crew`, `raid_group`, `endgame`, `commander_guard` | rez/reclaim bots, raiders, "find and kill the last commander", commander evasion |
-| Intel | `enemy_intel`, `recon_plan`, `scout_plan`, `scout_lanes` | remembered enemy info; scouting before and after contact |
+| Intel | `enemy_intel`, `recon_plan`, `scout_plan`, `scout_lanes`, `scout_rings` | remembered enemy info; scouting before and after contact; `scout_rings` = vision rings round our buildings, pushed out while scouts survive (STANCE_BOT) |
 | | `threat_map`, `threat_log` | where we are threatened (and a log for `threat_map_viz`) |
 | | `map_model`, `unit_query` | map geometry relative to our base; unit classification |
 
 **Used by shared files rather than a bot:** `escape_guard`, `nano_broker` (by `blueprint_placer.lua`), `resource_utils`
 (documented in `agent_harness.py`).
 
-**LINE_BOMB only (in progress):** `phase_plan`, `stance_loader`, `bomb_run`, `lab_recycler`.
+**Strategy framework (2026-10-12, not wired into a bot yet):** `behavior_host` + `behaviors/` (plug-and-play unit control, see
+`behaviors/README.md`), `slot_spine` (nano blocks + lab slots, labs chosen from the comp; replaces `spine` for new bots), `strategy` (stances + run-time hooks for share, stance switch and unit weights), `game_state` (the one state
+table the hooks read), `stance_loader` (stance files, value-deficit pick with weights). Tests: `test_behavior_host`, `test_strategy`.
+
+**LINE_BOMB only:** `phase_plan`, `bomb_run`, `lab_recycler` (LINE_BOMB's lab controller also uses `stance_loader`).
 
 Deploy list: `deploy.ps1`. Tests: `tests/` (see `tests/LUA_TESTING.md`).

@@ -28,6 +28,7 @@ LC.SLOT       = 64
 LC.K_FIRST    = 0              -- slot k has x centre = 144 + 64 k, k = 0 .. 15
 LC.K_LAST     = 15
 LC.X0         = 144
+LC.MIN_NANOS      = 0         -- floor on line nanos whatever the finished slots (PAINTKID_BOT: nanos for the starter lab)
 LC.SLOTS_PER_NANO = 8         -- build-power floor: one line nano per this many finished slots
 LC.NANO_X0    = 136
 LC.NANO_Z     = -56
@@ -356,7 +357,7 @@ end
 -- True while the line has fewer nanos than the floor (one per SLOTS_PER_NANO finished slots).
 function LC.NanoFloorShort(crew)
     local finished = crew.nMex + crew.nWind + crew.nEstor
-    return crew.nNano < math.floor(finished / LC.SLOTS_PER_NANO)
+    return crew.nNano < math.max(LC.MIN_NANOS or 0, math.floor(finished / LC.SLOTS_PER_NANO))
 end
 
 -- Energy stall: energy is the more pressed resource and either at its limit or nearly empty.
@@ -434,6 +435,17 @@ local function NextStop(crew, c)
     for _, st in ipairs(c.lane.stops) do
         if st.idx >= from and not (c.skip and c.skip[st.idx])
            and Nearest(crew.L.slots, st.wx, st.wz, reach, c.lane.id) then return st end
+    end
+    -- Below the nano floor (LC.MIN_NANOS) the nano lane goes for the nano row BEFORE its slots are done.
+    if c.lane.nano and not c.cmdr and (LC.MIN_NANOS or 0) > 0 and LC.NanoFloorShort(crew) then
+        local best, bd = nil, math.huge
+        for _, st in ipairs(c.lane.stops) do
+            if st.idx >= from and Nearest(crew.L.nanos, st.wx, st.wz, reach) then
+                local d = x and Dist(x, z, st.wx, st.wz) or 0
+                if d < bd then best, bd = st, d end
+            end
+        end
+        if best then return best end
     end
     -- Slots done.  The nano lane keeps going for nano spots while build power is short (Decide gates that).
     if c.lane.nano and not c.cmdr then
