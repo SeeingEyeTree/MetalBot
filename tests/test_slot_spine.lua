@@ -364,6 +364,27 @@ Run(600, 120)
 check(#SS.State().blocks < nbSlack, "SLACK_BLOCKS = 0 builds only what the spend needs (" .. #SS.State().blocks .. " < " .. nbSlack .. " blocks)")
 SS.CFG.SLACK_BLOCKS = 2
 
+-- free run: banking both metal and energy -> every nano is released, none guarded or parked
+SS.CFG.SLACK_BLOCKS = 2
+SS.Init(env); SS.Start(0)
+SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } }); SS.SetShare(0.2)
+pool = {}
+frame = 0
+for k in pairs(assign) do assign[k] = nil end
+for _ = 1, 120 do
+    for _, blk in ipairs(SS.State().blocks) do FinishAllReleased(blk.ses.state) end
+    Tick(1, { metalIncome = 600, metal = 2000, metalStorage = 10000, energy = 2000, energyStorage = 10000 })
+end
+local ctl = 0
+for _ in pairs(assign) do ctl = ctl + 1 end
+check(ctl > 0, "normal bank: nanos are controlled (" .. ctl .. ")")
+for _ = 1, 10 do Tick(1, { metalIncome = 600, metal = 9000, metalStorage = 10000, energy = 9000, energyStorage = 10000 }) end
+ctl = 0
+for _ in pairs(assign) do ctl = ctl + 1 end
+check(ctl == 0 and SS.State().freeRun, "metal and energy both banking: no nano is guarded or parked (" .. ctl .. ")")
+for _ = 1, 10 do Tick(1, { metalIncome = 600, metal = 9000, metalStorage = 10000, energy = 500, energyStorage = 10000 }) end
+check(not SS.State().freeRun, "energy short again: controls resume")
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

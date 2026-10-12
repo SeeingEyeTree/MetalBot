@@ -69,6 +69,8 @@ M.CFG = {
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
     SLACK_INCOME    = 500,    -- ... once metal income reaches this (and the mex grids are ready)
     NANOS_PER_BLOCK = 16,
+    FREE_ON         = 0.50,   -- FREE RUN: both banks (metal and energy) at least this share of storage -> no nano controls ...
+    FREE_OFF        = 0.30,   -- ... until either falls under this (hysteresis)
     SLACK_MIN_BANK  = 0.30,   -- slack nanos are only started while the metal bank is at least this share of storage (res.metal /
                               -- res.metalStorage): spare metal pays for them, labs and units keep what they need
     QUEUE_DEPTH     = 3,      -- units kept queued in each lab (lab_controller)
@@ -665,6 +667,21 @@ local function UpdateNanos()
         if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then list[#list + 1] = uid else S.nanos[uid] = nil end
     end
     table.sort(list)
+    if S.freeRun then
+        -- banking both: hand every nano back to the engine's own assist behaviour
+        local n = 0
+        for _, uid in ipairs(list) do
+            local nn = S.nanos[uid]
+            if nn.guard or nn.parked then
+                NANO.Release(uid)
+                nn.guard, nn.parked = nil, nil
+                n = n + 1
+            end
+        end
+        S.active, S.parked = 0, 0
+        if n > 0 then Log("free run: %d nanos released (metal and energy banking)", n) end
+        return
+    end
     local labs = NanoLabs()
     local activeWant = math.min(#list, math.max(0, S.nanoNeed))
     if S.floating then activeWant = #list end
@@ -751,7 +768,14 @@ function M.Update(frame, res)
         S.incomeSeen = true
     end
     if res and res.metal and res.metalStorage and res.metalStorage > 0 then S.bankFrac = res.metal / res.metalStorage end
-    S.floating = (S.env.Floating and S.env.Floating()) or false
+    -- FREE RUN (user, 2026-10-12): while metal AND energy both bank, the nanos are left alone (nothing guarded, nothing parked)
+    if res and res.metal and res.metalStorage and res.metalStorage > 0 and res.energy and res.energyStorage and res.energyStorage > 0 then
+        local m, e = res.metal / res.metalStorage, res.energy / res.energyStorage
+        local K = Cfg()
+        if S.freeRun then S.freeRun = m >= K.FREE_OFF and e >= K.FREE_OFF
+        else S.freeRun = m >= K.FREE_ON and e >= K.FREE_ON end
+    end
+    S.floating = ((S.env.Floating and S.env.Floating()) or S.freeRun) or false
     for _, ses in ipairs(S.sessions) do
         if not ses.done then S.env.BP_PLACER.Update(ses.state, frame, res or {}) end
     end
