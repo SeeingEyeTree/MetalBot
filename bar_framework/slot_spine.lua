@@ -69,6 +69,8 @@ M.CFG = {
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
     SLACK_INCOME    = 500,    -- ... once metal income reaches this (and the mex grids are ready)
     NANOS_PER_BLOCK = 16,
+    SLACK_MIN_BANK  = 0.30,   -- slack nanos are only started while the metal bank is at least this share of storage (res.metal /
+                              -- res.metalStorage): spare metal pays for them, labs and units keep what they need
     QUEUE_DEPTH     = 3,      -- units kept queued in each lab (lab_controller)
     T1_LABS         = { corlab = true, corvp = true, corap = true },   -- labs the lab controller also runs the normal picks on
 }
@@ -412,7 +414,7 @@ local function ThrottleNanos()
     -- slack: keep SLACK_BLOCKS blocks free of labs, with every nano of theirs standing, on top of the blocks in use
     local buildNeed = need
     S.spare = SpareBlocks()
-    if K.SLACK_BLOCKS > 0 and ready and S.income >= K.SLACK_INCOME then
+    if K.SLACK_BLOCKS > 0 and ready and S.income >= K.SLACK_INCOME and (S.bankFrac or 1) >= K.SLACK_MIN_BANK then
         buildNeed = math.max(need, (#S.blocks - S.spare + K.SLACK_BLOCKS) * K.NANOS_PER_BLOCK)
     end
     S.nanoBuildNeed = buildNeed
@@ -748,6 +750,7 @@ function M.Update(frame, res)
         S.income = S.incomeSeen and (S.income + 0.1 * (raw - S.income)) or raw
         S.incomeSeen = true
     end
+    if res and res.metal and res.metalStorage and res.metalStorage > 0 then S.bankFrac = res.metal / res.metalStorage end
     S.floating = (S.env.Floating and S.env.Floating()) or false
     for _, ses in ipairs(S.sessions) do
         if not ses.done then S.env.BP_PLACER.Update(ses.state, frame, res or {}) end

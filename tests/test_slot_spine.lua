@@ -329,6 +329,20 @@ nb, spare = Blocks()
 check(spare >= SS.CFG.SLACK_BLOCKS and SS.State().spare >= SS.CFG.SLACK_BLOCKS,
       "from SLACK_INCOME two spare blocks stand fully built (" .. nb .. " blocks, " .. spare .. " spare)")
 check(SS.State().nanoNeed < SS.State().nanoBuildNeed, "slack nanos are built but not counted as needed for guarding")
+-- an empty bank holds the slack back: production keeps the metal
+local blocksBefore = #SS.State().blocks
+SS.Init(env); SS.Start(0)
+SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } }); SS.SetShare(0)
+frame = 0
+for _ = 1, 200 do
+    for _, blk in ipairs(SS.State().blocks) do FinishAllReleased(blk.ses.state) end
+    Tick(1, { metalIncome = 600, metal = 100, metalStorage = 10000 })
+end
+nb, spare = Blocks()
+check(SS.State().nanoBuildNeed == SS.State().nanoNeed, "with a near-empty metal bank the slack is not built (build " .. SS.State().nanoBuildNeed .. " need " .. SS.State().nanoNeed .. ")")
+SS.Init(env); SS.Start(0)
+SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } }); SS.SetShare(0)
+Run(600, 200)
 -- a lab goes into a spare block: a replacement opens
 local before = #SS.State().blocks
 local slot = SS.State().blocks[1].slotsIdx[1]
