@@ -19,7 +19,11 @@ local function check(cond, what)
     if not cond then failures = failures + 1; print("FAIL: " .. what) end
 end
 
+WG = WG or {}
+LC_FORCE_ROT = false     -- every module this test loads uses the old rotation
 local LC  = VFS.Include("LuaUI/Widgets/bar_framework/line_crew.lua")
+-- The default rotation is now 3 (west half) / 1 (east half) -- checked at the end of this file.  The geometry checks
+-- below are written for the older "line across the enemy axis" rotation, which LC.FORCE_ROT = false keeps.
 local COM = VFS.Include("LuaUI/Widgets/blueprints/general/line_com.lua")
 local REACH = 128 + LC.FOOT_HALF - 8
 
@@ -253,6 +257,15 @@ do   -- nothing is reserved up front
     check(n == 0, "no slot is reserved before the transition")
 end
 if W.verbose then for _, l in ipairs(S.Log("%[LN%]")) do print(l) end end
+
+-- the framework default: rot 3 on the west half, rot 1 on the east half
+do
+    LC_FORCE_ROT = nil
+    local LCd = VFS.Include("LuaUI/Widgets/bar_framework/line_crew.lua")
+    check(LCd.FORCE_ROT == true, "default: FORCE_ROT is on")
+    check(LCd.Rotation(2400, 1904, 12288, 12288) == 3, "default: west half -> rot 3")
+    check(LCd.Rotation(9888, 10384, 12288, 12288) == 1, "default: east half -> rot 1")
+end
 
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then error("test_line_crew: " .. failures .. " failure(s)") end

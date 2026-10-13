@@ -23,7 +23,12 @@ local spGetTeamResources   = Spring.GetTeamResources
 
 local DEBUG = false  -- set true to enable verbose logging
 
-local SCOUT_TARGET = 2        -- until the unit controller publishes scoutWant
+-- Floating metal and energy go into Dragons (corcrwh, the Late_game stance's sink) in any lab that can build one.
+local DRAGON_FLOAT_ON, DRAGON_FLOAT_OFF = 0.6, 0.35   -- bank fill (both resources) that turns the rule on / off
+local dragonFloat = false
+local dragonNoted = {}                                -- [labID] = true once echoed
+
+local SCOUT_TARGET = 2       -- until the unit controller publishes scoutWant
 
 -- Army composition, kept deliberately simple.  Internal names, checked against the
 -- BAR unit defs: human names are ambiguous ("Dragon" also matches Dragonslayer,
@@ -528,14 +533,35 @@ end
 
 -- The next army unit the stance wants from this lab (nil if it can build none of them).  The strategy owns the mix;
 -- this only asks and notes the order.
+-- ARMY BUDGET: the strategy's share is a ratio, but the labs only see it as on/off (share > 0 -> build army all the time), so a
+-- 20% share still put the whole lab capacity on army and starved the mex grids (army 3x v16's at 10:00).  A token bucket fills at
+-- income x share per second; every stance pick spends its metal cost and is refused while the bucket is empty.  A banked metal
+-- stock (>= BUDGET_FREE_FILL of storage) means metal is not scarce, so the budget is lifted.  Defence floor / rush / guard picks
+-- are not stance picks and are not limited.
+local BUDGET_FREE_FILL = 0.5
+local BUDGET_CAP_SECONDS = 20          -- the bucket never holds more than this many seconds of army income
+local budget = { v = 0, frame = nil, free = false }
+local function BudgetUpdate(frame, share, income, metalFill)
+    local last = budget.frame
+    budget.frame = frame
+    budget.free = metalFill >= BUDGET_FREE_FILL
+    if not last then return end
+    local rate = income * share
+    budget.v = math.min(budget.v + rate * (frame - last) / 30, math.max(400, rate * BUDGET_CAP_SECONDS))
+end
+
 local function StancePick(labDefID)
     local ST = WG and WG.Strategy
     if not ST then return nil end
+    if budget.frame and not budget.free and budget.v <= 0 then return nil end
     local set = CanBuildSet(labDefID)
     local defID
     if RAID.swap then defID = ST:Pick(function(d) return set[d] and IsFastDef(d) end) end
     if not defID then defID = ST:Pick(function(d) return set[d] end) end
-    if defID then ST:Note(defID) end
+    if defID then
+        ST:Note(defID)
+        budget.v = budget.v - ((UnitDefs[defID] and UnitDefs[defID].metalCost) or 0)
+    end
     return defID
 end
 
@@ -822,6 +848,17 @@ function widget:GameFrame(frame)
     local energyStalling = energyPull > energyIncome * 1.05
     local stalled        = (metalStalling or energyStalling) and metalCur < 50
 
+    -- Late-game float: metal AND energy both banked -> T2 air plants spend it on Dragons (hysteresis, so it does not flap).
+    local mFill = metalStorage > 0 and metalCur / metalStorage or 0
+    local eFill = (okE and type(energyCur) == "number" and type(energyStorage) == "number" and energyStorage > 0)
+                  and energyCur / energyStorage or 0
+    do
+        local SPb = WG and WG.Spine
+        BudgetUpdate(frame, (SPb and SPb.Share and SPb.Share()) or 0, metalIncome, mFill)
+    end
+    if mFill >= DRAGON_FLOAT_ON and eFill >= DRAGON_FLOAT_ON then dragonFloat = true
+    elseif mFill < DRAGON_FLOAT_OFF or eFill < DRAGON_FLOAT_OFF then dragonFloat = false end
+
     -- Home-guard air: how much is standing/ordered against how much we want (see GUARD_*).
     local guardHave = Have("guard", frame, true) + Have("shuri", frame, true)
     local shuriRoom = ShuriWant(frame) - Have("shuri", frame)
@@ -999,6 +1036,15 @@ function widget:GameFrame(frame)
                         end
                         if choice then NoteMix(picks, choice) end
                     end
+                -- Floating bank: Dragons from any lab that can build one (the T2 air plant), queued QUEUE_DEPTH deep.
+                elseif not choice and not t1Spine and not isSpine and dragonFloat and not stalled and not liftedHold
+                       and UnitDefNames.corcrwh and CanBuildSet(labDefID)[UnitDefNames.corcrwh.id] then
+                    choice, why = UnitDefNames.corcrwh.id, "dragon"
+                    if not dragonNoted[labID] then
+                        dragonNoted[labID] = true
+                        Spring.Echo("[LabCtrl] float -> Dragon in " .. (UnitDefs[labDefID].name or "?"))
+                    end
+                    for _ = 2, (SP and SP.CFG and SP.CFG.QUEUE_DEPTH) or 3 do spGiveOrderToUnit(labID, -choice, {}, {}) end
                 -- Air labs: guards, only up to the standing size.  No "floating" rule, no Dragons.
                 elseif not choice and not t1Spine and not stalled and not liftedHold and guardWant - guardHave > 0
                        and (picks.cheap or picks.main) then

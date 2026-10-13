@@ -35,7 +35,7 @@ end
 local M = {}
 
 M.CFG = {
-    BLOCK_PITCH     = 240,    -- elmos between blocks along the stack axis
+    BLOCK_PITCH     = 272,    -- elmos between blocks along the stack axis (240 + 32: room for the energy storages in the gap)
     FRONT           = 480,    -- elmos from the base to the first block anchor (same as spine's first cell)
     MAX_BLOCKS      = 9,
     STACK_HALF      = 4,
@@ -49,13 +49,17 @@ M.CFG = {
     LAB_UTIL        = 0.8,    -- fraction of that a lab really sustains
     CORE_NANOS      = 4,      -- nanos built when a block opens; the rest are released as the spend needs them
     NANO_HEADROOM   = 1.15,   -- nano capacity kept over what the spend absorbs
-    BUILD_AHEAD     = 1.0,    -- nanos are sized for this share of income whatever the army share (1 = all of it)
+    BUILD_AHEAD     = 1.0,    -- nanos are sized for this share of income whatever the army share (1 = all of it) ...
+    BUILD_AHEAD_INCOME = 500, -- ... but only from this metal income; below it nanos/labs follow the army share alone, so the
+                              -- metal goes to the mex grids (sized for 100% from the first minute they starved the grids)
     NANO_BATCH      = 6,      -- nanos released per tick
     NANO_INFLIGHT   = 12,     -- released nanos that may be unfinished at once
     MOVES_MAX       = 6,      -- nano assignment changes per tick
     PARK_NANOS      = true,
     BUILDERS_PER_JOB = 2,     -- cons on a job (a block or a lab slot)
     MAX_JOBS        = 3,      -- lab slot jobs (build or clear) at once
+    FLOAT_MULT      = 1,      -- while both banks float (free run) nanos and labs are planned for this multiple of income (capacity look-ahead)
+    MAX_JOBS_FLOAT  = 6,      -- ... while metal and energy both bank (free run): spending capacity is what is short then
     RECLAIM_DELAY   = 900,    -- frames a lab must have been unneeded before it may be reclaimed
     GATE_COST       = 1000,   -- labs this expensive wait for army value (below)
     GATE_MARGIN     = 1.0,    -- ground army value must reach margin x lab cost (env.ArmyValue); floating overrides
@@ -69,6 +73,12 @@ M.CFG = {
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
     SLACK_INCOME    = 500,    -- ... once metal income reaches this (and the mex grids are ready)
     NANOS_PER_BLOCK = 16,
+    STORE_UNIT      = "corestor",   -- the storages in the NanoBlock side gaps (held until the energy income needs them)
+    STORE_SECONDS   = 5,      -- energy storage kept = this many seconds of energy income, so the bank fraction is a signal
+    STORE_INCOME    = 300,    -- ... once metal income reaches this (and the mex grids are ready)
+    STORE_BATCH     = 2,      -- held storages released per tick
+    STORE_INFLIGHT  = 4,      -- released storages that may be unfinished at once
+    STORE_MIN_BANK  = 0.10,   -- ... and only while the metal bank is at least this share of storage (a storage costs metal)
     FREE_ON         = 0.50,   -- FREE RUN: both banks (metal and energy) at least this share of storage -> no nano controls ...
     FREE_OFF        = 0.30,   -- ... until either falls under this (hysteresis)
     SLACK_MIN_BANK  = 0.30,   -- slack nanos are only started while the metal bank is at least this share of storage (res.metal /
@@ -342,7 +352,7 @@ local function OpenBlock()
     if not ax then return nil end
     local bp = env.blueprint
     local ses = NewSession("block", bp.layout, ax, az)
-    local block = { index = #S.blocks + 1, ax = ax, az = az, ses = ses, held = {}, slotsIdx = {} }
+    local block = { index = #S.blocks + 1, ax = ax, az = az, ses = ses, held = {}, heldStore = {}, slotsIdx = {} }
     -- the first CORE_NANOS (nearest the labs) are built at once, the rest wait to be released
     local n = 0
     for _, it in ipairs(ses.state.queue) do
@@ -353,6 +363,26 @@ local function OpenBlock()
                 block.held[#block.held + 1] = it
             end
         end
+    end
+    -- energy storages wait until ThrottleStorage releases them.  A storage row in the gap between two blocks is shared: a
+    -- storage whose spot another block already holds is dropped from this block's queue.
+    local q, i = ses.state.queue, 1
+    while i <= #q do
+        local it = q[i]
+        local drop = false
+        if it.n == K.STORE_UNIT and it.act ~= "reclaim" then
+            for _, ob in ipairs(S.blocks) do
+                for _, o in ipairs(ob.ses.state.queue) do
+                    if o.n == K.STORE_UNIT and math.abs(o.wx - it.wx) < 16 and math.abs(o.wz - it.wz) < 16 then drop = true; break end
+                end
+                if drop then break end
+            end
+            if not drop then
+                it.spineWaits, it.waitsFor = it.waitsFor, HOLD
+                block.heldStore[#block.heldStore + 1] = it
+            end
+        end
+        if drop then table.remove(q, i) else i = i + 1 end
     end
     ses.block = block
     for _, s in ipairs(bp.slots or {}) do
@@ -366,10 +396,11 @@ local function OpenBlock()
     return block
 end
 
-local function ReleaseHeld(block, k)
+local function ReleaseHeld(block, k, list)
+    list = list or "held"
     local n = 0
-    while n < k and #block.held > 0 do
-        local it = table.remove(block.held, 1)
+    while n < k and #block[list] > 0 do
+        local it = table.remove(block[list], 1)
         it.waitsFor, it.spineWaits = it.spineWaits, nil
         n = n + 1
     end
@@ -401,9 +432,10 @@ local function ThrottleNanos()
         end
     end
     local ready = (not S.env.MexGridsReady) or S.mexReady
-    local ahead = ready and K.BUILD_AHEAD or 0
+    local ahead = (ready and S.income >= K.BUILD_AHEAD_INCOME) and K.BUILD_AHEAD or 0
     local nanoShare = math.max(S.share, S.nanoFloor, ahead)
-    local need = math.ceil(K.NANO_HEADROOM * nanoShare * S.income / math.max(S.nanoRate, 1e-6) - 1e-9)
+    local mult = S.freeRun and K.FLOAT_MULT or 1
+    local need = math.ceil(K.NANO_HEADROOM * nanoShare * S.income * mult / math.max(S.nanoRate, 1e-6) - 1e-9)
     if (S.spendFloor or 0) > 0 then
         local g = UnitDefNames.corgator
         local nd = NanoDef()
@@ -442,6 +474,34 @@ local function ThrottleNanos()
             end
         end
         OpenBlock()
+    end
+end
+
+-- Energy storage worth STORE_SECONDS of energy income (on top of whatever else stands), built from the blocks' held
+-- corestors.  Without it a late game bank of 6-7k is under a second of a 16k/s income and the bank fraction says nothing.
+local function ThrottleStorage(res)
+    local K = Cfg()
+    if not (S.mexReady and res and res.energyStorage and res.energyIncome) then return end
+    local sd = UnitDefNames[K.STORE_UNIT]
+    local per = (sd and sd.energyStorage and sd.energyStorage > 0) and sd.energyStorage or 6000
+    local allowed, inflight, built = 0, 0, 0
+    for _, b in ipairs(S.blocks) do
+        for _, it in ipairs(b.ses.state.queue) do
+            if it.n == K.STORE_UNIT and it.act ~= "reclaim" and not IsHeld(it) and it.status ~= "skipped" then
+                allowed = allowed + 1
+                if it.status == "built" then built = built + 1 else inflight = inflight + 1 end
+            end
+        end
+    end
+    local target = K.STORE_SECONDS * res.energyIncome
+    local other = math.max(0, res.energyStorage - built * per)
+    local need = math.max(0, math.ceil((target - other) / per - 1e-9))
+    S.storeAllowed, S.storeNeed, S.storeTarget = allowed, need, target
+    if allowed >= need or S.income < K.STORE_INCOME or (S.bankFrac or 1) < K.STORE_MIN_BANK then return end
+    local k = math.min(K.STORE_BATCH, need - allowed, K.STORE_INFLIGHT - inflight)
+    for _, b in ipairs(S.blocks) do
+        if k <= 0 then break end
+        k = k - ReleaseHeld(b, k, "heldStore")
     end
 end
 
@@ -595,8 +655,8 @@ local function PlanLabs()
             end
         end
     end
-    local ahead = ((not S.env.MexGridsReady) or S.mexReady) and K.BUILD_AHEAD or 0
-    local spend = S.income * math.max(S.share, S.nanoFloor, ahead)
+    local ahead = (((not S.env.MexGridsReady) or S.mexReady) and S.income >= K.BUILD_AHEAD_INCOME) and K.BUILD_AHEAD or 0
+    local spend = S.income * math.max(S.share, S.nanoFloor, ahead) * (S.freeRun and K.FLOAT_MULT or 1)
     local need = M.Counts(S.units, plan, tab, spend)
     -- slots are limited: keep the labs with the most comp share first when there are more wanted than places
     local order = {}
@@ -626,7 +686,7 @@ local function PlanLabs()
         -- a lab nothing can place yet waits for its enabler (the T1 lab that makes the con): never park a slot on it
         local d0 = UnitDefNames[name]
         if missing > 0 and d0 and (d0.metalCost or 0) >= K.GATE_COST and not HasConSource(name) then missing = 0 end
-        while missing > 0 and JobCount() < K.MAX_JOBS do
+        while missing > 0 and JobCount() < (S.freeRun and K.MAX_JOBS_FLOAT or K.MAX_JOBS) do
             local slot = FreeSlot(IsWide(name))
             if not slot then
                 local victim
@@ -821,6 +881,7 @@ function M.Update(frame, res)
     end
 
     ThrottleNanos()
+    ThrottleStorage(res)
     PlanLabs()
     UpdateNanos()
 
@@ -830,9 +891,9 @@ function M.Update(frame, res)
         for _, slot in ipairs(S.slots) do
             labs[#labs + 1] = string.format("%d:%s%s", slot.id, slot.state, slot.labName and ("/" .. slot.labName) or "")
         end
-        Log("blocks %d (spare %d), nanos allowed %d need %d build %d (active %d parked %d), income %.0f share %.2f; slots %s",
+        Log("blocks %d (spare %d), nanos allowed %d need %d build %d (active %d parked %d), income %.0f share %.2f, estor allowed %d need %d target %.0f; slots %s",
             #S.blocks, S.spare or 0, S.nanoAllowed, S.nanoNeed, S.nanoBuildNeed or S.nanoNeed, S.active or 0, S.parked or 0,
-            S.income, S.share, table.concat(labs, " "))
+            S.income, S.share, S.storeAllowed or 0, S.storeNeed or 0, S.storeTarget or 0, table.concat(labs, " "))
     end
 end
 
@@ -842,7 +903,8 @@ local function SlotAt(x, z, name)
     local best, bd
     for _, s in ipairs(S.slots) do
         local d = Dist2(x, z, s.wx, s.wz)
-        local reach = (name and IsWide(name) and s.state == "build" and s.labName == name) and 200 or 70
+        -- a slot waiting for exactly this lab takes it from 200 elmos (the placer may nudge a lab onto valid ground)
+        local reach = (name and s.state == "build" and s.labName == name) and 200 or 70
         if d <= reach * reach and (not bd or d < bd) then best, bd = s, d end
     end
     return best
@@ -867,6 +929,7 @@ end
 
 function M.OnUnitFinished(uid, defID, x, z)
     if not S then return end
+    S.slotLabNames = S.slotLabNames or { corlab = true, corvp = true, coralab = true, coravp = true, corgant = true }
     for _, ses in ipairs(S.sessions) do
         if not ses.done then S.env.BP_PLACER.OnUnitFinished(ses.state, uid, defID, x, z) end
     end
@@ -887,6 +950,8 @@ function M.OnUnitFinished(uid, defID, x, z)
             S.labs[uid] = L
             slot.uid, slot.labName, slot.state = uid, d.name, "lab"
             Log("slot %d: %s stands", slot.id, d.name)
+        elseif BlockAt(x, z) or S.slotLabNames[d.name] then
+            Log("%s finished at (%d, %d) and matches no slot", d.name, x, z)
         end
     elseif d.isBuilder and (d.speed == nil or d.speed == 0) and not d.canFly then
         local b = BlockAt(x, z)

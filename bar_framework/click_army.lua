@@ -174,6 +174,16 @@ local CFG = {
     -- The bot chooses the stack and its tunables (unit_controller passes cfg = { DIRECT = true, ARMY_BEHAVIORS = ..., ARMY_BEHAVIOR_CFG = ... });
     -- remove a name to switch that behaviour off.  What uses what: `python behavior_usage.py`.
     LAB_BP_R        = 650,    -- build power (nanos, cons) within this of an enemy factory is the TOP target, above everything else
+    -- SET_TARGET (STANCE_BOT, user 2026-10-12): an attack group does NOT stop to ATTACK its target.  It keeps MOVEing through
+    -- and past the enemy base while every unit is given SET_TARGET (BAR's target-on-the-move command) on the most damaging
+    -- enemy building inside its own weapon range, so it does eco damage while running.  A defender that stops to catch it
+    -- is outrun; one that keeps following is pulled off the base.  Needs BAR's unit_target_on_the_move gadget.
+    SET_TARGET        = false,
+    SET_TARGET_BEYOND = 900,   -- elmos the MOVE runs past the target
+    SET_TARGET_EVERY  = 30,    -- frames between target refreshes per group
+    SET_TARGET_SCAN   = 1600,  -- candidate buildings this close to the group
+    SET_TARGET_RANGE  = 1.0,   -- x weapon range: a building farther than this is not set as the target
+    SET_TARGET_NO_ECO = false, -- true: only buildings that carry build power / income / value (skip walls etc.)
     DIRECT          = false,
     ARMY_BEHAVIORS  = { "pick_target", "commander_strike", "flank", "spread", "run_by", "attack_target" },
     ARMY_BEHAVIOR_CFG = {},   -- { flank = { every = 4 }, ... } tunables per behaviour (see each file's cfg)
@@ -184,6 +194,16 @@ local CFG = {
 M.CFG = CFG
 
 local CMD_MOVE, CMD_FIGHT, CMD_ATTACK = 10, 16, 20
+-- BAR gadget unit_target_on_the_move: 34923 set target (unit id, or x y z), 34924 cancel.  Resolved from the engine's
+-- custom command table when it has them (the ids moved between BAR releases), else the numbers above.
+local CMD_SET_TARGET, CMD_CANCEL_TARGET = 34923, 34924
+do
+    local gc = Game and Game.CustomCommands and Game.CustomCommands.GameCMD
+    if gc then
+        CMD_SET_TARGET    = gc.UNIT_SET_TARGET or CMD_SET_TARGET
+        CMD_CANCEL_TARGET = gc.UNIT_CANCEL_TARGET or CMD_CANCEL_TARGET
+    end
+end
 
 local MM, UQ, EI, ARMY
 local combat, guards, muster, scouts, responding, bombers
@@ -950,6 +970,48 @@ local function ForwardCore(list, g)
     return core, far, cx, cz
 end
 
+-- SET_TARGET: give each unit of the core the most damaging enemy building inside its weapon range, without stopping it.
+-- g.st[uid] = {id|pos key, frame}; a unit with nothing in range has its target cancelled.  Returns the count set.
+local function SetTargets(frame, g, core, cx, cz)
+    if frame - (g.stF or -1e9) < CFG.SET_TARGET_EVERY then return 0 end
+    g.stF = frame
+    g.st = g.st or {}
+    local cands = {}
+    for _, t in ipairs(EI.RaidTargets(frame)) do
+        if not t.mobile and Dist(cx, cz, t.x, t.z) <= CFG.SET_TARGET_SCAN then
+            local dv = DamageValue(t)
+            if dv > 0 or not CFG.SET_TARGET_NO_ECO then cands[#cands + 1] = { t = t, dv = dv } end
+        end
+    end
+    local set = 0
+    for _, u in ipairs(core) do
+        local range = (UQ.max_weapon_range(u.defID) or 0) * CFG.SET_TARGET_RANGE
+        local best, bd
+        for _, c in ipairs(cands) do
+            local d = Dist(u.x, u.z, c.t.x, c.t.z)
+            if d <= range and (not best or c.dv > best.dv or (c.dv == best.dv and d < bd)) then best, bd = c, d end
+        end
+        local key = best and (best.t.uid or (math.floor(best.t.x) .. "," .. math.floor(best.t.z))) or nil
+        local cur = g.st[u.uid]
+        if best then
+            if not cur or cur.key ~= key or frame - cur.f > 300 then
+                local t = best.t
+                if t.uid and Alive(t.uid) then
+                    Spring.GiveOrderToUnit(u.uid, CMD_SET_TARGET, { t.uid }, {})
+                else
+                    Spring.GiveOrderToUnit(u.uid, CMD_SET_TARGET, { t.x, Spring.GetGroundHeight(t.x, t.z) or 0, t.z }, {})
+                end
+                g.st[u.uid] = { key = key, f = frame }
+                set = set + 1
+            end
+        elseif cur then
+            Spring.GiveOrderToUnit(u.uid, CMD_CANCEL_TARGET, {}, {})
+            g.st[u.uid] = nil
+        end
+    end
+    return set
+end
+
 local function UpdateAttack(frame, g, list)
     local n = #list
     if n > g.peakN then g.peakN = n end
@@ -1046,7 +1108,23 @@ local function UpdateAttack(frame, g, list)
         end
     end
 
-    if g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH then
+    if CFG.SET_TARGET then
+        -- keep moving: the shooting is done by SET_TARGET on whatever is in range (see SetTargets)
+        local nset = SetTargets(frame, g, core, cx, cz)
+        if nset > 0 and frame - (g.stLogF or -99999) >= 450 then
+            g.stLogF = frame
+            Log(frame, "group #%d set-target on %d unit(s) while moving (%d in the core)", g.id, nset, #core)
+        end
+    end
+    if g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH and CFG.SET_TARGET then
+        -- run through and past the target instead of stopping to ATTACK it
+        local dx, dz = tx - cx, tz - cz
+        local d = math.sqrt(dx * dx + dz * dz)
+        local ux, uz = 0, 0
+        if d > 1 then ux, uz = dx / d, dz / d end
+        local bx, bz = MM.Clamp(tx + ux * CFG.SET_TARGET_BEYOND, tz + uz * CFG.SET_TARGET_BEYOND, CFG.MARGIN)
+        for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, bx, bz) end
+    elseif g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH then
         local visible = Alive(g.target.uid)
         for _, u in ipairs(core) do
             if visible then Claim(frame, u.uid, CMD_ATTACK, tx, tz, g.target.uid)

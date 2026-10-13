@@ -31,6 +31,8 @@ local function Any(log, p) for _, l in ipairs(log) do if l:find(p) then return t
 -- ── 1. stance_loader ──────────────────────────────────────────────────────────
 
 Reset()
+WG = WG or {}
+LC_FORCE_ROT = false     -- the geometry here was built for the old rotation (the default is now rot 3 / 1)
 local SL = VFS.Include("LuaUI/Widgets/bar_framework/stance_loader.lua")
 local names = { "T1_defense", "T1_bombing_run", "T2_defense", "Late_game", "T1_raid" }
 for _, n in ipairs(names) do

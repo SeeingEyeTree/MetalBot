@@ -39,7 +39,7 @@ from pathlib import Path
 import bot_score
 from find_weakness import mmss
 
-DECIDED = {"game_over", "end_score", "end_score_wallclock"}
+DECIDED = {"game_over", "end_score", "end_score_wallclock", "phi", "phi_wallclock"}
 METRICS_CAT = ("materiel", "economy", "exposure", "spend", "ability", "awareness")
 
 

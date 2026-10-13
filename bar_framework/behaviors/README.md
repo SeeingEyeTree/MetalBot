@@ -40,6 +40,14 @@ separate cohort, so one file serves Lashers (step 400) and Pounders (step 150).
 | `kite` | back off from ANY approaching enemy, threat-weighted (replaces slow_front's fast-only Chargers rule) | `EnemiesNear` (`{uid,x,z,range,value,mobile,vx,vz}`), optional `Axis`, `Clamp`, `Speed` |
 | `stun_target` | spread a pack over nearby targets; `stuns=true` Shurikens, `stuns=false` Wasps (extracted from `AssignStuns`) | `TargetsNear` (`{id,x,z,hp,mhp,para,value}`) |
 
+| `intercept` | raid response: responders MOVE to a point AHEAD of the raiders on their path to the asset it threatens (re-aimed every tick, spread across the path); can't catch them -> block between raiders and asset; raiders stopped -> FIGHT | `ClusterOf(uid)`, `Assets()`; optional `Order`, `Speed`, `Clamp` |
+
+STANCE_BOT's raid response (user 2026-10-12): `unit_controller.DispatchResponses` assigns fast responders to `intercept`
+(slow ones keep FIGHT), publishes `mb.raid` / `mb.airLosses`; `lab_controller` then queues only Shurikens (fighters if the raid is
+air or our air units are dying to fighters) in the T1 air lab and swaps slow picks for fast ones until 2x the raid's value is ordered;
+`click_army` `SET_TARGET = true` keeps attack groups MOVEing past the target and gives each unit SET_TARGET on the best building in
+its weapon range. Tests: `tests/test_intercept.lua`, `tests/test_set_target.lua`.
+
 ### Army behaviours (a stack run by `click_army.lua` in DIRECT mode)
 
 The whole ground army is ONE cohort running a stack, first claim wins (`ARMY_BEHAVIORS` in the bot's `unit_controller.lua`;

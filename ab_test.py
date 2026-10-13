@@ -97,7 +97,7 @@ def sample(result: dict, metric: str, team: int, frame: int) -> "float | None":
         # stored in result["phi"]). Its noise floor is not measured yet: see scoring.md.
         import bot_score
         cp = bot_score.score_result(result, [frame])[team]["checkpoints"][0]
-        return cp["phi"] if not cp["terminal"] else None
+        return max(cp["phi"], 1.0) if (not cp["terminal"] and cp["phi"] is not None) else None   # phi can dip below 0: floor it for the ratios
     key, field = (("resource_timeline", "metal_inc") if metric == "income"
                   else ("army_timeline", "mv"))
     for row in result.get(key) or []:
@@ -140,8 +140,8 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=1,
                     help="matches per slot order (default 1; the verdict is paired within "
                          "each match, see the docstring)")
-    ap.add_argument("--metric", choices=("army", "income", "phi"), default="army",
-                    help="army = army metal value at frame 14400 (default, quietest);"
+    ap.add_argument("--metric", choices=("army", "income", "phi"), default="phi",
+                    help="phi (default since v4) = bot_score.py state value;  army = army metal value at frame 14400 (quietest);"
                          " income = metal income; phi = bot_score.py state value (noise"
                          " floor not yet measured)")
     ap.add_argument("--checkpoint", type=int, default=None,

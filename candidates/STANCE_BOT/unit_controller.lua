@@ -1773,9 +1773,12 @@ local function PublishState(frame)
         mb.ringRadarWant = 0
     end
     mb.callScouts = CA and CA.ScoutDemand() or 0    -- LINE_CLICK: Hawks the labs should keep for the groups
-    local n = 0
-    for uid in pairs(combatUnits) do if spGetUnitDefID(uid) then n = n + 1 end end
+    local n, armyV = 0, 0
+    for uid, defID in pairs(combatUnits) do
+        if spGetUnitDefID(uid) then n = n + 1; armyV = armyV + Value(defID) end
+    end
     mb.armyCount = n
+    mb.armyValue = armyV    -- metal value of our combat units (the army_share hook compares it with the scouted enemy's)
     mb.hunt = (EG and EG.Hunting()) or false
     mb.airAlarm = airAlarm
     -- raid state for the labs: the intruder clusters now (value, channel, speed), kept for the labs to apply a TTL

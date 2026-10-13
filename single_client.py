@@ -455,7 +455,7 @@ def render_script(game_type: str, map_name: str, save_replay: bool, host_port: i
         f"    RecordDemo={1 if save_replay else 0};\n    GameStartDelay=0;\n"
         "    NoHelperAIs=0;\n\n"
         "    [MODOPTIONS]\n    {\n"
-        "        deathmode=com;\n        maxunits=3000;\n"
+        f"        deathmode={os.environ.get('METALBOT_DEATHMODE', 'com')};\n        maxunits=3000;\n"
         f"        maxspeed={max_speed:g};\n        minspeed=1;\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"

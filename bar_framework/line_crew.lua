@@ -111,7 +111,13 @@ local function Sign(v) if v < 0 then return -1 end return 1 end
 -- b+x (the line's long axis, the nano column and con 1's side) is perpendicular to the direction of the map centre.
 -- The outer lane on the centre side (b-z or b+z, see line_transition's enemyLane) faces the enemy: vehicle lab and
 -- spine go there; the mex grids go on the other side.
+-- DEFAULT (2026-10-12): rot 3 on the west half of the map, rot 1 on the east half (ECO_V2 / SCALE_BOT's FORCE_ROT, now the
+-- framework default): the line runs north-south, the vehicle lane faces the enemy across the map and the grids expand away
+-- from it.  LC.FORCE_ROT = false restores the old "line runs across the enemy axis" choice below.
+LC.FORCE_ROT = true
+if LC_FORCE_ROT ~= nil then LC.FORCE_ROT = LC_FORCE_ROT end    -- a test / bot that pins the old rotation sets the global LC_FORCE_ROT = false before loading
 function LC.Rotation(comX, comZ, mapX, mapZ)
+    if LC.FORCE_ROT then return (comX < mapX / 2) and 3 or 1 end
     local vx, vz = mapX / 2 - comX, mapZ / 2 - comZ
     local base
     if math.abs(vz) >= math.abs(vx) then

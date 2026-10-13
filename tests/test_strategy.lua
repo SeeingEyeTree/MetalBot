@@ -157,6 +157,30 @@ targets = {}
 acted = sh4:Update(90, ctx)
 check(next(acted) == nil, "no targets: the units fall through (nobody claimed)")
 
+-- strategy_hooks.match_enemy
+local SH = VFS.Include("LuaUI/Widgets/bar_framework/strategy_hooks.lua")
+local function MS(o, st)
+    st.metal = st.metal or { fill = 0.1 }
+    st.energy = st.energy or { fill = 0.1 }
+    return SH.match_enemy(o)(st)
+end
+local F6 = 6 * 1800
+check(MS({ log = false }, { frame = 3000, armyValue = 0, enemyGround = 5000 }) == 0, "match: nothing before the 3:00 start")
+check(MS({ log = false }, { frame = F6, armyValue = 0, enemyGround = 4000 }) > 0.99, "match: no army vs a known enemy -> 1")
+check(math.abs(MS({ log = false }, { frame = F6, armyValue = 4400, enemyGround = 4000 }) - 0.20) < 1e-6, "match: matched -> floor")
+check(math.abs(MS({ log = false }, { frame = F6, armyValue = 9000, enemyGround = 4000 }) - 0.05) < 1e-6, "match: well ahead -> ahead floor")
+check(MS({ log = false }, { frame = F6, armyValue = 0 }) > 0.5, "match: unscouted enemy uses the time curve")
+check(MS({ log = false }, { frame = F6, armyValue = 9e9, enemyGround = 100,
+    metal = { fill = 0.95 }, energy = { fill = 0.95 } }) == 1, "match: floating -> 1")
+check(math.abs(MS({ log = false }, { frame = F6, armyValue = 4400, enemyGround = 4000, urgency = "rush",
+    threats = { {}, {} } }) - 0.20) < 1e-6, "match: threats do not lift the share while we only match")
+local sEarly = MS({ log = false }, { frame = 5400, armyValue = 0, metal = { fill = 0.1, income = 40 } })
+check(sEarly > 0.2 and sEarly < 0.4, "match: a small early gap is a few seconds of income, not share 1 (" .. sEarly .. ")")
+local h = SH.match_enemy({ log = false })
+h({ frame = F6, armyValue = 0, enemyGround = 4000, metal = { fill = 0 }, energy = { fill = 0 } })
+local s1 = h({ frame = F6 + 30, armyValue = 9e9, enemyGround = 4000, metal = { fill = 0 }, energy = { fill = 0 } })
+check(s1 > 0.9 and s1 < 1, "match: share falls gradually, not at once")
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

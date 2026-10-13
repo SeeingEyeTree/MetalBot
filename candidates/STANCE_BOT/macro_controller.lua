@@ -36,7 +36,12 @@ local CFG = {
     LOG_EVERY           = 450,
     SPINE               = true,      -- vehicle lab + the spine (army); false = the economy-only bot
     STANCE              = "line_ground",   -- STANCE_BOT: stances/<name>.lua, the unit comp the spine builds
-    SHARE               = {},        -- strategy_hooks.v16_share options (start, floor, hold, ...)
+    LATE_STANCE         = "Late_game",     -- stance taken once the unit cap is filling (strategy_hooks.cap_switch): most value per unit slot; nil = never
+    LATE_CAP_FRAC       = 0.75,        -- ... cap share at which it is taken (not before LATE_MINUTE)
+    LATE_MINUTE         = 12,
+    SHARE               = {},        -- strategy_hooks.v16_share / match_enemy options (start, floor, hold, ratio, ...)
+    MATCH               = true,      -- army share follows the scouted enemy army (humans); false = plain v16_share for bot-vs-bot
+    SPINE_CFG           = { FLOAT_MULT = 2.5 },   -- slot_spine overrides: while both banks float, plan nanos/labs for 2.5x income
     RECLAIM_STARTER_LAB = true,      -- reclaim the starter bot lab once the air lab is queued and the cons are out
     -- LINE_CLICK_v13: spine overrides (user: army floor 10%, and more responsive production)
     -- LINE_CLICK_v2 (2026-10-08): commander safety, bar_framework/commander_guard.lua.  In the first v2-vs-LINE_CLICK
@@ -141,7 +146,8 @@ local function BeginBuildOrder()
                        onJobDone = function(j, state) if trans then LT.OnJobDone(trans, j, state) end end,
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
-                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG }
+                    teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG,
+                    cfg = { RETROFIT_MEX_DONE = true, UPGRADE_CONS_PER_LAB = 4, RETROFIT_FLOAT_CONS = true, RETROFIT_FLOAT_FRAC = 0, RETROFIT_FLOAT_BATCH = 6, AUDIT_EVERY = 1800, GRID_CAP_FRAC = 0.60, GRID_HELPERS = true, HELP_ANY = true, HELP_MAX = 3, FUSION_HELPERS = true, ENERGY_PRIORITY = true, NANO_CREW = true, EP_BANK_SECONDS = 20, EP_RATIO = 15, EP_INFLIGHT = 6, ECELL_MAX_ACTIVE = 4, ECELL_FIRST = true, EP_CON_BATCH = 4, EP_CON_EVERY = 450, EP_CON_FORCE = true, ECELL_MAKE_CON = true } }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.WIND_U = CFG.WIND_U
     crew.reserved = { [2] = true }       -- the nano lane is con #1's, whenever it is released from the starter
@@ -451,8 +457,11 @@ function widget:Initialize()
         if okT and okG and okH and ST and G and H then
             GS = G
             STRAT = ST.New{
-                stances = { CFG.STANCE }, initial = CFG.STANCE,
-                hooks = { army_share = H.v16_share(CFG.SHARE) },
+                stances = { CFG.STANCE, CFG.LATE_STANCE }, initial = CFG.STANCE,
+                -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
+                -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
+                hooks = { army_share = (CFG.MATCH and H.match_enemy or H.v16_share)(CFG.SHARE),
+                          switch = CFG.LATE_STANCE and H.cap_switch{ late = CFG.LATE_STANCE, cap_frac = CFG.LATE_CAP_FRAC, minute = CFG.LATE_MINUTE } or nil },
             }
             if STRAT:Stance() then
                 STRAT:InstallSlotSpine(SPINE)
@@ -600,7 +609,7 @@ function widget:GameFrame(frame)
     CheckFloat(frame, res)
     if BP_PLACER.NANO and BP_PLACER.NANO.Sweep then BP_PLACER.NANO.Sweep() end
     if STRAT and frame % 30 == 0 then
-        STRAT:Tick(frame, GS.Collect(frame, { team = myTeamID, Spine = SPINE }))
+        STRAT:Tick(frame, GS.Collect(frame, { team = myTeamID, Spine = SPINE, MB = WG and WG.MetalBot }))
     end
     LT.Update(trans, frame, res)
     if DC then

@@ -136,6 +136,26 @@ not covered, and why:
 
 ## Validation log
 
+### v4 (2026-10-12): phi is the end-of-match verdict; economy only counts if it can be protected or spent
+
+Why: the legacy `army_mv + 60 x metal_inc` called games for the side with the bigger economy even when that side had no
+army left and nothing to spend the income on (PAINTKID_BOT 267 units / 26k vs v16 3 units / 125 value, but income 546 vs 1472:
+59k vs 88k, "loss"). phi v3 behaved the same way (it tracked the legacy score within a few %: 48.9k vs 49.0k) -- its
+`spend_capacity` discount only catches income the builders cannot spend, not an economy with no army to defend it.
+
+Change: new `economy_security` multiplier on `income_capital` = own army / (own army + `security_k` (0.5) x max(0, enemy
+army - `security_deadband` (1000))), armies at metal + energy/70. Collapse rule: our army under `collapse_frac` (5%) of
+theirs while theirs is at least `collapse_min` (3000) -> the economy counts as ZERO. The opening is exempt (the deadband).
+`bot_score.final_verdict(result)` = phi at the last frame both teams logged, 10% margin; `bot_testing.py` now decides the
+winner with it (`winner_method` "phi" / "phi_wallclock" / "phi_tied"; the legacy score stays in `draw_score` and in
+`phi_final.legacy*`, and decides only if phi cannot be computed). A real commander kill (`game_over`) still wins outright.
+`ab_test.py --metric` now defaults to phi (floored at 1 for the ratios). `h2h_report.py` and `score_eval.py` read phi.
+
+Check on two saved games (PK_BASE vs v16, 15:00): the game v16 won (it kept 47k army and 2900 income) stays a v16 win
+(phi 23k vs 139k, economy kept 42% / 85%); the game PK_BASE won (v16 army 292 of our 38k) was 97k vs 48k legacy and is now
+101k vs -5k: v16's economy is counted at 0%. Not validated against a larger set of games; the mirror noise of the new term
+is unmeasured -- run A vs A before trusting small differences.
+
 ### v3 (2026-09-24): energy valued at 1/70 of metal
 
 The author's decision: capture energy value, using game_mechanics 2.3's metal + energy/70 (the

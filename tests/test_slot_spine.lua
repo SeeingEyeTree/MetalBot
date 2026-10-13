@@ -123,7 +123,7 @@ check(#st.blocks == 1 and #st.slots == 2, "start opens one block with two slots"
 local q = st.blocks[1].ses.state.queue
 local held = 0
 for _, it in ipairs(q) do if it.waitsFor ~= nil then held = held + 1 end end
-check(#q == 16 and held == 12, "16 nanos, 4 built at once, 12 held (" .. held .. ")")
+check(#q == 24 and held == 20, "16 nanos + 8 storages, 4 nanos built at once, 12 nanos + 8 storages held (" .. #q .. ", " .. held .. ")")
 
 local vehicles = { { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } }
 SS.SetUnits(vehicles)
@@ -131,6 +131,7 @@ SS.SetShare(0)
 local conA = S.Spawn("corck", 0, st.blocks[1].ax - 300, st.blocks[1].az, { silent = true })
 local conC = S.Spawn("corck", 0, st.blocks[1].ax - 320, st.blocks[1].az + 40, { silent = true })
 SS.CFG.BUILDERS_PER_JOB = 1       -- the block takes one con, the lab job the other
+SS.CFG.BUILD_AHEAD_INCOME = 0     -- these tests run at low income; the income gate has its own check below
 pool = { conA, conC }
 local frame, income = 0, 40
 local function Tick(n, res)
@@ -384,6 +385,46 @@ for _ in pairs(assign) do ctl = ctl + 1 end
 check(ctl == 0 and SS.State().freeRun, "metal and energy both banking: no nano is guarded or parked (" .. ctl .. ")")
 for _ = 1, 10 do Tick(1, { metalIncome = 600, metal = 9000, metalStorage = 10000, energy = 500, energyStorage = 10000 }) end
 check(not SS.State().freeRun, "energy short again: controls resume")
+
+-- build-ahead is gated by income: below BUILD_AHEAD_INCOME nanos follow the army share only
+SS.SetShare(0)
+SS.CFG.BUILD_AHEAD_INCOME = 500
+for _ = 1, 60 do Tick(1, { metalIncome = 100 }) end
+check(SS.State().nanoNeed == 0, "income gate: 100 m/s at share 0 wants no nanos (" .. SS.State().nanoNeed .. ")")
+for _ = 1, 80 do Tick(1, { metalIncome = 800 }) end
+check(SS.State().nanoNeed >= 2, "income gate: 800 m/s sizes nanos for the income (" .. SS.State().nanoNeed .. ")")
+
+-- energy storage: 16k/s of energy income with 6.5k of storage wants ~5 s of buffer; the held storages are released a few at a time
+SS.CFG.STORE_SECONDS = 5
+local function StoreHeld()
+    local n = 0
+    for _, blk in ipairs(SS.State().blocks) do n = n + #blk.heldStore end
+    return n
+end
+SS.State().mexReady = true
+local held0 = StoreHeld()
+for _ = 1, 4 do Tick(1, { metalIncome = 800, metal = 3000, metalStorage = 10000, energy = 3000, energyStorage = 6500, energyIncome = 16000 }) end
+check(SS.State().storeNeed == 13, "storage: 5 s of 16k/s over 6.5k stored wants 13 corestors (" .. tostring(SS.State().storeNeed) .. ")")
+check(StoreHeld() < held0 and held0 - StoreHeld() <= SS.CFG.STORE_INFLIGHT, "storage: some released, within the in-flight limit (" .. held0 .. " -> " .. StoreHeld() .. ")")
+held0 = StoreHeld()
+for _ = 1, 4 do Tick(1, { metalIncome = 800, metal = 100, metalStorage = 10000, energy = 3000, energyStorage = 6500, energyIncome = 16000 }) end
+check(StoreHeld() == held0, "storage: none released while the metal bank is empty")
+
+-- shared storage rows: no two blocks hold a storage at the same spot
+do
+    local seen, dup, total = {}, 0, 0
+    for _, blk in ipairs(SS.State().blocks) do
+        for _, it in ipairs(blk.ses.state.queue) do
+            if it.n == "corestor" then
+                total = total + 1
+                local key = math.floor(it.wx / 16 + 0.5) .. "," .. math.floor(it.wz / 16 + 0.5)
+                if seen[key] then dup = dup + 1 end
+                seen[key] = true
+            end
+        end
+    end
+    check(dup == 0 and total > 0, "storage rows are shared between blocks (" .. total .. " storages, " .. dup .. " duplicated)")
+end
 
 check(#W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))

@@ -570,6 +570,36 @@ def coverage_now(st):
                            f"ever seen {i.get('explored_frac', 0) * 100:.0f}%")
 
 
+def _army_full(st, opp):
+    """An army's metal-equivalent value from its own `units` row (privileged for opp=True)."""
+    mv = st.get("units", "army_mv", opp=opp)
+    if mv is None:
+        return None
+    ev = st.get("units", "army_ev", opp=opp)
+    if ev is None:
+        ev = mv * st.p("army_em_default")
+    return full_value(mv, ev, st)
+
+
+@signal("economy_security", "economy", "mult", "x", applies=("income_capital",))
+def economy_security(st):
+    """Income only counts to the extent it can be PROTECTED or CONVERTED into an army (v4, 2026-10-12). Scale =
+    own army / (own army + security_k x the part of the enemy army above a small deadband). Two armies of equal size
+    keep 1 / (1 + k) of their economy; a side with no army against a real enemy army keeps almost none. Collapse
+    rule: if our army is under `collapse_frac` of theirs (and theirs is at least `collapse_min`), the economy is
+    counted at ZERO -- it can be destroyed inside the horizon, and nothing is there to spend it. The opening is
+    exempt (the enemy army is under the deadband). Privileged: reads the opponent's own rows."""
+    own, theirs = _army_full(st, False), _army_full(st, True)
+    if own is None or theirs is None:
+        return None
+    k, dead = st.p("security_k"), st.p("security_deadband")
+    if theirs >= st.p("collapse_min") and own < st.p("collapse_frac") * theirs:
+        return 0.0, f"army {own:,.0f} is under {st.p('collapse_frac') * 100:.0f}% of theirs ({theirs:,.0f}): economy at risk"
+    threat = max(0.0, theirs - dead)
+    f = own / (own + k * threat) if (own + k * threat) > 0 else 1.0
+    return f, f"own army {own:,.0f} vs theirs {theirs:,.0f} (deadband {dead:,.0f}) -> {f:.2f}"
+
+
 def _total_mv(st, opp):
     parts = [st.get("units", k, opp=opp) for k in ("army_mv", "defense_mv", "mex_mv", "energy_mv")]
     return None if all(p is None for p in parts) else sum(p or 0 for p in parts)
@@ -783,6 +813,34 @@ def phi_summary(result, cfg=None):
     return {"config_version": s[0]["config_version"],
             **{str(t): {str(c["frame"]): (round(c["phi"]) if c["phi"] is not None else None)
                         for c in s[t]["checkpoints"]} for t in (0, 1)}}
+
+
+def final_verdict(result, margin=1.1, cfg=None):
+    """phi at the last frame both teams have tracker rows for -- the end-of-match verdict (v4: this replaces the
+    legacy `army_mv + 60 x metal_inc`). Returns {frame, phi0, phi1, winner (0 / 1 / -1 draw), legacy0, legacy1} or None.
+    A commander KILLED before then (terminal) already ends the game as WON / LOST (phi 0)."""
+    cfg = cfg or load_config()
+    tl = result.get("tracker_timeline") or []
+    frames = {0: set(), 1: set()}
+    for r in tl:
+        if r.get("kind") == "eco" and r.get("team") in (0, 1):
+            frames[r["team"]].add(r["frame"])
+    common = frames[0] & frames[1]
+    if not common:
+        return None
+    f = max(common)
+    units = load_units(result)
+    out = {"frame": f}
+    for t in (0, 1):
+        sc = score_state(Match(result, t), Match(result, 1 - t), f, cfg, units)
+        out[f"phi{t}"] = sc["phi"]
+        out[f"legacy{t}"] = sc["legacy"]
+        out[f"economy_security{t}"] = (sc["components"].get("economy_security") or {}).get("value")
+    if out["phi0"] is None or out["phi1"] is None:
+        return None
+    a, b = out["phi0"], out["phi1"]
+    out["winner"] = 0 if a > b * margin else 1 if b > a * margin else -1
+    return out
 
 
 # ── Report ───────────────────────────────────────────────────────────────────

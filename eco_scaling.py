@@ -216,7 +216,7 @@ def sanity(d, team=0):
     wasted = sum(float(r.get("metal_excess", 0)) * 30 for r in eco if int(r["frame"]) % 900 == 0)
     flags = []
     flags.append(("desync/Lua failure flags clear", not d.get("desync") and not d.get("lua_failure")))
-    flags.append(("ran to the end-minutes frame (end_reason frame)", d.get("end_reason") in (None, "frame", "end_score")))
+    flags.append(("ran to the end-minutes frame (end_reason frame)", d.get("end_reason") in (None, "frame", "end_score", "phi")))
     if army and not any(r.get("kind") == "bench" and r["team"] == team for r in tl):
         flags.append(("army value at the end is %.0f (a 0%% bench should be 0)" % float(army[-1].get("mv", 0)),
                       float(army[-1].get("mv", 0)) == 0))

@@ -26,7 +26,8 @@ def main():
             continue
         w, how = r.get("winner"), r.get("winner_method")
         ds = r.get("draw_score") or {}
-        sa, sb = ds.get(f"score{a_slot}"), ds.get(f"score{1 - a_slot}")
+        pf = r.get("phi_final") or {}
+        sa, sb = (pf.get(f"phi{a_slot}"), pf.get(f"phi{1 - a_slot}")) if pf else (ds.get(f"score{a_slot}"), ds.get(f"score{1 - a_slot}"))   # phi v4 decides; legacy only without it
         kill = None
         for x in r.get("tracker_timeline") or []:
             if x["kind"] == "event" and x.get("name") == "commander_lost" and (not ds or x["frame"] < ds.get("frame0", 1e9) - 60):
@@ -35,11 +36,12 @@ def main():
         if kill:
             res = "WIN" if kill[0] != a_slot else "LOSS"
             detail = f"commander of team {kill[0]} killed at {kill[1] / 1800:.1f} min"
-        elif sa and sb:
+        elif sa is not None and sb is not None:
+            sa, sb = max(sa, 1.0), max(sb, 1.0)
             ratio = sa / sb
             ratios[a_slot].append(ratio)
             res = "TIE" if 1 / 1.1 < ratio < 1.1 else ("WIN" if ratio > 1 else "LOSS")
-            detail = f"END_SCORE {sa:,.0f} vs {sb:,.0f} ({ratio:.2f}x)"
+            detail = f"{'phi' if pf else 'END_SCORE'} {sa:,.0f} vs {sb:,.0f} ({ratio:.2f}x)"
         else:
             res, detail = "?", f"winner={w} by {how} (no score: desync / cut short?)"
         wins += res == "WIN"; losses += res == "LOSS"; ties += res == "TIE"

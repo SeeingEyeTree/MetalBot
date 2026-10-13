@@ -1,0 +1,57 @@
+ab1: 3 game(s) per variant, vacuum 20 min vs INACTIVE_BOT; mean ±sd [min-max]
+
+metal income 14m
+  full           1629 ±  129 [1448-1730]
+  nofullcrew     1665 ±  130 [1570-1848]
+  noretro        1793 ±  138 [1624-1962]
+  oldfusion      1789 ±  213 [1491-1977]
+
+16m
+  full           2388 ±  301 [1975-2681]
+  nofullcrew     2374 ±  198 [2228-2653]
+  noretro        2427 ±  119 [2279-2571]
+  oldfusion      2439 ±  108 [2298-2560]
+
+18m
+  full           3079 ±  247 [2850-3422]
+  nofullcrew     3567 ±  534 [3161-4322]
+  noretro        2984 ±  290 [2703-3383]
+  oldfusion      2532 ±   49 [2468-2587]
+
+20m
+  full           3958 ±  542 [3209-4475]
+  nofullcrew     4709 ± 1006 [3884-6126]
+  noretro        4091 ±  625 [3264-4776]
+  oldfusion      2629 ±   51 [2587-2701]
+
+metal pull 20m
+  full           2982 ±  952 [1636-3667]
+  nofullcrew     3590 ±  515 [3011-4262]
+  noretro        3463 ±  869 [2459-4578]
+  oldfusion       999 ±  167 [770-1166]
+
+energy income 20m
+  full          56608 ±10004 [42655-65612]
+  nofullcrew    61869 ±11820 [50928-78285]
+  noretro       66235 ±15132 [46762-83658]
+  oldfusion     25825 ± 2718 [22165-28673]
+
+total metal spent
+  full        1110901 ±92551 [986052-1207357]
+  nofullcrew  1215983 ±151443 [1104797-1430103]
+  noretro     1233899 ±186502 [993258-1447727]
+  oldfusion    742617 ±26802 [705266-766877]
+
+army value 20m
+  full          41887 ± 5279 [36176-48906]
+  nofullcrew    31149 ± 1830 [29064-33519]
+  noretro       61453 ± 8231 [52181-72184]
+  oldfusion     26187 ± 5935 [21088-34511]
+
+mexes 20m
+  full            972 ±   46 [911-1020]
+  nofullcrew      961 ±   56 [916-1040]
+  noretro         895 ±   25 [862-922]
+  oldfusion       829 ±   19 [803-850]
+
+desync / lua failures: none

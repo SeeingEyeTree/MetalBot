@@ -7,6 +7,7 @@
 -- +x is the way the labs face (toward the enemy).  Two slots, 144 apart: a T2 plant is 144 x 144 whichever way it
 -- faces, a T1 plant 144 x 96.  Every slot is within nano build range of all 16 nanos (cornanotc 380 + the lab's
 -- half-extent; the farthest, the outer column to the far slot, is ~290 away).
+-- Storage in the side gaps: blocks are 272 apart (they were 240) to leave room for them.
 -- M.slots is read by slot_spine only (the placer ignores it).
 local M = {}
 M.layout = {
@@ -27,6 +28,18 @@ M.layout = {
     {n="cornanotc", x= -216, z=  -24, f=0},
     {n="cornanotc", x= -216, z=   24, f=0},
     {n="cornanotc", x= -216, z=   72, f=0},
+    -- ENERGY STORAGES (user, 2026-10-12): a row of 4 on each side, centred in the gap to the next block (the block pitch is 272,
+    -- so the gap is ~104 wide: room for T1 now and bigger T2 storages later).  Neighbouring blocks share the row between them:
+    -- slot_spine drops a storage whose spot another block already holds, so n blocks have n+1 rows.  slot_spine holds them and
+    -- releases them as the energy income needs buffer (STORE_SECONDS).
+    {n="corestor", x=  -72, z= -136, f=0},
+    {n="corestor", x= -120, z= -136, f=0},
+    {n="corestor", x= -168, z= -136, f=0},
+    {n="corestor", x= -216, z= -136, f=0},
+    {n="corestor", x=  -72, z=  136, f=0},
+    {n="corestor", x= -120, z=  136, f=0},
+    {n="corestor", x= -168, z=  136, f=0},
+    {n="corestor", x= -216, z=  136, f=0},
 }
 M.slots = {
     { x = 24, z = -72 },

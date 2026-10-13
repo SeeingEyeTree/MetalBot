@@ -96,7 +96,7 @@ DEFAULT_TARGET_LAG = 30     # frames; the network floor alone is ~2 per 1x, so ~
 class MatchResult:
     """Structured output from a single bot-vs-bot match."""
     winner:             "int | None"    # 0, 1, or None (draw/unknown)
-    winner_method:      str             # "end_score"|"end_score_wallclock"|"game_over"|"unit_count_fallback"|"draw"
+    winner_method:      str             # "phi"|"phi_wallclock"|"phi_tied"|"end_score"(legacy, only if phi failed)|"game_over"|"unit_count_fallback"|"draw"
     units_built:        dict            # {0: int, 1: int}  cumulative over whole match
     draw_score:         "dict | None"   # end-of-match score per team + score_winner; None if no limit was hit
     sanity:             dict            # {0: {alive_nc,built}, 1: ...} — from 1-game-min check
@@ -115,7 +115,8 @@ class MatchResult:
     order_latency:      dict = field(default_factory=dict)  # {team: {median,opening,worst,windows}} in frames
     speed_timeline:     list = field(default_factory=list)  # [{frame,speed,lag}] from the Speed Governor
     threat_log:         list = field(default_factory=list)  # raw [TML] rows (bar_framework/threat_log.lua), own team per process
-    phi:                dict = field(default_factory=dict)  # bot_score.py state value per team per checkpoint (report only)
+    phi:                dict = field(default_factory=dict)  # bot_score.py state value per team per checkpoint
+    phi_final:          dict = field(default_factory=dict)  # phi at the last frame both teams have rows: the end-of-match verdict
     desync:             "dict | None" = None   # first "Sync error": {"player", "frame"}; numbers after it are suspect
     lua_failure:        "dict | None" = None   # first Lua OOM / removed bot widget: {"what", "frame"}; bots stopped there
 
@@ -147,6 +148,7 @@ class MatchResult:
             "speed_timeline":    self.speed_timeline,
             "threat_log":        self.threat_log,
             "phi":               self.phi,
+            "phi_final":         self.phi_final,
             "desync":            self.desync,
             "lua_failure":       self.lua_failure,
         }
@@ -908,13 +910,19 @@ def _ai_block(ai: "dict | None", name1: str) -> str:
             f"        [OPTIONS]\n        {{\n            profile={ai['profile']};\n        }}\n    }}\n")
 
 
+# Default spawns (2026-10-12): the map's corner starts moved ~2.2 mex grids in from the map edge (the ECO bench setting).
+# METALBOT_STARTPOS="x0,z0;x1,z1" overrides; "paintkid" = the paintkid replay's spawns (~7.3k apart); "map" = the map's own.
+DEFAULT_STARTPOS = "2400,1904;9888,10384"
+
+
 def start_pos_override():
-    """METALBOT_STARTPOS="x0,z0;x1,z1" (elmos) moves the two start positions (StartPosType=3, script-given).
-    Returns (StartPosType, [extra TEAM0 lines, extra TEAM1 lines]); (0, ["", ""]) when unset."""
-    v = os.environ.get("METALBOT_STARTPOS", "").strip()
-    if not v:
+    """Start positions (StartPosType=3, script-given): METALBOT_STARTPOS="x0,z0;x1,z1" in elmos, else DEFAULT_STARTPOS.
+    "paintkid" and "map" (the map's own starts, StartPosType 0) are presets.
+    Returns (StartPosType, [extra TEAM0 lines, extra TEAM1 lines])."""
+    v = os.environ.get("METALBOT_STARTPOS", "").strip() or DEFAULT_STARTPOS
+    if v.lower() == "map":
         return 0, ["", ""]
-    if v.lower() == "paintkid":     # the paintkid replay's spawns (x ~1.9k / 9.2k, z ~6k): ~7.3k apart instead of the 12.8k corners
+    if v.lower() == "paintkid":     # the paintkid replay's spawns (x ~1.9k / 9.2k, z ~6k): ~7.3k apart
         v = "1932,6082;9230,5857"
     out = []
     for part in v.split(";")[:2]:
@@ -945,7 +953,7 @@ def _common_script_body(game_type, map_name, save_replay,
         # maxunits=3000: all testing uses a 3k unit cap (BAR's default is 2k) so a larger
         # economy is worth building. 5k (used until 2026-10-09) made the late game too slow.
         # The tracker's unit_cap field reads it back.
-        f"        deathmode=com;\n        maxunits=3000;\n"
+        f"        deathmode={os.environ.get('METALBOT_DEATHMODE', 'com')};\n        maxunits=3000;\n"
         f"        maxspeed={speeds[1]:g};\n        minspeed={speeds[0]:g};\n"
         "        allowuserwidgets=1;\n        allowunitcontrolwidgets=1;\n"
         "        allowuserscripts=1;\n    }\n\n"
@@ -1302,11 +1310,25 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         speed_timeline    = _parse_speed(host_text),
         threat_log        = _parse_threat_log(p0_text, 0) + _parse_threat_log(p1_text, 1),
     )
-    # State value (bot_score.py). Report only: it does NOT decide the winner until it has
-    # been validated against real outcomes (score_eval.py, knowledge/scoring.md).
+    # State value (bot_score.py). Since phi v4 (2026-10-12) it DECIDES the end-of-match winner: phi at the last frame both
+    # teams logged, 10% margin (TIE_MARGIN), with the economy discounted when it cannot be protected or spent (see
+    # knowledge/scoring.md).  The legacy `army_mv + 60 x income` stays in draw_score for comparison, and decides only if
+    # phi cannot be computed.  A genuine commander kill (game_over) is never overridden.
     try:
         import bot_score
         result.phi = bot_score.phi_summary(result.to_dict())
+        if result.draw_score is not None:
+            fv = bot_score.final_verdict(result.to_dict(), TIE_MARGIN)
+            if fv is not None:
+                result.phi_final = fv
+                legacy_method = result.winner_method
+                if fv["winner"] >= 0:
+                    result.winner = fv["winner"]
+                    result.winner_method = "phi" if end_reason == "frame" else "phi_wallclock"
+                else:
+                    result.winner = None
+                    result.winner_method = ("phi" if end_reason == "frame" else "phi_wallclock") + "_tied"
+                result.phi_final["legacy_method"] = legacy_method
     except Exception as ex:          # scoring must never cost a match result
         result.phi = {"error": repr(ex)}
     return result

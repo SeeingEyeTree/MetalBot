@@ -33,6 +33,7 @@ local M = {}
 --   CLEAR         retrofits and consolidation: useful, but they can wait.
 --   BALANCE       army/eco allocation is a steady-state preference, not a job.
 M.PRIO = {
+    ENERGY       = 0.5,   -- energy is stalling: nanos in reach of a fusion job guard its builder (line_transition ENERGY_PRIORITY)
     WIND_RECLAIM = 1,
     HANDOFF      = 2,
     SPINE        = 2.5,   -- spine lab guard/park: beats CLEAR/BALANCE, yields to hand-offs

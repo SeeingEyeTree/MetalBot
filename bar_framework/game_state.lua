@@ -44,9 +44,11 @@ function M.Collect(frame, o)
     local ok, cap = pcall(function() return Spring.GetTeamMaxUnits(team) end)   -- returns (max, current)
     s.cap = ok and tonumber(cap) or nil
     s.capFrac = (s.cap and s.cap > 0) and s.units / s.cap or 0
-    local mb = (WG and WG.MetalBot) or {}
+    -- o.MB: the caller's own WG.MetalBot.  In --server single the widgets' WG is a per-team shim that a VFS.Include'd
+    -- module does not see, so the global WG.MetalBot read here is empty there.
+    local mb = o.MB or (WG and WG.MetalBot) or {}
     s.armyCount = o.armyCount or mb.armyCount or 0
-    s.armyValue = o.armyValue
+    s.armyValue = o.armyValue or mb.armyValue
     s.armyByDef = o.armyByDef
     s.urgency, s.threats = mb.urgency, mb.threats or {}
     s.intel = mb.intel
