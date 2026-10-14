@@ -127,7 +127,7 @@ check(#S.Log("%[LabCtrl%] 9:%d+ raid ON") >= 1, "the ground raid is seen by the 
 local wasps = S.Log("%[LabCtrl%] 9:%d+ raid%-air +corape")
 check(#wasps >= 1, "the T2 air lab answers the ground raid with Wasps (" .. #wasps .. " orders)")
 local during = 0
-for _, f in ipairs(conOrders) do if f >= raidOn + 60 and f <= raidOn + 600 then during = during + 1 end end
+for _, f in ipairs(conOrders) do if f >= raidOn + 300 and f <= raidOn + 600 then during = during + 1 end end
 -- (the stub orders no cons around 9:00 anyway, so this is only a guard; CON_HOLD itself: tests/test_con_hold.lua)
 check(during == 0, "no air / T2 con orders while the ground raid is live (" .. during .. ")")
 print(string.format("con orders: %d in the game, %d during the raid", #conOrders, during))

@@ -916,6 +916,17 @@ local function UpdateRetrofitCons(T, frame, res)
     end
 end
 
+-- up-front T2 cons of a lab that finished while the air labs answered a ground raid (CON_HOLD): ordered when the hold ends
+local function UpdateT2Deferred(T, frame)
+    if not T.t2Deferred or frame % 60 ~= 0 or ConHold(T, frame, "up-front T2 cons") then return end
+    for id, t2 in pairs(T.t2Deferred) do
+        T.t2Deferred[id] = nil
+        if Spring.GetUnitDefID(id) then
+            for _ = 1, T.CFG.UPGRADE_CONS_PER_LAB do OrderT2Con(T, id, t2, frame) end
+        end
+    end
+end
+
 -- T2_CONS_PER_GRID: demand-driven T2 cons stop once every finished grid has its retrofit con, but a retrofit with one builder takes minutes
 -- and the late game floats metal: keep T2_CONS_PER_GRID cons per finished grid, ordered over the labs while the bank is healthy.
 local function UpdateT2TopUp(T, frame, res)
@@ -2108,6 +2119,7 @@ local function UpdateGrids(T, frame, res)
     if not T.ecoPaused then
         UpdateRetrofits(T, frame, res)
         UpdateT2TopUp(T, frame, res)
+        UpdateT2Deferred(T, frame)
         UpdateConsolidation(T, frame, res)
     end
     if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end
@@ -2472,7 +2484,12 @@ function LT.OnUnitFinished(T, unitID, defID, x, z)
     if T.CFG.T2_CONS_UP_FRONT and d and d.isFactory and T.upgradeBP and unitID ~= T.airLabID then
         local t2 = FindAirConDef(defID)
         if t2 and IsT2Con(T, t2) then
-            for _ = 1, T.CFG.UPGRADE_CONS_PER_LAB do OrderT2Con(T, unitID, t2, T.frame) end
+            if ConHold(T, T.frame or 0, "up-front T2 cons") then
+                T.t2Deferred = T.t2Deferred or {}
+                T.t2Deferred[unitID] = t2                       -- ordered once the air labs are free again (UpdateT2Deferred)
+            else
+                for _ = 1, T.CFG.UPGRADE_CONS_PER_LAB do OrderT2Con(T, unitID, t2, T.frame) end
+            end
         end
     end
     -- Air cons come out guarding the lab: stop them now and again once that order has landed.
