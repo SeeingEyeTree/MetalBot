@@ -92,6 +92,7 @@ are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic
   and STANCE_BOT both use it; they differ only by its cfg (`BC.Preset("raid_response", "RAID")`, or none).
 - **Cross-widget state:** `WG.*` channels and the `WG.MetalBot` fields are documented in `bar_framework/WG_CHANNELS.md`; read them through
   `game_state.lua` where you can.
+- **Tests:** `python tests/run_tests.py` runs every suite in parallel (see `tests/LUA_TESTING.md`); run it before and after a refactor.
 - **Checking a refactor:** run the same stub scenario through the old and the new controller with `Spring.GiveOrderToUnit` wrapped to print every
   order, and diff the order streams (`tests/test_raid_bot.lua` is a good scenario; seed `math.randomseed`; sort the lines if the scenario's `pairs`
   order is not stable). The lab broker, config and raid-response changes were verified this way (0 differences in 34k+ orders).

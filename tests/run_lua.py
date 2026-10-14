@@ -13,5 +13,8 @@ lua.execute("os.exit = function(code) error('TEST_EXIT_' .. tostring(code), 0) e
 try:
     lua.execute(open(path, encoding="utf-8").read())
 except Exception as e:  # noqa: BLE001
+    msg = str(e)
+    if msg.startswith("TEST_EXIT_0"):      # a test that ended with os.exit(0) passed
+        sys.exit(0)
     print(e)
     sys.exit(1)

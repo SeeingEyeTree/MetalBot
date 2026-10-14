@@ -1,5 +1,9 @@
 # Lua 5.1 check
 
+**Run everything:** `python tests/run_tests.py` (all suites in parallel, one line each, ~90 s; `-k raid` to filter, `-v` to see failures,
+`--list` for what is skipped or known to fail). It needs no Lua install -- it runs the suites through lupa. The rest of this file is how
+the individual pieces work.
+
 MetalBot targets Lua 5.1. Before submitting a code change, compile each changed Lua file
 without producing an output file:
 
