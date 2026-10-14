@@ -16,7 +16,8 @@ python eco_sim.py calibrate runs_stance/simcal_STANCE_BOT_*.json --sim ecosim/ru
 python eco_sim.py defs <real result json>                # regenerate ecosim/unitdefs.lua from the engine's own UnitDefs
 python eco_sim.py run --trace <unitID ...>               # [TRACE] every order / command pop of those units in log.txt
 ```
-Each run writes `ecosim/runs/<tag>/run.json` (timeline every 10 s, unit snapshots every minute, events, the bot's whole echo log,
+Kept on disk (git-ignored): every sweep's `sweep.json` (all summaries) plus the full runs of tune2/base, tune2/nosilo_cap15,
+tune4/c10_if14 (= STANCE_ECO2), sinkeco2/eco2 and base/ (the calibrated baseline); the rest was pruned (~1.6 GB).  Each run writes `ecosim/runs/<tag>/run.json` (timeline every 10 s, unit snapshots every minute, events, the bot's whole echo log,
 Lua errors, missing-API list, `blocked_by`) and `log.txt`.  Tests: `python tests/test_ecosim.py` (physics checks).
 
 ## What the sim models (ecosim/world.lua; constants with sources in ecosim/physics.lua)

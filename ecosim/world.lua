@@ -775,15 +775,7 @@ local function ExecBuild(u, c, dt)
         Pop(u, "blocked by " .. tostring(o and o.d.name))
         local T = W.teams[u.team]
         T.blockedBuilds = (T.blockedBuilds or 0) + 1
-        if not o and not W.dbgNil then
-            W.dbgNil = 0
-        end
-        if false then
-            W.dbgNil = W.dbgNil + 1
-            local x0, z0, xs, zs = Cells(d, x, z, facing)
-            Log(string.format("[SIM-DBG] %s blocked at %.0f,%.0f facing %s occ id %s cells %d,%d %dx%d map %d", d.name, x, z,
-                tostring(facing), tostring(occ), x0, z0, xs, zs, P.MAP_X))
-        end
+        -- "<nil" = out of the map (e.g. an edge grid's capstone): run.json blocked_by counts these per def / blocker / builder class
         local key = d.name .. "<" .. tostring(o and o.d.name) .. (o and (o.built and "" or "(frame)") or "") .. " by " .. (u.bclass or "?")
         T.blockedBy = T.blockedBy or {}
         T.blockedBy[key] = (T.blockedBy[key] or 0) + 1

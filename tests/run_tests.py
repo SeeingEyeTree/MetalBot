@@ -29,9 +29,7 @@ SKIP = {
     "test_com_starter": "in-game widget: needs the engine (deploy it and run a match)",
 }
 # fail on a clean checkout
-KNOWN_FAILING = {
-    "test_scout_rings_bot": "2 checks fail (ring radar units on the rings, trickle cap); failed before the 2026-10-14 cleanup too",
-}
+KNOWN_FAILING = {}   # test_scout_rings_bot passes again (2026-10-14)
 
 SUMMARY = re.compile(r"(\d+) checks?, (\d+) (?:failed|failures)")
 
