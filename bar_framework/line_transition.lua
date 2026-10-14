@@ -43,7 +43,12 @@ LT.CFG = {
                                   -- (3 per grid: 40-120 helpers by 15 min, and the labs kept ordering cons to fill them).  Free cons beyond it stay in
                                   -- the pool (the reserve), so production stops once helpers + jobs + reserve are covered.
     T2_CON_RESERVE  = 0,          -- same for T2 cons (0: they are made when an energy / retrofit job has none)
-    UPGRADE_CONS_PER_LAB = 2,     -- (unused since 2026-10-14: T2 cons are built only on demand, by the jobs' `produce` hooks)
+    T2_CONS_PER_GRID = false,     -- number: keep this many T2 cons per retrofit-eligible grid (extra builders on the retrofits; demand alone stalled at ~36 T2 cons while metal floated)
+    T2_TOPUP_METAL_FRAC = 0.10,   -- ...ordered only while the metal bank holds at least this share of its storage
+    RETROFIT_HOLD_FRAC = false,   -- number: while the metal bank holds this share of storage, retrofits may take the T2 cons the hold keeps for fusions / consolidation
+    T2_LAB_DEPTH = 3,             -- retrofit T2 cons: at most this many queued per advanced air lab (orders go to the least loaded lab)
+    UPGRADE_CONS_PER_LAB = 2,     -- T2 cons each finished advanced air lab orders at once, when T2_CONS_UP_FRONT (else they are built only on demand)
+    T2_CONS_UP_FRONT = false,     -- true: the pre-2026-10-14 rule (a finished advanced air lab orders UPGRADE_CONS_PER_LAB T2 cons straight away)
     RETROFIT_STALL_FRAC  = 0.15,  -- retrofit builders stop below this share of metal storage...
     RETROFIT_RESUME_FRAC = 0.30,  -- ...and resume above this
     SPEND_FAST = 0.15, SPEND_SLOW = 0.60,   -- grid hand-off progress: under-spending / short of metal
@@ -676,6 +681,48 @@ local function IsT2Con(T, defID)
     return ud and T.BP.CanBuild(defID, ud.id) or false
 end
 
+-- Orders n T2 cons spread over the finished advanced air labs: each goes to the lab with the fewest T2 cons already queued there (a lab
+-- builds them one after another, so a batch of 6 on each of the first few labs in unit-id order kept the rest of the labs idle for
+-- minutes -- the main source of run-to-run spread in the vacuum test: 2.8k vs 6.5k income at 20:00 from the same bot).
+-- maxLoad (optional): no lab gets more than that many T2 cons queued.  Returns how many were ordered and the first lab used.  Without EP_CON_FORCE only labs with an empty queue count.
+local function OrderT2Spread(T, frame, n, maxLoad)
+    if n <= 0 then return 0 end
+    T.t2Sent = T.t2Sent or {}
+    local labs = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(T.teamID) or {}) do
+        local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+        if d and d.isFactory and uid ~= T.airLabID and not Spring.GetUnitIsBeingBuilt(uid) then
+            local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
+            if t2 and IsT2Con(T, t2) then
+                local q = (Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, -1)) or {}
+                if type(q) ~= "table" then q = {} end
+                local queued = 0
+                for _, c in ipairs(q) do if c.id == -t2 then queued = queued + 1 end end
+                local sent = T.t2Sent[uid] or {}
+                while #sent > 0 and (frame or 0) - sent[1] > 450 do table.remove(sent, 1) end   -- long enough to show in the queue
+                T.t2Sent[uid] = sent
+                if T.CFG.EP_CON_FORCE or #q == 0 then
+                    labs[#labs + 1] = { uid = uid, def = t2, load = math.max(queued, #sent), busy = #q > 0 }
+                end
+            end
+        end
+    end
+    if #labs == 0 then return 0 end
+    local first, done = nil, 0
+    for _ = 1, n do
+        local best = labs[1]
+        for _, l in ipairs(labs) do if l.load < best.load then best = l end end
+        if maxLoad and best.load >= maxLoad then break end
+        OrderT2Con(T, best.uid, best.def, frame, best.busy)
+        local sent = T.t2Sent[best.uid]
+        sent[#sent + 1] = frame or 0
+        best.load = best.load + 1
+        first = first or best.uid
+        done = done + 1
+    end
+    return done, first
+end
+
 -- Hand the free cons out now (a session ended, a con arrived, a cell opened); the broker also does it every update.
 local function AssignCons(T, frame)
     if T.CB then CB.Assign(T.CB, frame or T.frame, T.lastRes) end
@@ -858,26 +905,33 @@ local function UpdateRetrofitCons(T, frame, res)
     local waiting = RetrofitsWaiting(T)
     if waiting == 0 then return end
     T.floatConsOrdered = T.floatConsOrdered or 0
-    local ordered = 0
-    for _, uid in ipairs(Spring.GetTeamUnits(T.teamID) or {}) do
-        local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
-        if d and d.isFactory and uid ~= T.airLabID and not Spring.GetUnitIsBeingBuilt(uid) then
-            local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
-            local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, 1)
-            if t2 and IsT2Con(T, t2) and (T.CFG.EP_CON_FORCE or not q or #q == 0) then
-                local n = math.min(T.CFG.RETROFIT_FLOAT_BATCH or 2, waiting - ordered, math.max(0, T2Shortfall(T, frame) - ordered))
-                -- a full queue: go ahead of it (after the unit in production)
-                for _ = 1, n do OrderT2Con(T, uid, t2, frame, q and #q > 0) end
-                ordered = ordered + n
-                if ordered >= waiting then break end
-            end
-        end
-    end
+    -- what the broker says is short, shared out over the labs (at most T2_LAB_DEPTH queued on each)
+    local want = math.min(waiting, math.max(0, T2Shortfall(T, frame)))
+    local ordered = OrderT2Spread(T, frame, want, T.CFG.T2_LAB_DEPTH)
     if ordered > 0 then
         T.retroConFrame = frame
         T.floatConsOrdered = T.floatConsOrdered + ordered
         Spring.Echo(string.format("[LT] %s RETROFIT CONS: metal %.0f/%.0f floats, %d grid(s) waiting -> %d T2 con(s) ordered (%d so far)",
             Clock(frame), res.metal, res.metalStorage, waiting, ordered, T.floatConsOrdered))
+    end
+end
+
+-- T2_CONS_PER_GRID: demand-driven T2 cons stop once every finished grid has its retrofit con, but a retrofit with one builder takes minutes
+-- and the late game floats metal: keep T2_CONS_PER_GRID cons per finished grid, ordered over the labs while the bank is healthy.
+local function UpdateT2TopUp(T, frame, res)
+    local K = T.CFG
+    if not K.T2_CONS_PER_GRID or not T.upgradeBP or T.ecoPaused or frame % 150 ~= 0 then return end
+    if frame - (T.t2TopFrame or -1e9) < 450 then return end
+    if res.metalStorage <= 0 or res.metal / res.metalStorage < K.T2_TOPUP_METAL_FRAC then return end
+    local grids = 0
+    for _, a in ipairs(T.completed) do if T.gridFinished[Key(a.anchorX, a.anchorZ)] then grids = grids + 1 end end
+    local have = CB.Count(T.CB, 2) + T2Ordered(T, frame)
+    local n = math.min(K.RETROFIT_FLOAT_BATCH or 6, math.floor(K.T2_CONS_PER_GRID * grids) - have)
+    if n <= 0 or ConHold(T, frame, "T2 top-up") then return end
+    local ordered = OrderT2Spread(T, frame, n, K.T2_LAB_DEPTH)
+    if ordered > 0 then
+        T.t2TopFrame = frame
+        Spring.Echo(string.format("[LT] %s T2 TOP-UP: %d T2 cons for %d finished grids (%d alive/ordered) -> %d ordered", Clock(frame), math.floor(K.T2_CONS_PER_GRID * grids), grids, have, ordered))
     end
 end
 
@@ -1069,21 +1123,12 @@ local function MakeEnergyT2Con(T, frame, tag)
     local C = T.CFG
     if frame - (T.epConFrame or -1e9) < C.EP_CON_EVERY then return end
     if ConHold(T, frame, tag .. " T2 con") then return end
-    for _, uid in ipairs(Spring.GetTeamUnits(T.teamID) or {}) do
-        local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
-        if d and d.isFactory and uid ~= T.airLabID and not Spring.GetUnitIsBeingBuilt(uid) then
-            local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
-            local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, 1)
-            if t2 and IsT2Con(T, t2) and (C.EP_CON_FORCE or not q or #q == 0) then
-                local nCon = math.min(C.EP_CON_BATCH or 1, math.max(0, T2Shortfall(T, frame)))     -- never more than the jobs still want
-                if nCon == 0 then return end
-                -- a full queue (EP_CON_FORCE): go ahead of it (after the unit in production)
-                for _ = 1, nCon do OrderT2Con(T, uid, t2, frame, C.EP_CON_FORCE and q and #q > 0) end
-                T.epConFrame = frame
-                Spring.Echo(string.format("[LT] %s %s: no free T2 con, lab %d makes %d", Clock(frame), tag, uid, nCon))
-                return
-            end
-        end
+    local nCon = math.min(C.EP_CON_BATCH or 1, math.max(0, T2Shortfall(T, frame)))     -- never more than the jobs still want
+    if nCon == 0 then return end
+    local n, lab = OrderT2Spread(T, frame, nCon)       -- spread over the labs; EP_CON_FORCE: ahead of a full queue
+    if n > 0 then
+        T.epConFrame = frame
+        Spring.Echo(string.format("[LT] %s %s: no free T2 con, lab %d makes %d", Clock(frame), tag, lab, n))
     end
 end
 
@@ -1311,7 +1356,10 @@ local function ReleaseCandidates(T, frame, res)
     -- the paced trickle; after that the bank / fast triggers may run up to GRIDS_OPENING_MAX at once.
     local lineBuilt = T.LC.SlotsRemaining(T.L) == 0
     local why
-    local idleCon = CB.NFree(T.CB, 1) > #T.pendingGrids
+    -- idle = free cons plus the ones parked as grid / fusion helpers (or an idle crew member): they go straight to a new grid.  Counting
+    -- only unowned cons made the gate nearly never open once the helpers soaked up every spare con (STANCE_BOT 8:50: 16 on grids, 46
+    -- helping, 700-1200 metal banked, cells waiting; the pre-broker code counted its helpers as idle).
+    local idleCon = CB.Available(T.CB, 1, true) > #T.pendingGrids
     local energyOK = res.energyStorage > 0 and res.energy / res.energyStorage >= T.CFG.GRID_FAST_ENERGY
     local income = res.metalIncomeS or res.metalIncome or 0
     if opening < T.CFG.GRIDS_OPENING then why = "pace"
@@ -1935,6 +1983,12 @@ RegisterJobs = function(T)
         produce = function(frame) ConsolProduce(T, frame) end })
 
     CB.AddJob(cb, { name = "retrofit", prio = 50, tier = "t2",
+        -- a floating bank (RETROFIT_HOLD_FRAC of storage) is the best case for retrofits: they may take the cons the hold keeps for the
+        -- consolidation / fusion jobs (vacuum test: 60k metal wasted at the cap 15:00-17:00 with 3 retrofits running and 30 T2 cons consolidating)
+        useReserve = function()
+            local r, f = T.lastRes, T.CFG.RETROFIT_HOLD_FRAC
+            return f and r and r.metalStorage > 0 and r.metal / r.metalStorage >= f or false
+        end,
         sessions = T.upgradeStates, paused = function() return T.ecoPaused or T.retrofitPaused end,
         preemptMax = 4,                                            -- helpers released for retrofits: a few at a time
         want = function() return (T.upgradeBP and not T.ecoPaused) and RetrofitsWaiting(T) or 0 end,
@@ -2053,6 +2107,7 @@ local function UpdateGrids(T, frame, res)
     CheckCapPressure(T, res, frame)
     if not T.ecoPaused then
         UpdateRetrofits(T, frame, res)
+        UpdateT2TopUp(T, frame, res)
         UpdateConsolidation(T, frame, res)
     end
     if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end
@@ -2412,7 +2467,14 @@ end
 function LT.OnUnitFinished(T, unitID, defID, x, z)
     local d = UnitDefs[defID]
     if T.sg then T.sgMod.OnUnitFinished(T.sg, unitID, defID) end
-    -- (A finished advanced air lab orders no T2 cons itself: they are built only when a job wants one -- UpdateRetrofitCons / MakeEnergyT2Con.)
+    -- A finished advanced air lab orders no T2 cons itself unless T2_CONS_UP_FRONT: they are built only when a job wants one
+    -- (UpdateRetrofitCons / MakeEnergyT2Con).  Up front is what kept the old STANCE_BOT's retrofits and fusions supplied.
+    if T.CFG.T2_CONS_UP_FRONT and d and d.isFactory and T.upgradeBP and unitID ~= T.airLabID then
+        local t2 = FindAirConDef(defID)
+        if t2 and IsT2Con(T, t2) then
+            for _ = 1, T.CFG.UPGRADE_CONS_PER_LAB do OrderT2Con(T, unitID, t2, T.frame) end
+        end
+    end
     -- Air cons come out guarding the lab: stop them now and again once that order has landed.
     if T.airLabID and d and d.isBuilder and d.canFly and not d.isFactory then
         Spring.GiveOrderToUnit(unitID, CMD_STOP, {}, {})

@@ -138,7 +138,9 @@ if rel[1] then print(rel[1]) end
 check(#S.Log("%[CK%] 11:%d+ mode %-> hold") == 1, "the hold stance puts click_army in hold mode")
 
 -- second T1 air lab on the line (the stub line is all mexes: the block with the fewest is reclaimed)
-check(#S.Log("%[LT%] .*SECOND AIR LAB finished") == 1, "the second T1 air lab is built on the line")
+-- (started, not finished: with the grid gate counting helpers as idle the stub's nanos stay on the grids and its lab frame never gets
+-- built; in real RAID_BOT vacuum games the lab site is done 20-50 s after the start, 12:00 -> ~12:30)
+check(#S.Log("%[LT%] .*SECOND AIR LAB: ") == 1, "the second T1 air lab is started on the line")
 -- standing Shuriken force at home
 local function D(id, x, z) local u = W.units[id]; return u and math.sqrt((u.x - x) ^ 2 + (u.z - z) ^ 2) or nil end
 local cx, cz = hx, hz

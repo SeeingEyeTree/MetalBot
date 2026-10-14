@@ -13,6 +13,13 @@ return {
     RETROFIT = { RETROFIT_MEX_DONE = true, UPGRADE_CONS_PER_LAB = 4, RETROFIT_FLOAT_CONS = true, RETROFIT_FLOAT_FRAC = 0,
                  RETROFIT_FLOAT_BATCH = 6 },
 
+    -- every finished advanced air lab orders its T2 cons at once (the pre-2026-10-14 rule; the on-demand rule left STANCE_BOT / RAID_BOT
+    -- with about half the cons and ~25% less metal income by 14:00 in the vacuum test, see knowledge/vacuum_regression_2026-10-14.md)
+    T2_UP_FRONT = { T2_CONS_UP_FRONT = true },
+
+    -- keep ~2 T2 cons per finished grid (extra retrofit builders) while the metal bank is healthy; demand-only ordering stalled at ~36 T2 cons
+    T2_TOPUP = { T2_CONS_PER_GRID = 2, RETROFIT_HOLD_FRAC = 0.4 },
+
     -- an [AUDIT] log row every minute (what every con and nano is doing)
     AUDIT = { AUDIT_EVERY = 1800 },
 
@@ -30,7 +37,7 @@ return {
     -- a lost grid is rebuilt, and a lost piece of the line is rebuilt (RAID_BOT game review 2026-10-13)
     RECOVER = { GRID_RECOVER = true, LINE_RECOVER = true },
 
-    -- a second T1 air lab on the line by 8:00, with nano help (RAID_BOT round 2)
+    -- a second T1 air lab on the line with nano help (RAID_BOT round 2; 8:00 here, RAID_BOT overrides it to 12:00: 8:00 cost ~1.4k income in the vacuum test)
     SECOND_AIR_LAB = { SECOND_AIR_LAB = true, RESERVE_COUNT_IDLE = false, LAB2_FRAME = 8 * 60 * 30, LAB2_LATEST = 8 * 60 * 30,
                        LAB2_NANO_HELP = true },
 }

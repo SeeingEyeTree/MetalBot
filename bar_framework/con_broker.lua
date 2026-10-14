@@ -26,7 +26,7 @@
 --   name, prio (number, or function(cb) -> number), tier "t1" | "t2" | "any" (any: T1 first),
 --   urgent       (default true; or a function) may take cons from lower-priority preemptable jobs when none is free;
 --                false = free cons only.  preemptMax = at most this many cons taken that way per hand-out pass
---   useReserve   may take the cons the hold keeps back (default false: the job must leave `hold[tier]` free cons),
+--   useReserve   may take the cons the hold keeps back (default false: the job must leave `hold[tier]` free cons); a function: evaluated per pick,
 --   want(frame, res) -> n          cons wanted now
 --   canTake(conID, tier) -> bool   per-con filter
 --   near() -> x, z                 the job's place (nearest free con wins)
@@ -208,7 +208,9 @@ local function PickFree(cb, job, skip)
     for _, c in ipairs(cb.list) do
         if not c.owner and Fits(cb, job, c, skip) then
             -- the hold: a job without useReserve leaves hold[tier] cons free (for the jobs that may use them)
-            if job.useReserve or free[c.tier] > (cb.hold[c.tier] or 0) then
+            local ur = job.useReserve
+            if type(ur) == "function" then ur = ur() end        -- a job may claim the hold only in some states (e.g. while metal floats)
+            if ur or free[c.tier] > (cb.hold[c.tier] or 0) then
                 if not best or Better(job, nx, nz, c, best) then best = c end
             end
         end
