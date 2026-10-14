@@ -119,6 +119,8 @@ class MatchResult:
     phi_final:          dict = field(default_factory=dict)  # phi at the last frame both teams have rows: the end-of-match verdict
     desync:             "dict | None" = None   # first "Sync error": {"player", "frame"}; numbers after it are suspect
     lua_failure:        "dict | None" = None   # first Lua OOM / removed bot widget: {"what", "frame"}; bots stopped there
+    state_dump:         dict = field(default_factory=dict)  # {team: {defs, weapon_defs, map, snapshots}} (metalbot_state_dump.lua)
+    bot_echo:           dict = field(default_factory=dict)  # {team: [[LT]/[CB]/[AUDIT]... log lines]} -- the bot's decisions
 
     def crashed(self, team: int) -> bool:
         """True when this team's bot failed the 1-minute sanity check."""
@@ -151,6 +153,8 @@ class MatchResult:
             "phi_final":         self.phi_final,
             "desync":            self.desync,
             "lua_failure":       self.lua_failure,
+            "state_dump":        {str(k): v for k, v in self.state_dump.items()},
+            "bot_echo":          {str(k): v for k, v in self.bot_echo.items()},
         }
 
 
@@ -769,6 +773,11 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
             active.append("Stats Tracker")
         else:
             print(f"  [{suffix}] WARNING: {tracker_src.name} missing; no tracker data")
+        dump_src = REPO_DIR / "metalbot_state_dump.lua"   # defs + per-minute unit snapshots for eco_sim.py
+        if dump_src.exists():
+            (widgets_dir / dump_src.name).write_bytes(team_fix.encode("utf-8") + dump_src.read_bytes())
+            skip.add(dump_src.name)
+            active.append("State Dump")
 
     copy_shared_deps(widgets_dir, skip)
 
@@ -1113,6 +1122,66 @@ def _parse_tracker(text: str, team: int) -> list:
     return rows
 
 
+BOT_ECHO_TAGS = ("[LT]", "[CB]", "[AUDIT]", "[LN]", "[CFG]", "[LB]", "[NANO]")
+
+
+def _parse_state_dump(text: str, team: int) -> dict:
+    """metalbot_state_dump.lua rows for one team: unit/weapon defs (team 0 only), map facts, per-minute snapshots.
+    The economy simulator (eco_sim.py) uses them as ground truth.  Empty dict when the widget did not run."""
+    defs, wdefs, maps, snaps, seen = {}, {}, [], {}, set()
+    for line in text.splitlines():
+        if "[UDEF] " in line or "[UWDEF] " in line or "[UMAP] " in line:
+            tag = "[UDEF] " if "[UDEF] " in line else ("[UWDEF] " if "[UWDEF] " in line else "[UMAP] ")
+            try:
+                o = json.loads(line.split(tag, 1)[1])
+            except ValueError:
+                continue
+            if tag == "[UDEF] ":
+                defs[o.get("name")] = o
+            elif tag == "[UWDEF] ":
+                wdefs[str(o.get("id"))] = o
+            elif o.get("team") == team and not maps:
+                maps.append(o)
+            continue
+        m = re.search(r"\[SNAP\] (res|u) frame=(\d+) team=(\d+) (.*)", line)
+        if not m or int(m.group(3)) != team or m.group(0) in seen:   # the two log copies differ in their timestamp prefix
+            continue
+        seen.add(m.group(0))
+        fr = int(m.group(2))
+        s = snaps.setdefault(fr, {"frame": fr, "res": {}, "units": []})
+        if m.group(1) == "res":
+            for k, v in re.findall(r"(\w+)=(\S+)", m.group(4)):
+                try:
+                    s["res"][k] = float(v)
+                except ValueError:
+                    pass
+        else:
+            for u in m.group(4).split(";"):
+                p = u.split(",")
+                if len(p) >= 5:
+                    try:
+                        s["units"].append([p[0], float(p[1]), float(p[2]), float(p[3]), int(float(p[4]))])
+                    except ValueError:
+                        pass
+    if not (defs or maps or snaps):
+        return {}
+    return {"defs": defs, "weapon_defs": wdefs, "map": maps[0] if maps else {},
+            "snapshots": [snaps[k] for k in sorted(snaps)]}
+
+
+def _parse_bot_echo(text: str) -> list:
+    """The bot's own decision log rows ([LT] grid/retrofit/con decisions, [CB], [AUDIT] ...), de-duplicated, in order."""
+    out, seen = [], set()
+    for line in text.splitlines():
+        tag = next((t for t in BOT_ECHO_TAGS if t in line), None)
+        if tag:
+            body = line[line.index(tag):].strip()      # drop the log's timestamp prefix (it differs between the two copies)
+            if body not in seen:
+                seen.add(body)
+                out.append(body)
+    return out
+
+
 def _parse_threat_log(text: str, team: int) -> list:
     """Raw `[TML] ...` rows for one team, in order, de-duplicated (_read_log doubles lines)."""
     rows = []
@@ -1309,6 +1378,8 @@ def _parse_logs(p0_text: str, p1_text: str, bot0_name: str, bot1_name: str,
         order_latency     = {0: _parse_latency(p0_text, 0), 1: _parse_latency(p1_text, 1)},
         speed_timeline    = _parse_speed(host_text),
         threat_log        = _parse_threat_log(p0_text, 0) + _parse_threat_log(p1_text, 1),
+        state_dump        = {k: v for k, v in ((0, _parse_state_dump(p0_text, 0)), (1, _parse_state_dump(p1_text, 1))) if v},
+        bot_echo          = {0: _parse_bot_echo(p0_text), 1: _parse_bot_echo(p1_text)},
     )
     # State value (bot_score.py). Since phi v4 (2026-10-12) it DECIDES the end-of-match winner: phi at the last frame both
     # teams logged, 10% margin (TIE_MARGIN), with the economy discounted when it cannot be protected or spent (see

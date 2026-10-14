@@ -1,0 +1,14 @@
+{
+  "tag": "phys1",
+  "seeds": "1-4",
+  "variants": {
+    "all": {"phys": {"STATIC_AUTO_ASSIST": "all"}},
+    "all_mv15_ar15": {"phys": {"STATIC_AUTO_ASSIST": "all", "START_MOVE_FRAMES": 15, "ARRIVE_FRAMES": 15}},
+    "all_mv30_ar30": {"phys": {"STATIC_AUTO_ASSIST": "all", "START_MOVE_FRAMES": 30, "ARRIVE_FRAMES": 30}},
+    "idle": {"phys": {"STATIC_AUTO_ASSIST": "idle"}},
+    "idle_mv15_ar15": {"phys": {"STATIC_AUTO_ASSIST": "idle", "START_MOVE_FRAMES": 15, "ARRIVE_FRAMES": 15}},
+    "idle_mv30_ar30": {"phys": {"STATIC_AUTO_ASSIST": "idle", "START_MOVE_FRAMES": 30, "ARRIVE_FRAMES": 30}},
+    "none_mv15_ar15": {"phys": {"STATIC_AUTO_ASSIST": false, "START_MOVE_FRAMES": 15, "ARRIVE_FRAMES": 15}},
+    "all_lag30": {"phys": {"STATIC_AUTO_ASSIST": "all", "ORDER_LAG": 30}}
+  }
+}

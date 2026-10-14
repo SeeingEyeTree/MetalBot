@@ -1,0 +1,18 @@
+{
+  "tag": "tune2",
+  "seeds": "1-6",
+  "variants": {
+    "base": {},
+    "no_silos": {"set": {"line_transition": {"SILO_GRIDS": {}}}},
+    "silos_40_50": {"set": {"line_transition": {"SILO_GRIDS": {"40": true, "50": true}}}},
+    "silos_25_35": {"set": {"line_transition": {"SILO_GRIDS": {"25": true, "35": true}}}},
+    "capstone10": {"set": {"line_transition": {"CAPSTONE_MAX": 10}}},
+    "capstone20": {"set": {"line_transition": {"CAPSTONE_MAX": 20}}},
+    "capstone30": {"set": {"line_transition": {"CAPSTONE_MAX": 30}}},
+    "nosilo_cap20": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 20}}},
+    "nosilo_cap15": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 15}}},
+    "nosilo_cap20_ep10": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 20, "EP_RATIO": 10}}},
+    "nosilo_cap20_rn9": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 20, "RETROFIT_MIN_NANOS": 9}}},
+    "silo4050_cap20": {"set": {"line_transition": {"SILO_GRIDS": {"40": true, "50": true}, "CAPSTONE_MAX": 20}}}
+  }
+}

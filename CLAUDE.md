@@ -118,6 +118,13 @@ Widgets respond to Spring callbacks:
 - `widget:UnitDestroyed(uid, defID, teamID, attackerID, ...)`
 - `widget:UnitFinished(uid, defID, teamID)`
 
+**Economy simulator (2026-10-14): `eco_sim.py` + `ecosim/`** runs a bot's real Lua widgets against a simulated engine (positions,
+footprints, builder reach/travel, BAR's builder-priority stall rule, extraction, stockpiles) under LuaJIT: a 20-min vacuum game in ~25 s,
+~80 per 5 min with `sweep`.  Use it to rank eco ideas (`run`, `sweep`, `report`, `compare`, `calibrate`), then confirm the best in real
+vacuum games.  Calibrated against real `[SNAP]` dumps (`metalbot_state_dump.lua`, installed by the harness); ~1.3x optimistic at 18-20 min
+for tuned configs.  Docs, calibration and the tuning log: `knowledge/eco_sim.md`.  `candidates/STANCE_ECO` (no silo capstones, T2 lab
+capstones on 15 grids, 10 fusion jobs) reached 5.7k m/s at 20:00 in a real vacuum game (STANCE_BOT 4.2-5.6k).
+
 ## Running a test
 
 ### Locally (Windows)

@@ -1,0 +1,26 @@
+{
+  "tag": "tune1",
+  "seeds": "1-4",
+  "variants": {
+    "base": {},
+    "t2_up_front": {"presets": {"line_transition": {"add": ["T2_UP_FRONT"]}}},
+    "t2_up_front6": {"presets": {"line_transition": {"add": ["T2_UP_FRONT"]}}, "set": {"line_transition": {"UPGRADE_CONS_PER_LAB": 6}}},
+    "afus_blocks": {"set": {"line_transition": {"ENERGY_BUILDING": "corafus"}}},
+    "retro_nanos4": {"set": {"line_transition": {"RETROFIT_MIN_NANOS": 4}}},
+    "retro_nanos9": {"set": {"line_transition": {"RETROFIT_MIN_NANOS": 9}}},
+    "t2_per_grid3": {"set": {"line_transition": {"T2_CONS_PER_GRID": 3}}},
+    "t2_per_grid4": {"set": {"line_transition": {"T2_CONS_PER_GRID": 4}}},
+    "ep_ratio20": {"set": {"line_transition": {"EP_RATIO": 20}}},
+    "ep_ratio10": {"set": {"line_transition": {"EP_RATIO": 10}}},
+    "ep_inflight10": {"set": {"line_transition": {"EP_INFLIGHT": 10}}},
+    "cap_frac50": {"set": {"line_transition": {"GRID_CAP_FRAC": 0.5}}},
+    "cap_frac70": {"set": {"line_transition": {"GRID_CAP_FRAC": 0.7}}},
+    "helper_cap24": {"set": {"line_transition": {"HELPER_CAP": 24}}},
+    "no_silos": {"set": {"line_transition": {"SILO_GRIDS": {}}}},
+    "capstone20": {"set": {"line_transition": {"CAPSTONE_MAX": 20}}},
+    "reserve0": {"set": {"line_transition": {"AIR_CON_RESERVE": 0}}},
+    "reserve5": {"set": {"line_transition": {"AIR_CON_RESERVE": 5}}},
+    "crew_full32": {"set": {"line_transition": {"NANO_CREW_SIZE_FULL": 32, "NANO_CREW_NANOS": 8}}},
+    "tight_on_float": {"set": {"line_transition": {"TIGHT_ON_FLOAT": true}}}
+  }
+}

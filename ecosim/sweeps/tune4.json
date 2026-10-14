@@ -1,0 +1,15 @@
+{
+  "tag": "tune4",
+  "seeds": "1-8",
+  "base": {"set": {"line_transition": {"SILO_GRIDS": {}}}},
+  "variants": {
+    "W15": {"set": {"line_transition": {"CAPSTONE_MAX": 15}}},
+    "c10_if10": {"set": {"line_transition": {"CAPSTONE_MAX": 10, "EP_INFLIGHT": 10}}},
+    "c15_if10": {"set": {"line_transition": {"CAPSTONE_MAX": 15, "EP_INFLIGHT": 10}}},
+    "c10_if10_g3": {"set": {"line_transition": {"CAPSTONE_MAX": 10, "EP_INFLIGHT": 10, "T2_CONS_PER_GRID": 3}}},
+    "c15_if10_g3": {"set": {"line_transition": {"CAPSTONE_MAX": 15, "EP_INFLIGHT": 10, "T2_CONS_PER_GRID": 3}}},
+    "c10_if14": {"set": {"line_transition": {"CAPSTONE_MAX": 10, "EP_INFLIGHT": 14}}},
+    "c10_if10_silo4050": {"set": {"line_transition": {"CAPSTONE_MAX": 10, "EP_INFLIGHT": 10, "SILO_GRIDS": {"40": true, "50": true}}}},
+    "base_silos": {"set": {"line_transition": {"SILO_GRIDS": {"6": true, "12": true}}}}
+  }
+}

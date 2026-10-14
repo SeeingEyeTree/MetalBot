@@ -1,0 +1,19 @@
+{
+  "tag": "tune3",
+  "seeds": "1-6",
+  "base": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 15}}},
+  "variants": {
+    "W": {},
+    "W_cap12": {"set": {"line_transition": {"CAPSTONE_MAX": 12}}},
+    "W_cap10": {"set": {"line_transition": {"CAPSTONE_MAX": 10}}},
+    "W_cap18": {"set": {"line_transition": {"CAPSTONE_MAX": 18}}},
+    "W_rn9": {"set": {"line_transition": {"RETROFIT_MIN_NANOS": 9}}},
+    "W_t2grid3": {"set": {"line_transition": {"T2_CONS_PER_GRID": 3}}},
+    "W_upfront6": {"presets": {"line_transition": {"add": ["T2_UP_FRONT"]}}, "set": {"line_transition": {"UPGRADE_CONS_PER_LAB": 6}}},
+    "W_inflight10": {"set": {"line_transition": {"EP_INFLIGHT": 10}}},
+    "W_afus": {"set": {"line_transition": {"ENERGY_BUILDING": "corafus"}}},
+    "W_capfrac70": {"set": {"line_transition": {"GRID_CAP_FRAC": 0.7}}},
+    "W_silo4050": {"set": {"line_transition": {"SILO_GRIDS": {"40": true, "50": true}}}},
+    "W_silo4555": {"set": {"line_transition": {"SILO_GRIDS": {"45": true, "55": true}}}}
+  }
+}

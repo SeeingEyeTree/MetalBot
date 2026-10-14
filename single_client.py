@@ -497,6 +497,8 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
              .replace("__END_FRAME__", str(end_frame)).replace("__ECO_WEIGHT__", str(eco_weight)))
     tracker_src = bt.REPO_DIR / "metalbot_stats_tracker.lua"
     tracker = tracker_src.read_text(encoding="utf-8") if tracker_src.exists() else None
+    dump_src = bt.REPO_DIR / "metalbot_state_dump.lua"   # defs + per-minute unit snapshots for eco_sim.py
+    dump = dump_src.read_text(encoding="utf-8") if dump_src.exists() else None
     bt.copy_shared_deps(widgets_dir, skip)
 
     for team in (0, 1):
@@ -505,6 +507,8 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
         if tracker:
             put(f"stats_tracker_{team}.lua", wrap(tracker, team, suffix, bot=False),
                 f"{bt.extract_widget_name(tracker, 'Stats Tracker')} {suffix}")
+        if dump:
+            put(f"state_dump_{team}.lua", wrap(dump, team, suffix, bot=False), f"State Dump {suffix}")
         for lua_file in bot_files[team]:
             content = lua_file.read_text(encoding="utf-8")
             wname = f"{bt.extract_widget_name(content, lua_file.stem)} {suffix}"
