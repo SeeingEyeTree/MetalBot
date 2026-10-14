@@ -10,6 +10,7 @@ pre-cleanup state is also the git commit "Snapshot before repo cleanup". Nothing
 | `framework/` | `tile_crew`, `slot_crew`, `nano_lift` (only TILE_BOT / TILE_V2 used them) |
 | `tests/` | tests for the archived bots/modules (`test_tile_bot`, `test_mech_bot`, `test_slot_*`) |
 | `root/` | old repo-root files: stale `macro_controller.lua` / `lab_controller.lua`, `build_order_*` outputs, `line_sweep.py` (tuned LINE_BOT) |
+| `backups/` | single-file copies taken before a refactor (RAID_BOT `lab_controller.lua` before the lab broker, 2026-10-14; RAID_BOT was not in git then) |
 | (older) | `bot.lua`, `new_bot.lua`, `original_bot_tmp` |
 
 **Caveat for archived candidates:** they were written against the old framework defaults (flags off). The defaults are

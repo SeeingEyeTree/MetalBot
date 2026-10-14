@@ -11,3 +11,4 @@ line_run*.json
 # Superseded candidate snapshots (local only; LINE_CLICK, LINE_HUMAN, LINE_NOSPINE and the dated ones are tracked)
 archive/candidates/TILE_V2_base/
 archive/candidates/TILE_V2_slots/
+runs_stance/

@@ -40,6 +40,7 @@ separate cohort, so one file serves Lashers (step 400) and Pounders (step 150).
 | `kite` | back off from ANY approaching enemy, threat-weighted (replaces slow_front's fast-only Chargers rule) | `EnemiesNear` (`{uid,x,z,range,value,mobile,vx,vz}`), optional `Axis`, `Clamp`, `Speed` |
 | `stun_target` | spread a pack over nearby targets; `stuns=true` Shurikens, `stuns=false` Wasps (extracted from `AssignStuns`) | `TargetsNear` (`{id,x,z,hp,mhp,para,value}`) |
 
+| `range_kite` | per unit: keep the nearest armed mobile enemy at the edge of OUR range (step back when it is inside 85%, to 95%); not against an enemy that outranges us, not while `ctx.Defending(uid)` (raid response / home guard: move in front). RAID_BOT's Demons and Banishers | `EnemiesNear`; optional `Range`, `Defending`, `Clamp`, `Speed` |
 | `intercept` | raid response: responders MOVE to a point AHEAD of the raiders on their path to the asset it threatens (re-aimed every tick, spread across the path); can't catch them -> block between raiders and asset; raiders stopped -> FIGHT | `ClusterOf(uid)`, `Assets()`; optional `Order`, `Speed`, `Clamp` |
 
 STANCE_BOT's raid response (user 2026-10-12): `unit_controller.DispatchResponses` assigns fast responders to `intercept`

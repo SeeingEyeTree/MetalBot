@@ -62,23 +62,39 @@ BP/eco destroyed (`[CK]`, `[SF]` log rows), then A/B on army value. Deploy with 
 controller, the person queues and commands the army). Deploy with `.\deploy.ps1 -Bot candidates\LINE_HUMAN`;
 `python human_control_report.py` and `python human_kite_report.py` read the `[HCL]` logs.
 
-**Stances (2026-10-11):** `stance_editor.html` edits a unit comp (units + share of army spend, plus intent/control notes);
-`python extract_unit_data.py` builds its unit list and pictures from the installed BAR. Saves/exports live in `stances/`
-(README there). The bot does not read them yet; next steps in `knowledge/stance_next_steps.md`. Baseline is LINE_CLICK_v16.
-**Strategy framework (2026-10-12, built, not yet in a bot):** `bar_framework/behavior_host.lua` + `behaviors/` (plug-and-play unit control:
-`kite` backs off from ANY approaching enemy, threat-weighted; `stun_target`; per-unit tunables, stackable), `strategy.lua` (stances +
-run-time hooks `army_share` / `weights` / `switch`, `InstallSpine`), `game_state.lua`. Stance units can carry `behaviors`/`cfg` (editor boxes).
-Docs: `bar_framework/behaviors/README.md`. Tests: `python tests/run_lua.py tests/test_behavior_host.lua` (also `test_strategy.lua`). Next: port a
-bot (copy v17 -> v18) onto it and A/B.
-`bar_framework/slot_spine.lua` + `blueprints/general/NanoBlock.lua` (2026-10-12): the new spine -- 16-nano blocks with 2 lab slots in front; labs are
-picked from the stance's units (`Cover`/`Counts`), swapped by reclaim when the comp changes, nanos always built ahead and re-guarding the new lab
-(`Strategy:InstallSlotSpine`). Test: `tests/test_slot_spine.lua` (fake placer).
-**For games vs people (2026-10-12):** STANCE_BOT's `CFG.MATCH = true` uses `strategy_hooks.match_enemy` (army share rises as our army value falls short of 1.1x the scouted enemy value / a time curve; 1.0 when metal+energy float; `[SHARE]` log rows) and T2 air labs queue Dragons (`corcrwh`) while both banks float. Set `MATCH = false` for bot-vs-bot tests (two bots would chase each other's share).
-**STANCE_BOT eco work (2026-10-12, overnight):** (a) `match_enemy` no longer lets threat sightings lift the share (with the slot spine share 1 = nanos for all income = starved grids); shortfall is measured in seconds of income (`horizon` 60); ahead of the enemy (>=1.5x) the share drops to 0.05. (b) `lab_controller` ARMY BUDGET: a token bucket (income x share) limits stance picks -- the share was only an on/off lab gate before (army 3x v16's at 10:00). (c) slot_spine: `BUILD_AHEAD_INCOME` 500 (no nano build-ahead below it), `FLOAT_MULT` / `MAX_JOBS_FLOAT` (capacity look-ahead while both banks float; STANCE_BOT sets 2.5), lab-to-slot match 200 elmos for the expected lab. (d) line_transition options, all default off, STANCE_BOT turns them on through `LT.New{cfg=}`: `EP_BANK_SECONDS`, `EP_RATIO` (energy look-ahead), `EP_CON_FORCE`, `ECELL_MAKE_CON`, `ECELL_FIRST`, `ECELL_MAX_ACTIVE`. (e) T2 air labs queue Dragons while both banks float. (f) `game_state.Collect{MB=WG.MetalBot}`: in --server single the framework modules do not see the widgets' WG, so threat/intel reads were empty before.
-**Vacuum test** (eco only, no commander-kill ending): copy the bot, append a self-destruct snippet to its lab_controller (armed mobile units `CMD.SELFD` 45 s after they finish), run vs INACTIVE_BOT `--end-minutes 20`; `runs_stance/vac_report.py <result tags>` prints income/pull/bank/factories per 2 min. (`METALBOT_DEATHMODE=none` is accepted by the harness but did NOT stop the early game_over.) Result: STANCE_BOT's eco scales like v16's (12:00 ~800-1000, 20:00 ~2400 metal income), but from ~16:00 metal floats (spend ~700 of 2400) because energy binds (~15 E per metal of army; energy income falls 20k -> 13k). The energy cell now starts ~13:50 (was 18:08) but takes ~4.5 min; more energy build speed is the open item.
-**STANCE_BOT eco session (2026-10-12, evening):** energy priority during wind consolidation (fusions first, every available air con + nanos help), energy storages in the NanoBlock gaps, nano crew, `Late_game` stance when the cap is 75% full, earlier retrofits, `[AUDIT]` log rows. Vacuum 20-min result: income 3.9-4.7k, pull 3.0-3.6k, ~1.2M metal spent (was 2.4k / 0.3k / 0.45M). Notes: `knowledge/session_2026-10-12_energy_eco.md` (tried/worked/removed), `knowledge/variance_notes_2026-10-12.md` (run-to-run drift), `knowledge/economy_numbers.md`; repeated-game tool `runs_stance/ab_variants.py`. Compare runs on `*_avg` tracker fields, never the minute-mark `metal_inc`.
-`candidates/STANCE_BOT/` = v16 + these systems (stance `stances/line_ground.lua`); ~even vs v16 (2-2 at 30 min). Session notes, results and to-do:
-`knowledge/session_2026-10-12_stance_framework.md`; batch tester `runs_stance/batch.py`.
+**Stances, strategy framework, STANCE_BOT, RAID_BOT (2026-10-11 .. 14).** The session-by-session notes that used to sit here (stance editor,
+behaviour host, slot spine, the STANCE_BOT eco sessions and vacuum test, the game-vs-people mode, RAID_BOT's game-review fixes, the unit clock)
+are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic notes are `knowledge/session_2026-10-12_stance_framework.md`,
+`knowledge/session_2026-10-12_energy_eco.md`, `knowledge/session_2026-10-13_raid_bot.md`, `knowledge/variance_notes_2026-10-12.md`. Short version:
+- **Stances** (`stances/*.lua`, edited in `stance_editor.html`) are unit comps plus a `plan`; `bar_framework/strategy.lua`
+  holds the current one and runs three hooks (`army_share`, `weights`, `switch`; ready-made ones in `strategy_hooks.lua`). Units carry behaviours
+  (`behavior_host.lua`, `behaviors/`: `kite`, `range_kite`, `stun_target`, `intercept`).
+- **`candidates/STANCE_BOT/`** = v16 + stances + the slot spine (`slot_spine.lua`, `NanoBlock`) + the energy-economy systems (line_transition options
+  `EP_*` / `ECELL_*` / `RETROFIT_*` ..., see the presets below) + the lab army budget. ~even vs v16 (2-2 at 30 min). Vacuum eco test and its
+  recipe: the history file. Compare runs on `*_avg` tracker fields, never the minute-mark `metal_inc`. `CFG.MATCH = true` is for games vs people
+  (army share follows the scouted enemy); set it `false` for bot-vs-bot tests.
+- **`candidates/RAID_BOT/`** = STANCE_BOT + the fixes from a review of its game against a person: stances `raid_open` -> `hold` (after bad trades
+  while behind) -> `raid_late`; click_army early small groups, COMMIT / ESCAPE, hole finding; `range_kite`; raid response that releases extras
+  (`raid_response.lua`, preset `RAID`); mex grid recovery; a second air lab; Shuriken force; ground AA; `unit_clock.lua` (per-unit command rate,
+  RAID_BOT only; `tests/test_unit_clock.lua`). Its lab controller runs on the lab broker (below).
+
+**How a bot is put together (2026-10-14).** A controller is a thin list of framework modules plus configuration; the rules live in the framework.
+- **Config:** a module's defaults live in its `CFG` table; a bot overrides them with `cfg = BC.Preset("<module>", "GROUP", ..., { own = tweaks })`
+  (`bar_framework/bot_config.lua`; the groups are `bar_framework/presets/<module>.lua`, each commented). `BC.Apply` logs one row per module,
+  `[CFG] line_transition (RAID_BOT): 30 changed -- ...`, and warns about an option that is not in the module's defaults (a typo), so a game log
+  says which flags it ran with. Options that default to nil on purpose are listed in the module's `NIL_OPTIONS`. `tests/test_bot_config.lua` checks
+  every preset key is a real option.
+- **One owner per kind of order:** `nano_broker` (nanos), `army_broker` (combat units), `con_broker` (air constructors: jobs ask for cons),
+  `lab_broker` (factory queues: a bot registers *wants*, the broker does queue read / tail order / insert ahead / grace / pending / depth, and logs
+  `[LB]` orders per want). RAID_BOT's `lab_controller.lua` is a list of wants (`RegisterWants`); adding a unit rule is one `add{...}`.
+  `tests/test_lab_broker.lua`.
+- **Raid response:** `bar_framework/raid_response.lua` (intruder groups, who answers, the stun / Wasp split, the raid record the labs read). RAID_BOT
+  and STANCE_BOT both use it; they differ only by its cfg (`BC.Preset("raid_response", "RAID")`, or none).
+- **Cross-widget state:** `WG.*` channels and the `WG.MetalBot` fields are documented in `bar_framework/WG_CHANNELS.md`; read them through
+  `game_state.lua` where you can.
+- **Checking a refactor:** run the same stub scenario through the old and the new controller with `Spring.GiveOrderToUnit` wrapped to print every
+  order, and diff the order streams (`tests/test_raid_bot.lua` is a good scenario; seed `math.randomseed`; sort the lines if the scenario's `pairs`
+  order is not stable). The lab broker, config and raid-response changes were verified this way (0 differences in 34k+ orders).
 
 ### Key Lua API calls used by bots
 
