@@ -46,6 +46,12 @@ LT.CFG = {
     T2_CONS_PER_GRID = false,     -- number: keep this many T2 cons per retrofit-eligible grid (extra builders on the retrofits; demand alone stalled at ~36 T2 cons while metal floated)
     T2_TOPUP_METAL_FRAC = 0.10,   -- ...ordered only while the metal bank holds at least this share of its storage
     RETROFIT_HOLD_FRAC = false,   -- number: while the metal bank holds this share of storage, retrofits may take the T2 cons the hold keeps for fusions / consolidation
+    -- NO_IDLE (user, 2026-10-14, replay review): an air con must never stand doing nothing.
+    IDLE_CON_SWEEP = false,       -- true: every IDLE_CON_FRAMES a con that is not building or moving gets an unfinished structure to assist; and while more than
+    IDLE_CON_FRAMES = 240,        --   IDLE_CON_MAX cons have nothing to assist, no new air cons are ordered
+    IDLE_CON_MAX = 3,
+    CREW_CHAIN = false,           -- true: the nano crew builds the nanos finished nanos can reach (so they get assisted), grid after grid
+    LAB_NANOS_FIRST_GRID = false, -- true: until the first grid's nanos stand, the air lab's nanos help that grid instead of guarding the lab
     T2_LAB_DEPTH = 3,             -- retrofit T2 cons: at most this many queued per advanced air lab (orders go to the least loaded lab)
     UPGRADE_CONS_PER_LAB = 2,     -- T2 cons each finished advanced air lab orders at once, when T2_CONS_UP_FRONT (else they are built only on demand)
     T2_CONS_UP_FRONT = false,     -- true: the pre-2026-10-14 rule (a finished advanced air lab orders UPGRADE_CONS_PER_LAB T2 cons straight away)
@@ -513,6 +519,7 @@ end
 
 local function QueueAirCon(T, frame)
     if AirConsEarlyFull(T) or ConHold(T, frame or 0, "air con") then return end
+    if T.CFG.IDLE_CON_SWEEP and (T.idleSurplus or 0) > T.CFG.IDLE_CON_MAX then return end     -- cons stand idle with nothing to assist: no more
     local lab = T.airLabID
     if lab and Spring.GetUnitDefID(lab) and T.airConDefID then
         OrderCon(T, lab, T.airConDefID, frame, not T.CFG.AIR_CON_AT_BACK)
@@ -591,7 +598,14 @@ local function UpdateLabAssist(T, frame)
     if frame % 30 ~= 0 or not T.airLabID then return end
     local NANO = T.BP.NANO
     if not NANO then return end
-    if T.airConsOrdered > 0 and Spring.GetUnitDefID(T.airLabID) then
+    -- LAB_NANOS_FIRST_GRID: the lab's nanos are there to stand the first grid's nanos sooner, not to speed the air cons out
+    local gridFirst = false
+    if T.CFG.LAB_NANOS_FIRST_GRID and T.firstGrid and not T.firstGrid.done then
+        for _, it in ipairs(T.firstGrid.queue) do
+            if it.cls == "nano" and it.act ~= "reclaim" and not (it.built or it.status == "built" or it.status == "skipped") then gridFirst = true; break end
+        end
+    end
+    if T.airConsOrdered > 0 and not gridFirst and Spring.GetUnitDefID(T.airLabID) then
         local x, _, z = Spring.GetUnitPosition(T.airLabID)
         local lineBuilt = T.LC.SlotsRemaining(T.L) == 0
         for _, n in ipairs(T.BP.NanosInRange(x, z) or {}) do
@@ -1496,6 +1510,37 @@ local function StartCrewMember(T, id, frame)
     return true
 end
 
+-- CREW_CHAIN: how many finished nanos reach a nano spot (world position of a grid queue item)
+local function NanoCover(T, it)
+    return #(T.BP.NanosInRange(it.wx, it.wz) or {})
+end
+
+-- does any open nano spot of the grid have a finished nano in reach?
+local function CrewCovered(T, gs, NanoItems)
+    local _, open = NanoItems(gs)
+    for _, it in ipairs(open) do if NanoCover(T, it) > 0 then return true end end
+    return false
+end
+
+-- open nano spots in build order: the most covered first, then each next one the nearest to the one before (it is in reach of it once
+-- that stands), so every nano the crew builds is assisted by the ones already standing and the chain grows grid after grid
+local function CrewChainOrder(T, open)
+    local rest, out = {}, {}
+    for i, it in ipairs(open) do rest[i] = it end
+    local cur
+    while #rest > 0 do
+        local bi, bs
+        for i, it in ipairs(rest) do
+            local sc
+            if cur then sc = (it.wx - cur.wx) ^ 2 + (it.wz - cur.wz) ^ 2 else sc = -NanoCover(T, it) end
+            if not bs or sc < bs then bi, bs = i, sc end
+        end
+        cur = table.remove(rest, bi)
+        out[#out + 1] = cur
+    end
+    return out
+end
+
 local function UpdateNanoCrew(T, frame)
     local K = T.CFG
     if not K.NANO_CREW then return end
@@ -1586,6 +1631,9 @@ local function UpdateNanoCrew(T, frame)
                     for _, gs in ipairs(T.gridStates) do
                         if not taken[gs] and GridWantsCrew(gs, goal) then
                             local d = (gs.anchorX - G.cx / math.max(G.cn, 1)) ^ 2 + (gs.anchorZ - G.cz / math.max(G.cn, 1)) ^ 2
+                            -- CREW_CHAIN: a grid whose open nano spots finished nanos can reach comes first (its nanos get help from the
+                            -- grid before it); the distance only breaks ties
+                            if K.CREW_CHAIN and CrewCovered(T, gs, NanoItems) then d = d - 1e12 end
                             if not bestD or d < bestD then best, bestD = gs, d end
                         end
                     end
@@ -1600,6 +1648,7 @@ local function UpdateNanoCrew(T, frame)
             local gs = T.crewGridOf[gi]
             if gs then
                 local built, open = NanoItems(gs)
+                if K.CREW_CHAIN then open = CrewChainOrder(T, open) end
                 local want = {}
                 for i = 1, math.min((T.crewGoalOf[gi] or need) - built, #open, 4) do want[i] = open[i] end
                 for _, id in ipairs(G.idle) do
@@ -1613,6 +1662,63 @@ local function UpdateNanoCrew(T, frame)
                 end
             end
         end
+    end
+end
+
+-- IDLE_CON_SWEEP: a con that is not building and not moving for IDLE_CON_FRAMES gets the nearest unfinished structure it can build to
+-- assist (a repair order on a frame is an assist).  Cons with nothing to assist are "surplus": QueueAirCon orders no more while there are
+-- more than IDLE_CON_MAX.  Skipped while metal is short (more builders then add nothing).
+local CMD_REPAIR = (CMD and CMD.REPAIR) or 40
+local function ConDoingNothing(id)
+    if Spring.GetUnitIsBuilding and Spring.GetUnitIsBuilding(id) then return false end
+    local _, _, _, speed = Spring.GetUnitVelocity(id)
+    return not (speed and speed > 0.5)
+end
+
+local function UpdateIdleCons(T, frame, res)
+    local K = T.CFG
+    if not K.IDLE_CON_SWEEP or frame % 60 ~= 0 or not T.CB then return end
+    T.idleSince = T.idleSince or {}
+    local idle, surplus, given, checked = 0, 0, 0, 0
+    local short = res.metalStorage > 0 and res.metal < 150
+    for _, c in ipairs(T.CB.list) do
+        local id = c.id
+        local cdef = Spring.GetUnitDefID(id)
+        -- only cons without a job or merely helping: a job's own builder may stand a moment (flying to the site, waiting for a reclaim)
+        local sweepable = not c.owner or c.owner == "gridhelp" or c.owner == "fusionhelp"
+                          or (c.owner == "nanocrew" and not (T.nanoCrew and T.nanoCrew[id] and T.nanoCrew[id].items))
+        if cdef and sweepable and ConDoingNothing(id) then
+            T.idleSince[id] = T.idleSince[id] or frame
+            if frame - T.idleSince[id] >= K.IDLE_CON_FRAMES then
+                idle = idle + 1
+                if not short and checked < 12 then
+                    checked = checked + 1
+                    local x, _, z = Spring.GetUnitPosition(id)
+                    local best, bd
+                    for _, uid in ipairs(Spring.GetUnitsInCylinder(x, z, 1500, T.teamID) or {}) do
+                        if uid ~= id and Spring.GetUnitIsBeingBuilt(uid) and T.BP.CanBuild(cdef, Spring.GetUnitDefID(uid)) then
+                            local ux, _, uz = Spring.GetUnitPosition(uid)
+                            local d = (ux - x) ^ 2 + (uz - z) ^ 2
+                            if not bd or d < bd then best, bd = uid, d end
+                        end
+                    end
+                    if best then
+                        Spring.GiveOrderToUnit(id, CMD_REPAIR, { best }, {})
+                        T.idleSince[id] = nil
+                        given = given + 1
+                    else
+                        surplus = surplus + 1
+                    end
+                end
+            end
+        else
+            T.idleSince[id] = nil
+        end
+    end
+    T.idleSurplus = surplus
+    T.idleStats = { idle = idle, given = given, surplus = surplus }
+    if K.AUDIT_EVERY and frame % K.AUDIT_EVERY == 0 and idle > 0 then
+        Spring.Echo(string.format("[AUDIT] %s idle cons %d: %d given an assist, %d with nothing to assist (surplus)", Clock(frame), idle, given, surplus))
     end
 end
 
@@ -2120,6 +2226,7 @@ local function UpdateGrids(T, frame, res)
         UpdateRetrofits(T, frame, res)
         UpdateT2TopUp(T, frame, res)
         UpdateT2Deferred(T, frame)
+        UpdateIdleCons(T, frame, res)
         UpdateConsolidation(T, frame, res)
     end
     if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end

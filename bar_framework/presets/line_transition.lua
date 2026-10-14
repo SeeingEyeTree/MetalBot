@@ -20,6 +20,10 @@ return {
     -- keep ~2 T2 cons per finished grid (extra retrofit builders) while the metal bank is healthy; demand-only ordering stalled at ~36 T2 cons
     T2_TOPUP = { T2_CONS_PER_GRID = 2, RETROFIT_HOLD_FRAC = 0.4 },
 
+    -- no air con stands idle (assist sweep, no new cons while some have nothing to assist), the nano crew chains nanos grid to grid, and the
+    -- air lab's nanos help the first grid's nanos (user, 2026-10-14, replay review)
+    NO_IDLE = { IDLE_CON_SWEEP = true, CREW_CHAIN = true, LAB_NANOS_FIRST_GRID = true },
+
     -- an [AUDIT] log row every minute (what every con and nano is doing)
     AUDIT = { AUDIT_EVERY = 1800 },
 

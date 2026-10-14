@@ -168,7 +168,7 @@ local function BeginBuildOrder()
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
                     teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG,
-                    cfg = BC.Preset("line_transition", "CONS_AT_BACK", "T2_UP_FRONT", "T2_TOPUP", "RETROFIT", "AUDIT", "GRID_HELP", "ENERGY_PUSH", "ENERGY_CELLS", "RECOVER",
+                    cfg = BC.Preset("line_transition", "CONS_AT_BACK", "T2_UP_FRONT", "T2_TOPUP", "NO_IDLE", "RETROFIT", "AUDIT", "GRID_HELP", "ENERGY_PUSH", "ENERGY_CELLS", "RECOVER",
                                     "SECOND_AIR_LAB", { CON_HOLD = ConHold, HELPER_CAP = 24, LAB2_FRAME = 12 * 60 * 30, LAB2_LATEST = 12 * 60 * 30 }), label = "RAID_BOT" }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.WIND_U = CFG.WIND_U

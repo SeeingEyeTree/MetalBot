@@ -149,7 +149,7 @@ local function BeginBuildOrder()
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
                     teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG,
-                    cfg = BC.Preset("line_transition", "CONS_AT_BACK", "T2_TOPUP", "RETROFIT", "AUDIT", "GRID_HELP", "ENERGY_PUSH", "ENERGY_CELLS"), label = "STANCE_BOT" }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
+                    cfg = BC.Preset("line_transition", "CONS_AT_BACK", "T2_TOPUP", "NO_IDLE", "RETROFIT", "AUDIT", "GRID_HELP", "ENERGY_PUSH", "ENERGY_CELLS"), label = "STANCE_BOT" }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.WIND_U = CFG.WIND_U
     crew.reserved = { [2] = true }       -- the nano lane is con #1's, whenever it is released from the starter
