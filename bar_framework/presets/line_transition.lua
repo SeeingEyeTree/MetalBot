@@ -18,11 +18,19 @@ return {
     T2_UP_FRONT = { T2_CONS_UP_FRONT = true },
 
     -- keep ~2 T2 cons per finished grid (extra retrofit builders) while the metal bank is healthy; demand-only ordering stalled at ~36 T2 cons
-    T2_TOPUP = { T2_CONS_PER_GRID = 2, RETROFIT_HOLD_FRAC = 0.4 },
+    T2_TOPUP = { T2_CONS_PER_GRID = 2, RETROFIT_HOLD_FRAC = 0.4,
+                 -- the metal bank sits at 1-8% of storage from ~12:00 to 14:00 (everything stalls): retrofit builders paused below 15% until 30% and the
+                 -- top-up waited for 10%, so no retrofit started until ~14:15 although 10+ grids were eligible at 12:00 (a moho pays back in ~70 s)
+                 RETROFIT_STALL_FRAC = 0, RETROFIT_RESUME_FRAC = 0.05, T2_TOPUP_METAL_FRAC = 0.02, T2_TOPUP_AHEAD = 3,
+                 -- user, 2026-10-14: a grid is eligible at 6 nanos, nothing else; new retrofits start while banking (>= 5% of storage or income > pull)
+                 RETROFIT_MIN_NANOS = 6, RETROFIT_BANK_GATE = 0.05 },
 
     -- no air con stands idle (assist sweep, no new cons while some have nothing to assist), the nano crew chains nanos grid to grid, and the
     -- air lab's nanos help the first grid's nanos (user, 2026-10-14, replay review)
-    NO_IDLE = { IDLE_CON_SWEEP = true, CREW_CHAIN = true, LAB_NANOS_FIRST_GRID = true },
+    NO_IDLE = { IDLE_CON_SWEEP = true, CREW_CHAIN = true, LAB_NANOS_FIRST_GRID = true,
+                RESERVE_COUNT_IDLE = true,
+                -- more nano crew (it was 4 cons, none after 14:00): 8 early, 24 once every grid is open; goal 6 nanos per grid (the retrofit gate), then 12
+                NANO_CREW_SIZE = 8, NANO_CREW_GROUP = 4, NANO_CREW_NANOS = 6, NANO_CREW_FULL = 12, NANO_CREW_SIZE_FULL = 24 },   -- helpers count toward the air-con reserve: they soaked up every free con, so the lab re-ordered one every 3 s (STANCE_BOT: 140 -> 310 cons from 11:00 to 20:00)
 
     -- an [AUDIT] log row every minute (what every con and nano is doing)
     AUDIT = { AUDIT_EVERY = 1800 },
@@ -42,6 +50,6 @@ return {
     RECOVER = { GRID_RECOVER = true, LINE_RECOVER = true },
 
     -- a second T1 air lab on the line with nano help (RAID_BOT round 2; 8:00 here, RAID_BOT overrides it to 12:00: 8:00 cost ~1.4k income in the vacuum test)
-    SECOND_AIR_LAB = { SECOND_AIR_LAB = true, RESERVE_COUNT_IDLE = false, LAB2_FRAME = 8 * 60 * 30, LAB2_LATEST = 8 * 60 * 30,
+    SECOND_AIR_LAB = { SECOND_AIR_LAB = true, LAB2_FRAME = 8 * 60 * 30, LAB2_LATEST = 8 * 60 * 30,
                        LAB2_NANO_HELP = true },
 }

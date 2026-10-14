@@ -52,6 +52,13 @@ LT.CFG = {
     IDLE_CON_MAX = 3,
     CREW_CHAIN = false,           -- true: the nano crew builds the nanos finished nanos can reach (so they get assisted), grid after grid
     LAB_NANOS_FIRST_GRID = false, -- true: until the first grid's nanos stand, the air lab's nanos help that grid instead of guarding the lab
+    -- RETROFIT_MIN_NANOS (user, 2026-10-14): a grid is retrofit-eligible when this many of its nanos stand -- nothing else (not the 70% / mexes-up /
+    --   nano-threshold triggers).  RETROFIT_BANK_GATE: new retrofits start while the bot is banking (bank >= this share of storage, or income above
+    --   pull); while all income is spent only RETROFIT_MIN_RUNNING keep going -- and a running retrofit is never paused (set RETROFIT_STALL_FRAC 0).
+    RETROFIT_MIN_NANOS = false,
+    RETROFIT_BANK_GATE = false,
+    RETROFIT_MIN_RUNNING = 4,
+    T2_TOPUP_AHEAD = false,       -- number (3): grids with this many nanos standing count for the top-up before they are eligible
     T2_LAB_DEPTH = 3,             -- retrofit T2 cons: at most this many queued per advanced air lab (orders go to the least loaded lab)
     UPGRADE_CONS_PER_LAB = 2,     -- T2 cons each finished advanced air lab orders at once, when T2_CONS_UP_FRONT (else they are built only on demand)
     T2_CONS_UP_FRONT = false,     -- true: the pre-2026-10-14 rule (a finished advanced air lab orders UPGRADE_CONS_PER_LAB T2 cons straight away)
@@ -517,13 +524,15 @@ local function T2Shortfall(T, frame)
     return CB.Shortfall(T.CB, 2, T2Ordered(T, frame), true, frame or 0, T.lastRes)
 end
 
-local function QueueAirCon(T, frame)
+local function QueueAirCon(T, frame, why, ahead)
     if AirConsEarlyFull(T) or ConHold(T, frame or 0, "air con") then return end
     if T.CFG.IDLE_CON_SWEEP and (T.idleSurplus or 0) > T.CFG.IDLE_CON_MAX then return end     -- cons stand idle with nothing to assist: no more
     local lab = T.airLabID
     if lab and Spring.GetUnitDefID(lab) and T.airConDefID then
-        OrderCon(T, lab, T.airConDefID, frame, not T.CFG.AIR_CON_AT_BACK)
+        OrderCon(T, lab, T.airConDefID, frame, ahead or not T.CFG.AIR_CON_AT_BACK)
         T.airConsOrdered = T.airConsOrdered + 1
+        T.airOrderWhy = T.airOrderWhy or {}
+        T.airOrderWhy[why or "other"] = (T.airOrderWhy[why or "other"] or 0) + 1
         T.orders[#T.orders + 1] = frame
     end
 end
@@ -586,7 +595,7 @@ end
 local function KeepAirConReserve(T, frame, res)
     if T.consolidateOn or not T.airLabID or not T.airConDefID or frame - T.lastReserve < 90 then return end
     if CB.Shortfall(T.CB, 1, T.airConsOrdered, T.CFG.RESERVE_COUNT_IDLE, frame, res) > 0 then
-        QueueAirCon(T, frame)
+        QueueAirCon(T, frame, "reserve")
         T.lastReserve = frame
     end
 end
@@ -817,14 +826,14 @@ local function StartGrid(T, conID, frame)
                 AddCompleted(T, gs.anchorX, gs.anchorZ)
                 -- RETROFIT_EARLY: the grid's nanos are up -- let a free T2 con retrofit it now instead of waiting for 70% built,
                 -- the finish, or the unit cap going tight (which made 15:00 income swing 2.5k-5.4k between identical runs).
-                if T.CFG.RETROFIT_EARLY then T.gridFinished[Key(gs.anchorX, gs.anchorZ)] = true; AssignCons(T) end
+                if T.CFG.RETROFIT_EARLY and not T.CFG.RETROFIT_MIN_NANOS then T.gridFinished[Key(gs.anchorX, gs.anchorZ)] = true; AssignCons(T) end
                 Collect(T, T.completed)
                 AssignCons(T, T.frame)
             end
             -- 70% built is enough to retrofit: the grid's nanos are up and its con is off on the outlying items.
             st.onMostlyDone = function(gs)
                 local key = Key(gs.anchorX, gs.anchorZ)
-                if not T.gridFinished[key] then
+                if not T.gridFinished[key] and not T.CFG.RETROFIT_MIN_NANOS then
                     T.gridFinished[key] = true
                     Spring.Echo(string.format("[LT] grid (%d, %d) mostly built -- retrofit eligible", gs.anchorX, gs.anchorZ))
                     AssignCons(T)
@@ -950,6 +959,19 @@ local function UpdateT2TopUp(T, frame, res)
     if res.metalStorage <= 0 or res.metal / res.metalStorage < K.T2_TOPUP_METAL_FRAC then return end
     local grids = 0
     for _, a in ipairs(T.completed) do if T.gridFinished[Key(a.anchorX, a.anchorZ)] then grids = grids + 1 end end
+    -- T2_TOPUP_AHEAD: grids with this share of their mexes standing count too, so the T2 cons are there when the grid turns eligible (a T2 con
+    -- takes ~50 s to build and the retrofit waited for it: 2 T2 cons at 12:00 with 10 grids eligible); the number is nanos standing in the grid
+    if K.T2_TOPUP_AHEAD then
+        for _, gs in ipairs(T.gridStates) do
+            if not gs.done and not T.gridFinished[Key(gs.anchorX, gs.anchorZ)] then
+                local n = 0
+                for _, it in ipairs(gs.queue) do
+                    if it.cls == "nano" and it.act ~= "reclaim" and (it.built or it.status == "built") then n = n + 1 end
+                end
+                if n >= K.T2_TOPUP_AHEAD then grids = grids + 1 end
+            end
+        end
+    end
     local have = CB.Count(T.CB, 2) + T2Ordered(T, frame)
     local n = math.min(K.RETROFIT_FLOAT_BATCH or 6, math.floor(K.T2_CONS_PER_GRID * grids) - have)
     if n <= 0 or ConHold(T, frame, "T2 top-up") then return end
@@ -1437,7 +1459,8 @@ local function ReleaseCandidates(T, frame, res)
     local r = table.remove(T.gridCands, pick)
     T.pendingGrids[#T.pendingGrids + 1] = r
     T.pendingSince[Key(r.anchorX, r.anchorZ)] = frame
-    QueueAirCon(T, frame)
+    -- IDLE_CON_SWEEP: cons already standing around (free or only helping) take the new grid; the lab makes one only for the rest
+    if not T.CFG.IDLE_CON_SWEEP or CB.Available(T.CB, 1, true) + T.airConsOrdered < #T.pendingGrids then QueueAirCon(T, frame, "grid") end
     Spring.Echo(string.format("[LT] %s grid cell (%d, %d) opened (%s: %d opening, bank %.0f, %d waiting)",
         Clock(frame), r.anchorX, r.anchorZ, why, opening, res.metal, #T.gridCands))
     AssignCons(T, frame)
@@ -1764,6 +1787,12 @@ local function AuditGrids(T, frame)
     end
     local nHelp = 0
     for _ in pairs(T.fusHelpers or {}) do nHelp = nHelp + 1 end
+    if T.airOrderWhy then
+        local parts = {}
+        for k, v in pairs(T.airOrderWhy) do parts[#parts + 1] = k .. " " .. v end
+        table.sort(parts)
+        Spring.Echo(string.format("[AUDIT] %s T1 air con orders so far: %s", Clock(frame), table.concat(parts, ", ")))
+    end
     Spring.Echo(string.format("[AUDIT] %s T2 cons alive %d (free %d), retrofits running %d, grids retrofit-eligible %d, retrofitted-started %d, helpers on jobs %d",
         Clock(frame), t2cons, FreeT2(T), #T.upgradeStates, #T.completed, (function() local c = 0 for _ in pairs(T.upgradedKeys) do c = c + 1 end return c end)(), nHelp))
     Spring.Echo(string.format(
@@ -1995,6 +2024,8 @@ local function UpdateSecondLab(T, frame, res)
             return
         end
         T.lab2Site = site
+        -- no con to take the job (all on grids, none idle or helping, none on the way): the lab makes one for it
+        if CB.Available(T.CB, 1, true) + T.airConsOrdered == 0 then QueueAirCon(T, frame, "lab2", true) end
         if not T.lab2Logged then
             T.lab2Logged = true
             Spring.Echo("[LT] " .. Clock(frame) .. " second air lab due: an air con is wanted for it")
@@ -2108,7 +2139,19 @@ RegisterJobs = function(T)
         end,
         sessions = T.upgradeStates, paused = function() return T.ecoPaused or T.retrofitPaused end,
         preemptMax = 4,                                            -- helpers released for retrofits: a few at a time
-        want = function() return (T.upgradeBP and not T.ecoPaused) and RetrofitsWaiting(T) or 0 end,
+        want = function()
+            if not T.upgradeBP or T.ecoPaused then return 0 end
+            local n = RetrofitsWaiting(T)
+            if n > 0 and T.CFG.RETROFIT_BANK_GATE then
+                -- RETROFIT_BANK_GATE: banking (or income above pull) -> open retrofits to spend it; all income spent -> no new ones past the minimum
+                local r = T.lastRes
+                if r and r.metalStorage > 0 and #T.upgradeStates >= T.CFG.RETROFIT_MIN_RUNNING then
+                    local banking = r.metal / r.metalStorage >= T.CFG.RETROFIT_BANK_GATE or (r.metalIncome or 0) > (r.metalPull or 0) * 1.02
+                    if not banking then return 0 end
+                end
+            end
+            return n
+        end,
         start = function(id) return StartRetrofit(T, id) end,
         produce = function(frame, res) UpdateRetrofitCons(T, frame, res) end })
 
@@ -2182,7 +2225,7 @@ local function UpdateGrids(T, frame, res)
     UpdateRecovery(T, frame)
     UpdateLineRecovery(T, frame)
     UpdateSecondLab(T, frame, res)
-    if T.CFG.RETROFIT_MEX_DONE and frame % 60 == 0 then
+    if T.CFG.RETROFIT_MEX_DONE and not T.CFG.RETROFIT_MIN_NANOS and frame % 60 == 0 then
         for _, gs in ipairs(T.gridStates) do
             local key = Key(gs.anchorX, gs.anchorZ)
             if not gs.done and not T.gridFinished[key] then
@@ -2201,6 +2244,23 @@ local function UpdateGrids(T, frame, res)
                         gs.skipDefIDs[T.windDefID or UnitDefNames.corwin.id] = true
                     end
                     Spring.Echo(string.format("[LT] %s grid (%d, %d) mexes up -- retrofit eligible", Clock(frame), gs.anchorX, gs.anchorZ))
+                    AssignCons(T)
+                end
+            end
+        end
+    end
+    if T.CFG.RETROFIT_MIN_NANOS and frame % 60 == 0 then
+        for _, gs in ipairs(T.gridStates) do
+            local key = Key(gs.anchorX, gs.anchorZ)
+            if not T.gridFinished[key] then
+                local n = 0
+                for _, it in ipairs(gs.queue) do
+                    if it.cls == "nano" and it.act ~= "reclaim" and (it.built or it.status == "built") then n = n + 1 end
+                end
+                if n >= T.CFG.RETROFIT_MIN_NANOS then
+                    T.gridFinished[key] = true
+                    AddCompleted(T, gs.anchorX, gs.anchorZ)
+                    Spring.Echo(string.format("[LT] %s grid (%d, %d) has %d nanos -- retrofit eligible", Clock(frame), gs.anchorX, gs.anchorZ, n))
                     AssignCons(T)
                 end
             end
