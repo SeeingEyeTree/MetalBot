@@ -82,7 +82,7 @@ Real vacuum games (single mode, vs INACTIVE_BOT, 20 min; `runs_stance/<tag>_<bot
 |---|---|---|---|
 | STANCE_BOT (simcal, 3 games) | as is | 4.0-4.3k | 4248, 5567, 4562 (mean 4.8k) |
 | `candidates/STANCE_ECO` (ecoreal) | no silos, CAPSTONE_MAX 15, EP_INFLIGHT 10 | 7.4-7.5k | **5697** (12:00 750, 14:00 1106, 16:00 2335, 18:00 3472) |
-| `candidates/STANCE_ECO2` (ecoreal2) | no silos, CAPSTONE_MAX 10, EP_INFLIGHT 14 | 8.2k | pending |
+| `candidates/STANCE_ECO2` (ecoreal2) | no silos, CAPSTONE_MAX 10, EP_INFLIGHT 14 | 8.2k | **8081** (12:00 848, 14:00 1782, 16:00 2856, 18:00 5020) |
 
-Sim vs real for STANCE_ECO: the sim is ~1.3x optimistic at 18-20 min; the clearest gap is the first fusion (real: none by 14:00,
+STANCE_ECO2 matched the sim's prediction within 2% (one game; real run-to-run spread ~25%).  Sim vs real for STANCE_ECO: the sim is ~1.3x optimistic at 18-20 min; the clearest gap is the first fusion (real: none by 14:00,
 sim: 10) and T2 labs (real 25 at 20:00, sim 38).  Next calibration item: why the real energy push starts later.
