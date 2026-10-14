@@ -20,6 +20,8 @@ local spGetMyTeamID     = Spring.GetMyTeamID
 local CMD_GUARD = (CMD and CMD.GUARD) or 25
 local CMD_STOP  = 0
 
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- BC.Preset: named option groups for framework modules (bar_framework/presets/)
+
 local CFG = {
     MAX_CONS            = 3,         -- one per lane besides the commander's
     -- Con #n (n = 2, 3) is queued once CON_GAP[n] frames have passed since the previous con came out AND any of:
@@ -147,7 +149,7 @@ local function BeginBuildOrder()
                        onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
     trans = LT.New{ BP = BP_PLACER, LC = LC, crew = crew, layout = layout, gridBP = GRID_BP, upgradeBP = UPGRADE_BP, ecellBP = ECELL_BP,
                     teamID = myTeamID, spine = SPINE, spineBPs = SPINE_BPS, WG = WG,
-                    cfg = { RETROFIT_MEX_DONE = true, UPGRADE_CONS_PER_LAB = 4, RETROFIT_FLOAT_CONS = true, RETROFIT_FLOAT_FRAC = 0, RETROFIT_FLOAT_BATCH = 6, AUDIT_EVERY = 1800, GRID_CAP_FRAC = 0.60, GRID_HELPERS = true, HELP_ANY = true, HELP_MAX = 3, FUSION_HELPERS = true, ENERGY_PRIORITY = true, NANO_CREW = true, EP_BANK_SECONDS = 20, EP_RATIO = 15, EP_INFLIGHT = 6, ECELL_MAX_ACTIVE = 4, ECELL_FIRST = true, EP_CON_BATCH = 4, EP_CON_EVERY = 450, EP_CON_FORCE = true, ECELL_MAKE_CON = true } }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
+                    cfg = BC.Preset("line_transition", "CONS_AT_BACK", "RETROFIT", "AUDIT", "GRID_HELP", "ENERGY_PUSH", "ENERGY_CELLS"), label = "STANCE_BOT" }   -- STANCE_BOT: energy counts as binding on a bank under 20 s of pull
     BP_PLACER.BALANCE_BP_U = CFG.NANO_U
     LC.WIND_U = CFG.WIND_U
     crew.reserved = { [2] = true }       -- the nano lane is con #1's, whenever it is released from the starter
@@ -241,7 +243,7 @@ local function MaybeQueueNextCon(frame, res)
     elseif res.metal >= CFG.CON_BANK_TRIGGER then reason = "bank"
     elseif since >= CFG.CON_FALLBACK_FRAMES then reason = "timer" end
     if not reason then return end
-    spGiveOrderToUnit(TS.botLabID, -TS.conDefID, { 0 }, {})
+    LT.OrderCon(WG, TS.botLabID, TS.conDefID, frame)
     TS.conOrderOpen = true
     TS.queuedCount = n
     Spring.Echo(string.format("[LN] %s con #%d queued (reason %s): income %.1f pull %.1f bank %d",
@@ -442,7 +444,7 @@ function widget:Initialize()
             end
             if all then SPINE = rS else Spring.Echo("[LN] spine disabled: blueprint missing") end
             if SPINE and CFG.SPINE_CFG then
-                for k, v in pairs(CFG.SPINE_CFG) do SPINE.CFG[k] = v end
+                BC.Apply("slot_spine", SPINE.CFG, CFG.SPINE_CFG, "STANCE_BOT")
             end
         else
             Spring.Echo("[LN] ERROR loading spine: " .. tostring(rS))
@@ -509,7 +511,12 @@ function widget:Initialize()
     local okD, rD = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/defense_crew.lua")
     if okD and rD then
         DC = rD
-        DC.Init{ teamID = myTeamID, WG = WG }
+        -- cover / assist / loose builds take their cons from the con broker (trans exists only once the build order starts)
+        local function Pool() return trans and LT.ConPool(trans) end
+        DC.Init{ teamID = myTeamID, WG = WG, pool = {
+            Usable  = function(id) local p = Pool(); return not p or p.Usable(id) end,
+            Seize   = function(id, owner) local p = Pool(); return not p or p.Seize(id, owner) end,
+            Release = function(id) local p = Pool(); if p then p.Release(id) end end } }
         DC.BUILD_AA, DC.BUILD_ANTINUKE = false, false   -- loose flak / anti-nukes removed for now; anti-nukes are grid capstones
         DC.SILO_INCOME, DC.SILO_SECOND = 1e12, 1e12     -- silos are grid capstones (line_transition SILO_GRIDS), not loose sites
     else
@@ -552,7 +559,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if unitID == TS.botLabID then
         TS.conDefID = FindConBotDefID(unitDefID)
         if TS.conDefID then
-            spGiveOrderToUnit(TS.botLabID, -TS.conDefID, { 0 }, {})
+            LT.OrderCon(WG, TS.botLabID, TS.conDefID, currentFrame)       -- through the lab broker when the bot has one
             TS.conOrderOpen, TS.queuedCount = true, 1
             local cd = UnitDefs[TS.conDefID]
             Spring.Echo(string.format("[LN] %s lab finished, con #1 queued (%s, buildDistance %s, cost %s)",
@@ -564,6 +571,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         TS.conCount = TS.conCount + 1
         TS.conBots[#TS.conBots + 1] = unitID
         TS.conOrderOpen, TS.lastConFrame = false, currentFrame
+        if trans then LT.AdoptCon(trans, unitID, "line") end      -- the line's cons are the line's: not for defense_crew or the jobs
         if not TS.con1ID then
             TS.con1ID, TS.con1JoinFrame = unitID, currentFrame
             BP_PLACER.AddBuilder(distState, unitID)           -- builds the starter's nano

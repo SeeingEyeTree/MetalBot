@@ -191,12 +191,12 @@ local musterPool = {}   -- [unitID] = frame it finished
 
 -- Threat response.  Dispatch is absolute (see threat_map): if an attack crosses the
 -- respond band, units go, whatever our production state.  These only size it.
-local RESPOND_NEED_MULT   = 2.0   -- commit this multiple of the enemy value present
 local RESPOND_MIN_UNITS   = 3     -- never send a lone unit to die
 local RESPOND_ARMY_CAP    = 0.35  -- never commit more than this share of the army
 local RESPOND_CHASE_RATIO = 1.10  -- an attacker this much faster, leaving, is not chased
 
 local responding = {}   -- [unitID] = incident it was sent to
+local RESP              -- bar_framework/raid_response.lua instance (created in Initialize): the answer to enemies behind the line
 
 -- Home guard: the vehicle plant exists to defend the base, so its output stays there
 -- instead of walking to the front; fighters fly cover over the commander, because
@@ -945,10 +945,6 @@ local function UpdateMuster(frame)
     end
 end
 
-local function CanAnswer(defID, channel)
-    if channel == "air" then return UQ.can_hit_air(defID) end
-    return UQ.can_hit_ground(defID)
-end
 
 -- ── Response to enemies behind the line ───────────────────────────────────────
 -- Driven by what we SEE, not by damage: damage means we were already too late.  Any
@@ -956,12 +952,6 @@ end
 -- intruders form a group, and the nearest able units are sent at it until they are
 -- worth up to RESPOND_NEED_MULT x what we saw there.  No bands, no thresholds.
 
-local INTRUDER_TTL    = 900   -- frames a sighting is acted on once out of sight
-local PAST_MARGIN     = 200   -- elmos behind the line before an enemy counts as past it
-local CLUSTER_RADIUS  = 700   -- intruders this close are one group
-local RESPOND_KEEP    = 1500  -- a responder stays with the group that is this close to its last
-
-local respondClusters = {}    -- last pass's intruder groups (published to the labs)
 
 -- Advance of the line itself at a given lateral offset (interpolated between nodes).
 local function LineAdvAt(lat)
@@ -1135,340 +1125,6 @@ local function IssueDepthScouts(frame)
     end
 end
 
--- STANCE_BOT raid response (behaviors/intercept.lua).  One table = one main-chunk local.
---   hist     [enemy id] = {x, z, f, vx, vz, still}  position history -> velocity (elmos/s) and when it last went slow
---   units    [uid] = true: responders the host's "intercept" behaviour is moving
---   assets   what the raiders' path is checked against {x, z, w}, rescanned every ASSET_EVERY frames
---   raid     last published raid record (labs read it as mb.raid)
-local ICPT = {
-    ON = true,
-    MIN_SPEED   = 60,     -- a responder slower than this (and slower than 0.7x the raiders) keeps its plain FIGHT
-    STILL_SPEED = 14,     -- elmos/s: the same threshold the behaviour uses for "stopped"
-    ASSET_EVERY = 150,
-    hist = {}, units = {}, assets = {}, assetF = -1e9, raid = nil, airLoss = {},
-}
-
--- Velocity of one enemy contact from its last two distinct sightings.
-function ICPT.Track(id, c)
-    local h = ICPT.hist[id]
-    if not h then
-        ICPT.hist[id] = { x = c.x, z = c.z, f = c.frame, vx = 0, vz = 0, still = c.frame }
-        return ICPT.hist[id]
-    end
-    if c.frame > h.f then
-        local dt = (c.frame - h.f) / 30
-        local vx, vz = (c.x - h.x) / dt, (c.z - h.z) / dt
-        if dt > 12 then vx, vz = 0, 0 end                      -- too old a pair to say anything
-        h.vx, h.vz = 0.5 * h.vx + 0.5 * vx, 0.5 * h.vz + 0.5 * vz
-        h.x, h.z, h.f = c.x, c.z, c.frame
-        if math.sqrt(h.vx * h.vx + h.vz * h.vz) >= ICPT.STILL_SPEED then h.still = c.frame end
-    end
-    return h
-end
-
-local function IntruderGroups(frame)
-    local groups = {}
-    if not (nodes and baseX and TM and UQ) then return groups end
-    for cid, c in pairs(TM.Contacts()) do
-        local age = frame - c.frame
-        if age <= INTRUDER_TTL and c.defID and UQ.is_mobile(c.defID) then
-            -- We can see the spot but nothing has been seen there since: it moved on.
-            local gone = age > TM.SCAN_PERIOD * 1.5 and spIsPosInLos
-                and spIsPosInLos(c.x, spGetGroundHeight(c.x, c.z) or 0, c.z, myAllyID)
-            if not gone then
-                local dx, dz = c.x - baseX, c.z - baseZ
-                local adv = dx * advDir.x + dz * advDir.z
-                local lat = dx * perpDir.x + dz * perpDir.z
-                if adv < LineAdvAt(lat) - PAST_MARGIN then
-                    local cost = UQ.metal_cost(c.defID) or c.v or 0
-                    local g
-                    for _, o in ipairs(groups) do
-                        if (o.x - c.x) ^ 2 + (o.z - c.z) ^ 2 <= CLUSTER_RADIUS ^ 2 then g = o; break end
-                    end
-                    if not g then
-                        g = { x = c.x, z = c.z, n = 0, cost = 0, air = 0, gnd = 0, wvx = 0, wvz = 0, stillS = 1e9 }
-                        groups[#groups + 1] = g
-                    end
-                    local n = g.n + 1
-                    g.x, g.z = (g.x * g.n + c.x) / n, (g.z * g.n + c.z) / n
-                    g.n, g.cost = n, g.cost + cost
-                    local h = ICPT.Track(cid, c)
-                    local w = math.max(1, cost)
-                    g.wvx, g.wvz = g.wvx + h.vx * w, g.wvz + h.vz * w
-                    g.stillS = math.min(g.stillS, (frame - h.still) / 30)
-                    if c.air then g.air = g.air + cost else g.gnd = g.gnd + cost end
-                end
-            end
-        end
-    end
-    for _, g in ipairs(groups) do
-        g.channel = (g.air > g.gnd) and "air" or "ground"
-        local w = math.max(1, g.cost)
-        g.vx, g.vz = g.wvx / w, g.wvz / w
-        g.speed = math.sqrt(g.vx * g.vx + g.vz * g.vz)
-    end
-    -- forget enemies not seen for a while
-    for id, h in pairs(ICPT.hist) do
-        if frame - h.f > INTRUDER_TTL * 2 then ICPT.hist[id] = nil end
-    end
-    table.sort(groups, function(a, b) return a.cost > b.cost end)
-    return groups
-end
-
--- LINE_CLICK_v13 (user): Shuriken micro.  ~30 Shurikens all stunned the SAME unit.  Their weapon paralyses: stun a
--- unit, leave ONE on it to keep it stunned, and send the rest to the next enemy that is still moving.  Each responding
--- Shuriken gets an ATTACK on its own target: an unstunned target gets NEED Shurikens (2-6 by its health), a stunned
--- one keeps a single keeper; the rest spread over the unstunned targets.  Assignments stick while they still fit.
-STUN = { NAMES = { corbw = true }, R = 1200, HP_PER = 700, NEED_MIN = 2, NEED_MAX = 6, LOG_EVERY = 900,
-         STUNS = true, tag = "stun", target = {}, logF = -1e9 }
--- LINE_CLICK_v16 (user): the same split for Wasps.  No stun, so every target counts as still moving: NEED Wasps by its
--- health, the spare spread round-robin over the targets.
-SPLIT_WASP = { NAMES = { corape = true }, R = 1500, HP_PER = 900, NEED_MIN = 1, NEED_MAX = 8, LOG_EVERY = 900,
-               tag = "wasp", target = {}, logF = -1e9 }
-local CMD_ATTACK_ = (CMD and CMD.ATTACK) or 20
-
-AssignStuns = function(frame, ids, P)
-    P = P or STUN
-    local stunTarget = P.target
-    if #ids == 0 then return end
-    -- the enemies near the stunners: mobile, visible, not dead
-    local sx, sz = 0, 0
-    for _, uid in ipairs(ids) do
-        local x, _, z = spGetUnitPosition(uid)
-        if x then sx, sz = sx + x, sz + z end
-    end
-    sx, sz = sx / #ids, sz / #ids
-    local targets, byId = {}, {}
-    for _, eid in ipairs(spGetUnitsInCylinder(sx, sz, P.R) or {}) do
-        local defID = spGetUnitDefID(eid)
-        if defID and spGetUnitAllyTeam(eid) ~= myAllyID and UQ.is_mobile(defID) then
-            local hp, mhp, para = spGetUnitHealth(eid)
-            if hp and mhp and mhp > 0 then
-                local ud = UnitDefs[defID]
-                local v = ud and ((ud.metalCost or 0) + (ud.energyCost or 0) / 70) or 0
-                local t = { id = eid, stunned = P.STUNS and (para or 0) > mhp or false, mhp = mhp, v = v, have = {} }
-                if P.STUNS then
-                    t.need = t.stunned and 1 or math.max(P.NEED_MIN, math.min(P.NEED_MAX, math.ceil(mhp / P.HP_PER)))
-                else
-                    -- damage dealers: enough to kill what is LEFT of it (current health), then they move on
-                    t.need = math.max(P.NEED_MIN, math.min(P.NEED_MAX, math.ceil(hp / P.HP_PER)))
-                    t.score = v / t.need            -- value killed per Wasp committed
-                end
-                targets[#targets + 1] = t
-                byId[eid] = t
-            end
-        end
-    end
-    if #targets == 0 then      -- nothing to stun near them yet: fly at the intruders like everyone else
-        for _, uid in ipairs(ids) do
-            stunTarget[uid] = nil
-            local g = responding[uid]
-            if g then ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_FIGHT, x = g.x, z = g.z }, frame) end
-        end
-        return
-    end
-    -- unstunned (still moving) first, then the most valuable
-    table.sort(targets, function(a, b)
-        if a.stunned ~= b.stunned then return not a.stunned end
-        if a.score and b.score and a.score ~= b.score then return a.score > b.score end
-        return a.v > b.v
-    end)
-    -- keep sticky assignments that still fit
-    local free = {}
-    for _, uid in ipairs(ids) do
-        local t = byId[stunTarget[uid] or -1]
-        if t and #t.have < t.need then t.have[#t.have + 1] = uid else free[#free + 1] = uid end
-    end
-    -- fill what is still needed, nearest stunner first
-    for _, t in ipairs(targets) do
-        if #free == 0 then break end
-        local tx, _, tz = spGetUnitPosition(t.id)
-        while #t.have < t.need and #free > 0 and tx do
-            local bi, bd
-            for i, uid in ipairs(free) do
-                local x, _, z = spGetUnitPosition(uid)
-                local d = x and ((x - tx) ^ 2 + (z - tz) ^ 2) or math.huge
-                if not bd or d < bd then bi, bd = i, d end
-            end
-            t.have[#t.have + 1] = table.remove(free, bi)
-        end
-    end
-    -- spare stunners: round-robin over the unstunned targets (never pile onto a stunned one)
-    local moving = {}
-    for _, t in ipairs(targets) do if not t.stunned then moving[#moving + 1] = t end end
-    local k = 0
-    -- damage dealers pile the spare onto the best few kills (overkill only wastes seconds); stunners spread out
-    if not P.STUNS then while #moving > 3 do table.remove(moving) end end
-    while #free > 0 and #moving > 0 do
-        k = k % #moving + 1
-        local t = moving[k]
-        t.have[#t.have + 1] = table.remove(free, 1)
-    end
-    local nStun, nMove = 0, 0
-    for _, t in ipairs(targets) do
-        for _, uid in ipairs(t.have) do
-            stunTarget[uid] = t.id
-            ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_ATTACK_, targetID = t.id }, frame)
-        end
-        if t.stunned then nStun = nStun + 1 else nMove = nMove + 1 end
-    end
-    if frame - P.logF >= P.LOG_EVERY then
-        P.logF = frame
-        local sec = math.floor(frame / 30)
-        Spring.Echo(string.format("[UC/%s] %d:%02d %d units on %d targets (%d stunned, %d still moving)",
-            P.tag, math.floor(sec / 60), sec % 60, #ids, #targets, nStun, nMove))
-    end
-end
-
--- What the raiders' path is checked against: the commander, factories, build power, mexes and generators.
--- w = metal cost x a role factor (build power and the commander are what a raid hurts most).
-function ICPT.Assets(frame)
-    if frame - ICPT.assetF < ICPT.ASSET_EVERY then return ICPT.assets end
-    ICPT.assetF = frame
-    local out = {}
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
-        local defID = spGetUnitDefID(uid)
-        local d = defID and UnitDefs[defID]
-        if d and (d.speed or 0) <= 0 or (d and IsCommander(defID)) then
-            local f
-            if IsCommander(defID) then f = 4
-            elseif d.isFactory then f = 1.5
-            elseif (d.buildSpeed or 0) > 0 and (d.speed or 0) <= 0 then f = 1.5
-            elseif (d.extractsMetal or 0) > 0 then f = 1.2
-            elseif (d.energyMake or 0) >= 20 or (d.windGenerator or 0) > 0 then f = 0.8 end
-            if f then
-                local x, _, z = spGetUnitPosition(uid)
-                if x then out[#out + 1] = { x = x, z = z, w = math.max(20, d.metalCost or 0) * f } end
-            end
-        end
-    end
-    ICPT.assets = out
-    return out
-end
-
--- The behaviour's order sink: through the army broker (retreat still outranks it).  The broker re-sends a MOVE only when
--- the target has moved 250 elmos; a raider outruns that, so a changed target 80+ elmos from the last one goes out
--- directly (at most every 30 frames) and the broker's record is updated to match.
-function ICPT.Order(frame, uid, cmd, x, z)
-    local before = ARMY.OrdersIssued()
-    ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = cmd, x = x, z = z }, frame)
-    if ARMY.OrdersIssued() ~= before then return end
-    local d = ARMY.Duty(uid)
-    if d and d.role == "RESPOND" and d.issuedX and d.lastOrderFrame and frame - d.lastOrderFrame >= 30
-       and (d.lastCmd ~= cmd or (x - d.issuedX) ^ 2 + (z - d.issuedZ) ^ 2 > 80 * 80) then
-        Spring.GiveOrderToUnit(uid, cmd, { x, spGetGroundHeight(x, z) or 0, z }, {})
-        d.lastOrderFrame, d.lastCmd, d.issuedX, d.issuedZ, d.tx, d.tz = frame, cmd, x, z, x, z
-    end
-end
-
--- Can this unit usefully get ahead of that cluster?  Slow units against fast raiders keep the plain FIGHT.
-function ICPT.Eligible(uid, defID, g)
-    if not (ICPT.ON and HOST and CTX) then return false end
-    local sp = UQ.max_speed(defID) or 0
-    return sp >= math.min(ICPT.MIN_SPEED, 0.7 * (g.speed or 0))
-end
-
-local function DispatchResponses(frame)
-    if not ARMY or not UQ then return end
-
-    local groups = IntruderGroups(frame)
-    respondClusters = groups
-
-    -- Each responder stays with the group nearest its last one; no group near, stand down.
-    local have = {}   -- [group] = value committed
-    for uid, last in pairs(responding) do
-        local role = ARMY.RoleOf(uid)
-        local best, bestD = nil, RESPOND_KEEP ^ 2
-        for _, g in ipairs(groups) do
-            local d = (g.x - last.x) ^ 2 + (g.z - last.z) ^ 2
-            if d < bestD then best, bestD = g, d end
-        end
-        if not best or not spGetUnitDefID(uid) or role == "RETREAT" then
-            if role == "RESPOND" then ARMY.Release(uid) end
-            responding[uid] = nil
-            if ICPT.units[uid] then ICPT.units[uid] = nil; if HOST then HOST:Remove(uid) end end
-        else
-            responding[uid] = best
-            have[best] = (have[best] or 0) + (UQ.metal_cost(combatUnits[uid]) or 0)
-        end
-    end
-
-    for _, g in ipairs(groups) do
-        local need = g.cost * RESPOND_NEED_MULT
-        local got  = have[g] or 0
-        if got < need then
-            local cands = {}
-            for uid, defID in pairs(combatUnits) do
-                if spGetUnitDefID(uid) and not responding[uid] and not musterPool[uid]
-                   and CanAnswer(defID, g.channel) then
-                    local role = ARMY.RoleOf(uid)
-                    local ok = role == nil or role == "HOME_GUARD"
-                    -- LINE_CLICK: only reinforcements (new units and the ones waiting at the stage), home
-                    -- guards and air defend the base.  A unit in an attack group never does -- the groups
-                    -- stay on the other side of the map.
-                    if role == "BLOB" and CA and not CA.InGroup(uid) then ok = true end
-                    if role == "LINE" then
-                        -- A unit holding a node that is fighting stays and fights.
-                        local node = nodes and nodes[ARMY.Slot(uid) or 0]
-                        ok = not (node and node.engaged)
-                    end
-                    if ok then
-                        local ux, _, uz = spGetUnitPosition(uid)
-                        if ux then
-                            cands[#cands + 1] = {
-                                uid = uid, cost = UQ.metal_cost(defID) or 0,
-                                eta = math.sqrt((ux - g.x) ^ 2 + (uz - g.z) ^ 2)
-                                      / math.max(1, UQ.max_speed(defID)),
-                            }
-                        end
-                    end
-                end
-            end
-            table.sort(cands, function(a, b) return a.eta < b.eta end)
-
-            local added = 0
-            for _, c in ipairs(cands) do
-                -- Up to 2x what was seen, but never zero units for a real intruder.
-                if got >= need or (added > 0 and got + c.cost > need) then break end
-                responding[c.uid] = g
-                got, added = got + c.cost, added + 1
-            end
-            have[g] = got
-            if added > 0 then
-                local sec = math.floor(frame / 30)
-                Spring.Echo(string.format(
-                    "[UC/respond] %d:%02d %s intruders at %d,%d: seen %d units cost %.0f, +%d units (committed %.0f / %.0f)",
-                    math.floor(sec / 60), sec % 60, g.channel, g.x, g.z, g.n, g.cost,
-                    added, got, need))
-            end
-        end
-    end
-
-    local stunners, wasps = {}, {}
-    for uid, g in pairs(responding) do
-        local nm = (UnitDefs[combatUnits[uid] or -1] or {}).name or ""
-        if STUN.NAMES[nm] then
-            stunners[#stunners + 1] = uid
-        elseif SPLIT_WASP.NAMES[nm] then
-            wasps[#wasps + 1] = uid
-        elseif ICPT.Eligible(uid, combatUnits[uid], g) then
-            -- get ahead of the raiders (behaviors/intercept.lua), not to where they were
-            if not ICPT.units[uid] then
-                if HOST:Assign(uid, "intercept") then ICPT.units[uid] = true end
-            end
-            if not ICPT.units[uid] then
-                ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_FIGHT, x = g.x, z = g.z }, frame)
-            end
-        else
-            if ICPT.units[uid] then ICPT.units[uid] = nil; HOST:Remove(uid) end
-            ARMY.Claim(ARMY.PRIO.RESPOND, uid, {
-                role = "RESPOND", cmd = CMD_FIGHT, x = g.x, z = g.z,
-            }, frame)
-        end
-    end
-    AssignStuns(frame, stunners, STUN)
-    AssignStuns(frame, wasps, SPLIT_WASP)
-end
 
 -- Ground guards hold posts on the enemy-facing side of the base; air guards orbit
 -- the commander.  Directions come from the real home->foe axis, so the posts face
@@ -1759,7 +1415,7 @@ local function PublishState(frame)
         mb.axisX, mb.axisZ = MM.Axis()
     end
     local threats = {}
-    for _, g in ipairs(respondClusters) do
+    for _, g in ipairs(RESP and RESP.clusters or {}) do
         threats[#threats + 1] = { x = g.x, z = g.z, channel = g.channel }
     end
     mb.threats = threats
@@ -1781,24 +1437,8 @@ local function PublishState(frame)
     mb.armyValue = armyV    -- metal value of our combat units (the army_share hook compares it with the scouted enemy's)
     mb.hunt = (EG and EG.Hunting()) or false
     mb.airAlarm = airAlarm
-    -- raid state for the labs: the intruder clusters now (value, channel, speed), kept for the labs to apply a TTL
-    if #respondClusters > 0 then
-        local v, gnd, air, spd, moving = 0, 0, 0, 0, false
-        for _, g in ipairs(respondClusters) do
-            v, gnd, air = v + g.cost, gnd + g.gnd, air + g.air
-            spd = math.max(spd, g.speed or 0)
-            if (g.speed or 0) >= ICPT.STILL_SPEED then moving = true end
-        end
-        ICPT.raid = { frame = frame, value = v, ground = gnd, air = air, speed = spd, moving = moving,
-                      channel = (air > gnd) and "air" or "ground", n = #respondClusters }
-    end
-    mb.raid = ICPT.raid
-    local nl, keep = 0, {}
-    for _, f in ipairs(ICPT.airLoss) do
-        if frame - f <= 900 then keep[#keep + 1] = f end
-    end
-    ICPT.airLoss = keep
-    mb.airLosses = #keep      -- own air units shot down by enemy fighters in the last 30 s
+    -- raid state for the labs (mb.raid, mb.airLosses): raid_response.lua
+    if RESP then RESP.Publish(frame, mb) end
 end
 
 -- Once a minute: what we know and what the new roles are doing, for the logs.
@@ -1877,6 +1517,18 @@ function widget:Initialize()
                  muster = musterPool, scouts = lineScouts, responding = responding, bombers = bombers,
                  isHunting = function() return EG and EG.Hunting() or false end }
     end
+    -- the raid response (raid_response.lua): shares the controller's tables, reads the line and the behaviour host through getters
+    do
+        local RRm = Load("raid_response")
+        if RRm and ARMY and UQ then
+            RESP = RRm.New{ cfg = nil, label = "STANCE_BOT",
+                            ARMY = ARMY, UQ = UQ, TM = TM, CA = CA,
+                            combatUnits = combatUnits, musterPool = musterPool, responding = responding,
+                            teamID = myTeamID, allyID = myAllyID, isCommander = IsCommander, lineAdvAt = LineAdvAt,
+                            line = function() return nodes, baseX, baseZ, advDir, perpDir end,
+                            host = function() return HOST end, ctx = function() return CTX end }
+        end
+    end
     DC = Load("defense_crew")
     if DC then DC.Init{ teamID = myTeamID } end
     AW = EI and Load("air_wing")
@@ -1895,8 +1547,8 @@ function widget:Initialize()
             CTX = BC.New{ UQ = UQ, MM = MM, allyID = myAllyID }
             -- behaviors/intercept.lua: the raid cluster each responder answers, what it protects, and the order sink
             CTX.ClusterOf = function(uid) return responding[uid] end
-            CTX.Assets    = function() return ICPT.Assets(Spring.GetGameFrame()) end
-            CTX.Order     = function(frame, uid, cmd, x, z) return ICPT.Order(frame, uid, cmd, x, z) end
+            CTX.Assets    = function() return RESP.Assets(Spring.GetGameFrame()) end
+            CTX.Order     = function(frame, uid, cmd, x, z) return RESP.Order(frame, uid, cmd, x, z) end
         else
             Spring.Echo("[UnitCtrl] behaviours not loaded: " .. tostring(BH) .. " " .. tostring(BC))
         end
@@ -2066,7 +1718,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
     if teamID == myTeamID and attackerID and UQ and UQ.is_air(unitDefID) then
         local ad = spGetUnitDefID(attackerID)
         if ad and UQ.is_air(ad) and UQ.can_hit_air(ad) and not UQ.is_bomber(ad) then
-            ICPT.airLoss[#ICPT.airLoss + 1] = Spring.GetGameFrame()
+            if RESP then RESP.NoteAirLoss(Spring.GetGameFrame()) end
         end
     end
     if TM then
@@ -2089,7 +1741,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
     radarPlanes[unitID]   = nil
     bombers[unitID]       = nil
     antiRaid[unitID]      = nil
-    ICPT.units[unitID]    = nil
+    if RESP then RESP.Forget(unitID) end
     if unitID == commanderID then commanderID = nil end
     if SP then SP.Forget(unitID) end
     if RP then RP.Forget(unitID) end
@@ -2218,7 +1870,7 @@ function widget:GameFrame(frame)
         if ARMY then ARMY.Sweep(frame) end
         UpdateRetreats(frame)
         ReleaseSurplusGuards(frame)
-        DispatchResponses(frame)
+        if RESP then RESP.Dispatch(frame) end
         UpdateHomeGuard(frame)
         UpdateMuster(frame)
         if AW and not (EG and EG.Hunting()) then AW.Update(frame) end    -- before CA: its fighters are claimed first
