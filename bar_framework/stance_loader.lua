@@ -39,16 +39,20 @@ end
 -- Resolves unit names to defIDs, drops unknown units and renormalises the shares.
 function M.Prepare(raw)
     if type(raw) ~= "table" or type(raw.units) ~= "table" then return nil end
+    -- plan (optional): the game plan the stance stands for, read by the bot through Strategy:Plan(), e.g.
+    -- { army = "raid" | "hold", bombers = 0..1 } (RAID_BOT: click_army mode and the air labs' bomber want)
     local st = { name = raw.name or "?", intent = raw.intent, control = raw.control,
                  suggestedShare = tonumber(tostring(raw.suggestedShare or ""):match("(%d+)%D*$")) or nil,
+                 plan = type(raw.plan) == "table" and raw.plan or nil,
                  units = {}, byName = {}, byDef = {} }
     local sum = 0
     for _, u in ipairs(raw.units) do
         local ud = UnitDefNames and UnitDefNames[u.n]
         if ud and (u.share or 0) > 0 then
             -- behaviors = {"kite", ...} and cfg = {kite = {step = 400}} plug the unit into behavior_host (strategy.lua)
+            -- tag = "mass" | "quality" (optional): strategy_hooks.income_mix tilts the share by income
             st.units[#st.units + 1] = { n = u.n, defID = ud.id, share = u.share, note = u.note,
-                                        behaviors = u.behaviors, cfg = u.cfg }
+                                        behaviors = u.behaviors, cfg = u.cfg, tag = u.tag }
             sum = sum + u.share
         end
     end

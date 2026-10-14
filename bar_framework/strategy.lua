@@ -55,6 +55,8 @@ end
 function Strategy:Stance() return self.current end
 function Strategy:Name() return self.current and self.current.name or nil end
 function Strategy:Share() return self.share end
+-- The current stance's game plan ({ army = "raid"|"hold", bombers = 0..1 }, stance file `plan`), or nil.
+function Strategy:Plan() return self.current and self.current.plan or nil end
 
 -- Switch stance.  A new stance starts with a fresh ledger, seeded from the army that already exists.
 function Strategy:Set(name, state)

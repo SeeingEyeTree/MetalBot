@@ -17,7 +17,11 @@
 -- Log lines: "[LT] ...".
 
 local LT = {}
+local CB = VFS.Include("LuaUI/Widgets/bar_framework/con_broker.lua")   -- every air con's owner: jobs ask it for cons (see the header there)
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
+local RegisterJobs                                                       -- defined below the jobs it registers
 
+LT.NIL_OPTIONS = { "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
     LATEST_FRAME   = 6 * 60 * 30, -- build the lab by now whatever the bank says
@@ -34,8 +38,12 @@ LT.CFG = {
     GRID_BANK_FAST = 3000,        -- ...or the bank at which it does so (no 15 s gap)...
     GRID_FAST_ENERGY = 0.05,      -- ...provided the energy bank is at least this share of storage
     GRID_HANDOFF   = 0.30,
-    AIR_CON_RESERVE = 2,
-    UPGRADE_CONS_PER_LAB = 2,     -- T2 air cons each advanced air lab builds
+    AIR_CON_RESERVE = 2,          -- T1 air cons kept ready beyond what the jobs want (con_broker reserve; the labs make up the shortfall)
+    HELPER_CAP      = nil,        -- most air cons that may sit on the two helper jobs (grid helpers + fusion helpers) at once; nil = every open slot
+                                  -- (3 per grid: 40-120 helpers by 15 min, and the labs kept ordering cons to fill them).  Free cons beyond it stay in
+                                  -- the pool (the reserve), so production stops once helpers + jobs + reserve are covered.
+    T2_CON_RESERVE  = 0,          -- same for T2 cons (0: they are made when an energy / retrofit job has none)
+    UPGRADE_CONS_PER_LAB = 2,     -- (unused since 2026-10-14: T2 cons are built only on demand, by the jobs' `produce` hooks)
     RETROFIT_STALL_FRAC  = 0.15,  -- retrofit builders stop below this share of metal storage...
     RETROFIT_RESUME_FRAC = 0.30,  -- ...and resume above this
     SPEND_FAST = 0.15, SPEND_SLOW = 0.60,   -- grid hand-off progress: under-spending / short of metal
@@ -143,8 +151,32 @@ LT.CFG = {
     SPINE_GAP     = 0,            -- elmos between the line's outer edge and spine cell 1 (in front of the vehicle lab)
     VP_CONS       = 1,            -- ground cons the vehicle lab makes first: they build the spine (no air cons do)
     SPINE_EARLY_CONS = 1,         -- ground cons the spine may have (alive + ordered) until its cell 1 is built
+    AIR_CON_AT_BACK = false,      -- true: an air con goes on the END of the air lab's queue, so a defence insert (Shuriken) ahead of it
+                                  -- is built first; false: it is inserted ahead of the queue (after the unit in progress)
     AIR_CON_CAP_EARLY = 3,        -- air cons allowed (alive + ordered) until the air lab's two nanos stand (or, as a
     AIR_CON_CAP_UNTIL = 0.30,     -- fallback, the first grid is this share built)
+    -- CON_HOLD (RAID_BOT): function() -> true while no air lab should make constructors (a ground raid on the base: the air
+    -- labs make Shurikens / Wasps instead).  Holds new air-con / T2-con orders; the air-con reserve catches up afterwards.
+    CON_HOLD      = nil,
+    -- GRID_RECOVER (RAID_BOT, user 2026-10-13: "the mex grids died early and did not recover"): a finished grid used to be
+    -- forgotten.  Now its mex spots are watched; once a spot has stood empty for two looks in a row (and no raid cluster
+    -- is within RECOVER_SAFE_R), a plain grid is re-run through the normal grid pipeline (standing items are skipped), and a
+    -- retrofitted one is opened for retrofit again (a T2 con rebuilds the moho mexes straight away).
+    GRID_RECOVER      = false,
+    RESERVE_COUNT_IDLE = false,   -- RAID_BOT: idle air cons (any book) count toward the air-con reserve (it re-ordered 2 forever; 38 sat idle)
+    RECOVER_EVERY     = 300,      -- frames between looks
+    RECOVER_MIN_MEX   = 1,        -- empty mex spots in a grid that trigger a rebuild
+    RECOVER_SAFE_R    = 1500,     -- no raid cluster (WG.MetalBot.threats) this close to the grid
+    -- SECOND_AIR_LAB (RAID_BOT): once the line is built, a second T1 air lab on it -- a 3x2 block of wind (or free) slots
+    -- is reserved, the winds reclaimed, and the lab built with nanos on the slots beside it.  It is not the macro's air
+    -- lab (no air-con hold), so the lab controller keeps it on Shurikens / fighters.
+    SECOND_AIR_LAB    = false,
+    LAB2_FRAME        = 7 * 60 * 30,   -- not before this
+    LAB2_LATEST       = 10 * 60 * 30,  -- ...and from here even if the line still has open slots
+    LAB2_NANOS        = 4,             -- nano slots beside the lab
+    LINE_RECOVER      = false,         -- rebuild destroyed line nanos near the T1 air labs (a free air con, two looks, no raid near)
+    LINE_RECOVER_R    = 700,           -- ...within this of an air lab
+    LAB2_NANO_HELP    = false,         -- every nano in reach reclaims what stands on the site, then builds the lab frame
 }
 
 local HALF_GRID = 240
@@ -164,15 +196,15 @@ local function Key(ax, az) return ax .. "," .. az end
 function LT.New(o)
     local T = { BP = o.BP, LC = o.LC, crew = o.crew, L = o.layout, gridBP = o.gridBP, teamID = o.teamID,
                 CFG = LT.CFG, phase = "wait", frame = 0,
-                gridStates = {}, freeAirCons = {}, pendingGrids = {}, assigned = {}, completed = {}, completedKeys = {},
+                gridStates = {}, pendingGrids = {}, assigned = {}, completed = {}, completedKeys = {},
                 allAnchors = {}, gridCands = {}, pendingSince = {}, gridsAssigned = 0, nanoCrew = {},
                 airConsOrdered = 0, orders = {}, lastReserve = -1e9, lastBankGrid = -1e9,
                 pendingStops = {}, airLabNanos = {}, labNanoIDs = {}, labTries = 0,
                 spineMod = o.spine, spineBPs = o.spineBPs, spineOn = false, WG = o.WG,
-                airConsAlive = {}, firstGridOK = false,
+                airConsAlive = {}, firstGridOK = false, helpers = {}, fusHelpers = {},
                 vpPhase = o.spine and "wait" or "off", vpTries = 0,
                 upgradeBP = o.upgradeBP, upgradeStates = {}, upgradedKeys = {}, gridFinished = {}, gridRotation = {},
-                freeT2Cons = {}, retrofitPaused = false, siloPending = {}, siloJobs = {},
+                retrofitPaused = false, siloPending = {}, siloJobs = {}, lab2Sessions = {}, lineRecQueue = {},
                 consolidateOn = false, consolidateJobs = {}, consolidatedKeys = {}, windBlocks = {}, reclaimingWinds = {},
                 ecellBP = o.ecellBP, ecellStates = {}, ecellStarted = 0 }
     -- Which outer lane faces the enemy (the map centre): the vehicle lab and the spine go there; the air lab and the
@@ -201,8 +233,14 @@ function LT.New(o)
     if o.cfg then                       -- per-bot overrides of LT.CFG (A/B variants differ only by these flags)
         T.CFG = {}
         for k, v in pairs(LT.CFG) do T.CFG[k] = v end
-        for k, v in pairs(o.cfg) do T.CFG[k] = v end
+        BC.Apply("line_transition", T.CFG, o.cfg, o.label, LT.NIL_OPTIONS)
     end
+    -- The air-con broker: one owner per con; every job below registers with it.
+    T.CB = CB.New{ isT2 = function(defID) return T.IsT2(defID) end,
+                   updateSession = function(st, frame, res) T.BP.Update(st, frame, res) end,
+                   echo = Spring.Echo, clock = Clock }
+    RegisterJobs(T)
+    if o.WG then o.WG.ConBroker = T.CB end              -- tests / other widgets can read who owns which con
     -- The line's footprint in world coordinates (rotations are multiples of 90 degrees: the box stays a box).
     local xs, zs = {}, {}
     for _, bx in ipairs({ LINE_BOX.x0, LINE_BOX.x1 }) do
@@ -425,12 +463,54 @@ local function AirConsEarlyFull(T)
     return alive + T.airConsOrdered >= T.CFG.AIR_CON_CAP_EARLY
 end
 
+-- CON_HOLD: true while the bot wants no constructors from its air labs (logged at most every 30 s).
+local function ConHold(T, frame, what)
+    local h = T.CFG.CON_HOLD
+    if not h then return false end
+    local ok, v = pcall(h)
+    if not (ok and v == true) then return false end
+    if frame - (T.conHoldLogF or -1e9) >= 900 then
+        T.conHoldLogF = frame
+        Spring.Echo(string.format("[LT] %s CON HOLD: %s skipped (the air labs answer a ground raid)", Clock(frame), what))
+    end
+    return true
+end
+
+-- Every constructor order to a lab goes through here.  With a lab controller that publishes WG.LabBroker the order is the lab
+-- broker's (so its grace / pending gates know about it and two systems never stack orders on one queue); without one (other
+-- bots) it is given directly.  ahead = in front of a busy queue (after the unit in production), else at the tail.
+local function OrderCon(T, labID, defID, frame, ahead)
+    CB.OrderCon(T.WG, labID, defID, frame or T.frame or 0, ahead)
+end
+
+-- The bot's macro orders its starter-lab cons the same way (LT.OrderCon(WG, lab, def, frame)).
+LT.OrderCon = CB.OrderCon
+
+-- T2 cons ordered and not out yet (frames; a lost order times out after AIR_CON_TIMEOUT), so the shortfall counts them as coming.
+local function T2Ordered(T, frame)
+    T.t2Orders = T.t2Orders or {}
+    while #T.t2Orders > 0 and (frame or 0) - T.t2Orders[1] > T.CFG.AIR_CON_TIMEOUT do table.remove(T.t2Orders, 1) end
+    return #T.t2Orders
+end
+
+-- One T2 con ordered from an advanced lab.  Every T2 order goes through here so the in-flight count is right.
+local function OrderT2Con(T, labID, defID, frame, ahead)
+    T2Ordered(T, frame)
+    T.t2Orders[#T.t2Orders + 1] = frame or 0
+    OrderCon(T, labID, defID, frame, ahead)
+end
+
+-- How many T2 cons the broker says are still missing (jobs' demand + reserve - ready - ordered).
+local function T2Shortfall(T, frame)
+    if not T.CB then return math.huge end          -- (a bare T in a unit test)
+    return CB.Shortfall(T.CB, 2, T2Ordered(T, frame), true, frame or 0, T.lastRes)
+end
+
 local function QueueAirCon(T, frame)
-    if AirConsEarlyFull(T) then return end
+    if AirConsEarlyFull(T) or ConHold(T, frame or 0, "air con") then return end
     local lab = T.airLabID
     if lab and Spring.GetUnitDefID(lab) and T.airConDefID then
-        local _, busy = Spring.GetUnitWorkerTask(lab)
-        Spring.GiveOrderToUnit(lab, CMD_INSERT, { busy and 1 or 0, -T.airConDefID, OPT_ALT + OPT_INTERNAL }, OPT_ALT + OPT_CTRL)
+        OrderCon(T, lab, T.airConDefID, frame, not T.CFG.AIR_CON_AT_BACK)
         T.airConsOrdered = T.airConsOrdered + 1
         T.orders[#T.orders + 1] = frame
     end
@@ -473,12 +553,27 @@ local function NanoCrewTarget(T, frame)
     return T.crewTarget
 end
 
-local function KeepAirConReserve(T, frame)
+-- Before every hand-out: the reserve (cons the labs keep ready, T1 and T2) and the T2 HOLD -- free T2 cons the retrofits must leave
+-- for the fusion jobs: the energy push keeps EP_INFLIGHT, the fusion consolidation CONSOL_FUSION_CONS, an energy cell one, and once
+-- the cap is tight one is always left for the wind blocks (converting wind beats retrofitting another grid at the cap).
+local function SetReserves(T)
+    local C = T.CFG
+    local keep = 0
+    if C.ENERGY_PUSH and T.epBound then keep = math.max(0, C.EP_INFLIGHT - #T.consolidateJobs) end
+    if T.consolidateOn and T.epBound and C.FUSION_HELPERS then keep = math.max(keep, C.CONSOL_FUSION_CONS - #T.consolidateJobs) end
+    if T.ecellWant then keep = math.max(keep, 1) end
+    if T.consolidateOn then keep = math.max(keep, 1) end
+    CB.SetReserve(T.CB, 1, C.AIR_CON_RESERVE)
+    CB.SetReserve(T.CB, 2, C.T2_CON_RESERVE or 0)
+    CB.SetHold(T.CB, 2, keep)
+end
+
+-- The reserve: T1 air cons ready beyond what the jobs want (con_broker: Unmet + reserve - ready - ordered > 0 -> the lab makes one).
+-- RESERVE_COUNT_IDLE: cons that are only helping (preemptable jobs, idle crew members) count as ready, so idle cons stop being
+-- re-ordered forever; without it only free ones count.
+local function KeepAirConReserve(T, frame, res)
     if T.consolidateOn or not T.airLabID or not T.airConDefID or frame - T.lastReserve < 90 then return end
-    local n = 0
-    for _ in pairs(T.nanoCrew or {}) do n = n + 1 end
-    local crewWant = math.max(0, NanoCrewTarget(T, frame) - n)
-    if #T.freeAirCons + T.airConsOrdered < #T.pendingGrids + T.CFG.AIR_CON_RESERVE + crewWant then
+    if CB.Shortfall(T.CB, 1, T.airConsOrdered, T.CFG.RESERVE_COUNT_IDLE, frame, res) > 0 then
         QueueAirCon(T, frame)
         T.lastReserve = frame
     end
@@ -581,20 +676,27 @@ local function IsT2Con(T, defID)
     return ud and T.BP.CanBuild(defID, ud.id) or false
 end
 
-local TryAssignUpgrades
+-- Hand the free cons out now (a session ended, a con arrived, a cell opened); the broker also does it every update.
+local function AssignCons(T, frame)
+    if T.CB then CB.Assign(T.CB, frame or T.frame, T.lastRes) end
+end
 
-local function TryAssignGrids(T, frame)
-    while #T.freeAirCons > 0 and #T.pendingGrids > 0 do
-        local conID = table.remove(T.freeAirCons, 1)
-        if Spring.GetUnitDefID(conID) then
-            Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
+local function FreeT2(T) return T.CB and CB.NFree(T.CB, 2) or 0 end
+
+-- The grid job's start: the con takes the next pending cell (the broker has STOPped it and adds the session to T.gridStates).
+local function StartGrid(T, conID, frame)
+        do
             local g = table.remove(T.pendingGrids, 1)
             local k = Key(g.anchorX, g.anchorZ)
-            if T.pendingSince[k] then
+            if T.pendingSince[k] and not g.recover then
                 Spring.Echo(string.format("[LT] grid %d at (%d, %d) waited %.1fs for a con", T.gridsAssigned + 1,
                     g.anchorX, g.anchorZ, (frame - T.pendingSince[k]) / 30))
             end
-            T.allAnchors[#T.allAnchors + 1] = { anchorX = g.anchorX, anchorZ = g.anchorZ, key = k }
+            if g.recover then
+                Spring.Echo(string.format("[LT] %s RECOVER grid (%d, %d): con %d re-runs it", Clock(frame), g.anchorX, g.anchorZ, conID))
+            else
+                T.allAnchors[#T.allAnchors + 1] = { anchorX = g.anchorX, anchorZ = g.anchorZ, key = k }
+            end
             T.gridRotation[k] = g.rotation
             local intr = T.BP.GRID_INTERRUPTS
             if T.CFG.GRID_PLANNER then
@@ -647,16 +749,16 @@ local function TryAssignGrids(T, frame)
             st.deferFactories, st.handoffProgress = true, T.CFG.GRID_HANDOFF
             if T.CFG.GRID_INTR_MIN_NANOS then st.interruptMinNanos = T.CFG.GRID_INTR_MIN_NANOS end
             if T.gridsAssigned == 0 then T.firstGrid = st end
-            T.gridsAssigned = T.gridsAssigned + 1
+            if not g.recover then T.gridsAssigned = T.gridsAssigned + 1 end
             ApplyCapstone(T, st, conID)
             if T.consolidateOn and T.windDefID then st.skipDefIDs = { [T.windDefID] = true } end
             st.onNanoThreshold = function(gs)
                 AddCompleted(T, gs.anchorX, gs.anchorZ)
                 -- RETROFIT_EARLY: the grid's nanos are up -- let a free T2 con retrofit it now instead of waiting for 70% built,
                 -- the finish, or the unit cap going tight (which made 15:00 income swing 2.5k-5.4k between identical runs).
-                if T.CFG.RETROFIT_EARLY then T.gridFinished[Key(gs.anchorX, gs.anchorZ)] = true; TryAssignUpgrades(T) end
+                if T.CFG.RETROFIT_EARLY then T.gridFinished[Key(gs.anchorX, gs.anchorZ)] = true; AssignCons(T) end
                 Collect(T, T.completed)
-                TryAssignGrids(T, T.frame)
+                AssignCons(T, T.frame)
             end
             -- 70% built is enough to retrofit: the grid's nanos are up and its con is off on the outlying items.
             st.onMostlyDone = function(gs)
@@ -664,7 +766,7 @@ local function TryAssignGrids(T, frame)
                 if not T.gridFinished[key] then
                     T.gridFinished[key] = true
                     Spring.Echo(string.format("[LT] grid (%d, %d) mostly built -- retrofit eligible", gs.anchorX, gs.anchorZ))
-                    TryAssignUpgrades(T)
+                    AssignCons(T)
                 end
             end
             st.onComplete = function(gs)
@@ -672,50 +774,35 @@ local function TryAssignGrids(T, frame)
                 T.gridFinished[Key(gs.anchorX, gs.anchorZ)] = true
                 Spring.Echo(string.format("[LT] %s grid (%d, %d) finished -- retrofit eligible", Clock(T.frame), gs.anchorX, gs.anchorZ))
                 Collect(T, T.completed)
-                TryAssignGrids(T, T.frame)
-                TryAssignUpgrades(T)
+                AssignCons(T, T.frame)
             end
-            T.gridStates[#T.gridStates + 1] = st
+            return st
         end
-    end
 end
 
 -- ── Silo capstones: a free T2 con builds the grid's silo once the grid's nanos are up ───────────────────────
-local function TryAssignSilos(T)
-    local i = 1
-    while i <= #T.siloPending and #T.freeT2Cons > 0 do
-        local job = T.siloPending[i]
-        local conID = T.freeT2Cons[1]
-        if not Spring.GetUnitDefID(conID) then
-            table.remove(T.freeT2Cons, 1)
-        elseif T.gridFinished[job.key] and T.BP.CanBuild(Spring.GetUnitDefID(conID), UnitDefNames[job.name or "corsilo"].id) then
-            table.remove(T.freeT2Cons, 1)
-            table.remove(T.siloPending, i)
-            Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
-            local st = T.BP.New({ layout = { { n = job.name or "corsilo", x = 0, z = 0, f = job.f } } }, conID, job.x, job.z, 0, {})
-            st.clearBlockers = true
-            T.siloJobs[#T.siloJobs + 1] = st
-            Spring.Echo(string.format("[LT] %s %s capstone (grid %d) started at (%d, %d) by con %d", Clock(T.frame),
-                job.name or "corsilo", job.grid, job.x, job.z, conID))
-        else
-            i = i + 1
-        end
-    end
+
+local function SiloWant(T)
+    if T.ecoPaused then return 0 end
+    local n = 0
+    for _, job in ipairs(T.siloPending) do if T.gridFinished[job.key] then n = n + 1 end end
+    return n
 end
 
-local function UpdateSilos(T, frame, res)
-    local i = 1
-    while i <= #T.siloJobs do
-        local st = T.siloJobs[i]
-        if st.done then
-            if st.builderID and Spring.GetUnitDefID(st.builderID) then T.freeT2Cons[#T.freeT2Cons + 1] = st.builderID end
-            table.remove(T.siloJobs, i)
-        else
-            T.BP.Update(st, frame, res)
-            i = i + 1
+-- the silo job's start: the first pending silo of a finished grid this con can place
+local function StartSilo(T, conID)
+    local cdef = Spring.GetUnitDefID(conID)
+    for i, job in ipairs(T.siloPending) do
+        if T.gridFinished[job.key] and T.BP.CanBuild(cdef, UnitDefNames[job.name or "corsilo"].id) then
+            table.remove(T.siloPending, i)
+            local st = T.BP.New({ layout = { { n = job.name or "corsilo", x = 0, z = 0, f = job.f } } }, conID, job.x, job.z, 0, {})
+            st.clearBlockers = true
+            Spring.Echo(string.format("[LT] %s %s capstone (grid %d) started at (%d, %d) by con %d", Clock(T.frame),
+                job.name or "corsilo", job.grid, job.x, job.z, conID))
+            return st
         end
     end
-    if #T.siloPending > 0 then TryAssignSilos(T) end
+    return false
 end
 
 -- ── Retrofit: a finished grid is upgraded in place to T2 mexes + fusions by a T2 air con ─────────────────────
@@ -730,92 +817,45 @@ local function RetrofitsWaiting(T)
     return n
 end
 
--- A T2 con helping a fusion job is as good as idle (it only adds its BP): when a retrofit needs one, take it off the job.
-local function ReleaseT2Helpers(T, want)
-    local got = 0
-    for id in pairs(T.fusHelpers or {}) do
-        if got >= want then break end
-        local d = Spring.GetUnitDefID(id)
-        if not d then T.fusHelpers[id] = nil
-        elseif IsT2Con(T, d) then
-            T.fusHelpers[id] = nil
-            Spring.GiveOrderToUnit(id, CMD_STOP, {}, {})
-            T.freeT2Cons[#T.freeT2Cons + 1] = id
-            got = got + 1
+-- The retrofit job's start: the nearest finished grid not yet retrofitted (a grid still building would compete with its own retrofit).
+local function StartRetrofit(T, conID)
+    local cx, _, cz = Spring.GetUnitPosition(conID)
+    local best, bestD2, bestKey = nil, math.huge, nil
+    for _, a in ipairs(T.completed) do
+        local key = Key(a.anchorX, a.anchorZ)
+        if T.gridFinished[key] and not T.upgradedKeys[key] then
+            local dx, dz = (cx or 0) - a.anchorX, (cz or 0) - a.anchorZ
+            local d2 = dx * dx + dz * dz
+            if d2 < bestD2 then best, bestD2, bestKey = a, d2, key end
         end
     end
-    return got
-end
-
-TryAssignUpgrades = function(T)
-    if #T.siloPending > 0 then TryAssignSilos(T) end
-    if not T.upgradeBP then return end
-    -- ENERGY PUSH: while energy binds, keep enough free T2 cons for its fusion jobs (a retrofit adds metal too,
-    -- which is the resource that is floating).
-    local keep = 0
-    if T.CFG.ENERGY_PUSH and T.epBound then keep = math.max(0, T.CFG.EP_INFLIGHT - #T.consolidateJobs) end
-    if T.consolidateOn and T.epBound and T.CFG.FUSION_HELPERS then
-        keep = math.max(keep, T.CFG.CONSOL_FUSION_CONS - #T.consolidateJobs)
+    if not best then return false end
+    T.upgradedKeys[bestKey] = true
+    local st = T.BP.New(T.upgradeBP, conID, best.anchorX, best.anchorZ, T.gridRotation[bestKey] or 0, T.BP.GRID_INTERRUPTS)
+    st.clearBlockers = true                      -- reclaim the mex/winds the fusions need
+    st.clearOnlyDefIDs = {}
+    for _, n in ipairs({ "corwin", "cormex" }) do
+        local ud = UnitDefNames[n]
+        if ud then st.clearOnlyDefIDs[ud.id] = true end
     end
-    if T.ecellWant then keep = math.max(keep, 1) end
-    if #T.freeT2Cons <= keep and T.fusHelpers then
-        local waiting = RetrofitsWaiting(T)
-        if waiting > 0 then ReleaseT2Helpers(T, math.min(waiting, 4) + keep - #T.freeT2Cons) end
-    end
-    while #T.freeT2Cons > keep do
-        local conID = T.freeT2Cons[1]
-        if not Spring.GetUnitDefID(conID) then
-            table.remove(T.freeT2Cons, 1)
-        else
-            -- Nearest finished grid not yet retrofitted (a grid still building would compete with its own retrofit).
-            local cx, _, cz = Spring.GetUnitPosition(conID)
-            local best, bestD2, bestKey = nil, math.huge, nil
-            for _, a in ipairs(T.completed) do
-                local key = Key(a.anchorX, a.anchorZ)
-                if T.gridFinished[key] and not T.upgradedKeys[key] then
-                    local dx, dz = (cx or 0) - a.anchorX, (cz or 0) - a.anchorZ
-                    local d2 = dx * dx + dz * dz
-                    if d2 < bestD2 then best, bestD2, bestKey = a, d2, key end
-                end
-            end
-            if not best then return end
-            table.remove(T.freeT2Cons, 1)
-            T.upgradedKeys[bestKey] = true
-            Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
-            local st = T.BP.New(T.upgradeBP, conID, best.anchorX, best.anchorZ, T.gridRotation[bestKey] or 0,
-                                T.BP.GRID_INTERRUPTS)
-            st.clearBlockers = true                      -- reclaim the mex/winds the fusions need
-            st.clearOnlyDefIDs = {}
-            for _, n in ipairs({ "corwin", "cormex" }) do
-                local ud = UnitDefNames[n]
-                if ud then st.clearOnlyDefIDs[ud.id] = true end
-            end
-            st.handoffProgress = T.CFG.GRID_HANDOFF
-            st.onComplete = function(us)                 -- the con goes straight on to the next grid
-                if us.builderID and Spring.GetUnitDefID(us.builderID) then
-                    T.freeT2Cons[#T.freeT2Cons + 1] = us.builderID
-                    TryAssignUpgrades(T)
-                end
-            end
-            T.upgradeStates[#T.upgradeStates + 1] = st
-            Spring.Echo(string.format("[LT] %s retrofit started at (%d, %d) by con %d", Clock(T.frame),
-                best.anchorX, best.anchorZ, conID))
-        end
-    end
+    st.handoffProgress = T.CFG.GRID_HANDOFF
+    Spring.Echo(string.format("[LT] %s retrofit started at (%d, %d) by con %d", Clock(T.frame), best.anchorX, best.anchorZ, conID))
+    return st
 end
 
 -- A retrofit must never compete with a normal grid for metal (T2 mexes earn less per metal): while stalling,
 -- retrofit builders are stopped.
--- RETROFIT_FLOAT_CONS: metal floats and finished grids wait for a retrofit with no T2 con free: idle advanced labs make more.
+-- RETROFIT_FLOAT_CONS (the retrofit job's `produce`): metal floats and finished grids wait for a retrofit with no T2 con free:
+-- idle advanced labs make more.
+-- T2 cons are built ONLY on demand (user, 2026-10-14): a finished advanced lab orders none by itself.  This is the retrofit job's
+-- `produce`: it runs when finished grids wait for a retrofit and no T2 con is free; the orders are capped by the broker's shortfall
+-- (jobs' demand + reserve - ready - already ordered).  RETROFIT_FLOAT_CONS adds the metal-float gate (RETROFIT_FLOAT_FRAC).
 local function UpdateRetrofitCons(T, frame, res)
-    if not T.CFG.RETROFIT_FLOAT_CONS or frame % 150 ~= 0 or not T.upgradeBP or #T.freeT2Cons > 0 then return end
+    if frame % 150 ~= 0 or not T.upgradeBP or FreeT2(T) > 0 then return end
     if frame - (T.retroConFrame or -1e9) < 450 then return end       -- let the last order's cons arrive before ordering again
-    if res.metalStorage <= 0 or res.metal / res.metalStorage < (T.CFG.RETROFIT_FLOAT_FRAC or 0.2) then return end
-    local waiting = 0
-    for _, a in ipairs(T.completed) do
-        local key = Key(a.anchorX, a.anchorZ)
-        if T.gridFinished[key] and not T.upgradedKeys[key] then waiting = waiting + 1 end
-    end
+    if ConHold(T, frame, "retrofit T2 cons") then return end
+    if T.CFG.RETROFIT_FLOAT_CONS and (res.metalStorage <= 0 or res.metal / res.metalStorage < (T.CFG.RETROFIT_FLOAT_FRAC or 0.2)) then return end
+    local waiting = RetrofitsWaiting(T)
     if waiting == 0 then return end
     T.floatConsOrdered = T.floatConsOrdered or 0
     local ordered = 0
@@ -825,14 +865,9 @@ local function UpdateRetrofitCons(T, frame, res)
             local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
             local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, 1)
             if t2 and IsT2Con(T, t2) and (T.CFG.EP_CON_FORCE or not q or #q == 0) then
-                local n = math.min(T.CFG.RETROFIT_FLOAT_BATCH or 2, waiting - ordered)
-                if q and #q > 0 then
-                    -- the lab's queue is full: go ahead of it (after the unit in production)
-                    local busy = Spring.GetUnitWorkerTask and select(2, Spring.GetUnitWorkerTask(uid))
-                    for _ = 1, n do Spring.GiveOrderToUnit(uid, CMD_INSERT, { busy and 1 or 0, -t2, OPT_ALT + OPT_INTERNAL }, OPT_ALT + OPT_CTRL) end
-                else
-                    for _ = 1, n do Spring.GiveOrderToUnit(uid, -t2, { 0 }, {}) end
-                end
+                local n = math.min(T.CFG.RETROFIT_FLOAT_BATCH or 2, waiting - ordered, math.max(0, T2Shortfall(T, frame) - ordered))
+                -- a full queue: go ahead of it (after the unit in production)
+                for _ = 1, n do OrderT2Con(T, uid, t2, frame, q and #q > 0) end
                 ordered = ordered + n
                 if ordered >= waiting then break end
             end
@@ -846,9 +881,8 @@ local function UpdateRetrofitCons(T, frame, res)
     end
 end
 
+-- The retrofit sessions themselves are run by the broker; this is the stall rule.
 local function UpdateRetrofits(T, frame, res)
-    UpdateSilos(T, frame, res)
-    UpdateRetrofitCons(T, frame, res)
     local mFrac = res.metalStorage > 0 and res.metal / res.metalStorage or 1
     if not T.retrofitPaused and mFrac < T.CFG.RETROFIT_STALL_FRAC then
         T.retrofitPaused = true
@@ -861,15 +895,6 @@ local function UpdateRetrofits(T, frame, res)
     elseif T.retrofitPaused and mFrac > T.CFG.RETROFIT_RESUME_FRAC then
         T.retrofitPaused = false
     end
-    if not T.retrofitPaused then
-        local i = 1
-        while i <= #T.upgradeStates do
-            local us = T.upgradeStates[i]
-            if us.done then table.remove(T.upgradeStates, i)
-            else T.BP.Update(us, frame, res); i = i + 1 end
-        end
-    end
-    if #T.freeT2Cons > (T.consolidateOn and 1 or 0) then TryAssignUpgrades(T) end
 end
 
 -- Under-spending means too few frames are open at once: hand frames to the nanos sooner so the builder places
@@ -966,16 +991,17 @@ local function StartConsolidation(T, conID, res, forceName)
     local eFrac = res.energyStorage > 0 and res.energy / res.energyStorage or 1
     local name = forceName or ((eFrac <= mFrac) and "corfus" or "cormoho")
     local ud = UnitDefNames[name]
-    if not ud or not T.BP.CanBuild(Spring.GetUnitDefID(conID), ud.id) then return false end
+    if not ud or not T.BP.CanBuild(Spring.GetUnitDefID(conID), ud.id) then
+        table.insert(T.windBlocks, 1, block)          -- this con cannot build it: the block waits for another
+        return false
+    end
     T.consolidatedKeys[block.key] = true
-    Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
     -- One-item blueprint; clearBlockers reclaims the four winds, and ONLY winds, to make room.
     local st = T.BP.New({ layout = { { n = name, x = 0, z = 0, f = 0 } } }, conID, block.cx, block.cz, 0, {})
     st.clearBlockers = true
     st.clearOnlyDefIDs = { [T.windDefID] = true }
-    T.consolidateJobs[#T.consolidateJobs + 1] = st
     Spring.Echo(string.format("[LT] %s consolidating 4 winds at (%d, %d) into %s", Clock(T.frame), block.cx, block.cz, name))
-    return true
+    return st
 end
 
 local function CheckCapPressure(T, res, frame)
@@ -1017,7 +1043,7 @@ local function CheckCapPressure(T, res, frame)
     end
     Spring.Echo(string.format("[LT] %s %s (%d/%d): grids stop building wind, consolidation on, %d more grids marked for retrofit",
         Clock(T.frame), floatTight and "metal floating at the cap" or "unit cap tight", cnt or 0, maxU or 0, marked))
-    TryAssignUpgrades(T)
+    AssignCons(T)
 end
 
 -- ENERGY PUSH (see LT.CFG): metal floating while energy binds -> wind blocks become fusions.
@@ -1042,22 +1068,17 @@ end
 local function MakeEnergyT2Con(T, frame, tag)
     local C = T.CFG
     if frame - (T.epConFrame or -1e9) < C.EP_CON_EVERY then return end
+    if ConHold(T, frame, tag .. " T2 con") then return end
     for _, uid in ipairs(Spring.GetTeamUnits(T.teamID) or {}) do
         local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
         if d and d.isFactory and uid ~= T.airLabID and not Spring.GetUnitIsBeingBuilt(uid) then
             local t2 = FindAirConDef(Spring.GetUnitDefID(uid))
             local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, 1)
             if t2 and IsT2Con(T, t2) and (C.EP_CON_FORCE or not q or #q == 0) then
-                local nCon = C.EP_CON_BATCH or 1
-                if C.EP_CON_FORCE and q and #q > 0 then
-                    -- the lab's queue is full: go ahead of it (after the unit in production)
-                    local busy = Spring.GetUnitWorkerTask and select(2, Spring.GetUnitWorkerTask(uid))
-                    for _ = 1, nCon do
-                        Spring.GiveOrderToUnit(uid, CMD_INSERT, { busy and 1 or 0, -t2, OPT_ALT + OPT_INTERNAL }, OPT_ALT + OPT_CTRL)
-                    end
-                else
-                    for _ = 1, nCon do Spring.GiveOrderToUnit(uid, -t2, { 0 }, {}) end
-                end
+                local nCon = math.min(C.EP_CON_BATCH or 1, math.max(0, T2Shortfall(T, frame)))     -- never more than the jobs still want
+                if nCon == 0 then return end
+                -- a full queue (EP_CON_FORCE): go ahead of it (after the unit in production)
+                for _ = 1, nCon do OrderT2Con(T, uid, t2, frame, C.EP_CON_FORCE and q and #q > 0) end
                 T.epConFrame = frame
                 Spring.Echo(string.format("[LT] %s %s: no free T2 con, lab %d makes %d", Clock(frame), tag, uid, nCon))
                 return
@@ -1080,32 +1101,91 @@ local function UpdateEnergyPush(T, frame, res)
     end
     if not T.epBound then return end
     if #T.consolidateJobs >= C.EP_INFLIGHT then return end
-    ScanWindBlocks(T)
-    if #T.windBlocks == 0 then return end
-    local started = 0
-    while #T.consolidateJobs < C.EP_INFLIGHT and #T.freeT2Cons > 0 and #T.windBlocks > 0 do
-        local conID = T.freeT2Cons[1]
-        if not Spring.GetUnitDefID(conID) then table.remove(T.freeT2Cons, 1)
-        elseif StartConsolidation(T, conID, res, T.CFG.ENERGY_BUILDING or "corfus") then table.remove(T.freeT2Cons, 1); started = started + 1
-        else break end
-    end
-    T.epStarted = (T.epStarted or 0) + started
-    if started > 0 then
-        Spring.Echo(string.format("[LT] %s ENERGY PUSH: %d wind block(s) -> fusion (metal %.0f/%.0f, energy %.0f/%.0f, pull %.0f of %.0f E/s), %d so far",
-            Clock(frame), started, res.metal, res.metalStorage, res.energy, res.energyStorage,
-            res.energyPullS or res.energyPull, res.energyIncomeS or res.energyIncome, T.epStarted))
-    elseif #T.freeT2Cons == 0 then
-        MakeEnergyT2Con(T, frame, "ENERGY PUSH")
-    end
+    ScanWindBlocks(T)                -- the consolidation job (ConsolWant / StartConsolidation) starts them
 end
 
--- FUSION_HELPERS: idle air cons guard the builder of each running fusion job (a wind block -> fusion, or an energy cell), adding
--- their build power; they go back to the pool when the job ends or a grid is waiting for a con.
+-- The consolidation job: wind blocks -> fusions (or T2 mexes), one T2 con per block.  While the energy push binds it is
+-- limited to EP_INFLIGHT blocks at once; once the cap is tight (consolidateOn) every block gets a con.
+local function ConsolForce(T)
+    local C = T.CFG
+    if not T.consolidateOn then return C.ENERGY_BUILDING or "corfus" end
+    return (T.epBound and C.FUSION_HELPERS) and (C.ENERGY_BUILDING or "corfus") or nil     -- energy first: fusions
+end
+
+local function ConsolWant(T)
+    local C = T.CFG
+    if T.ecoPaused or #T.windBlocks == 0 then return 0 end
+    if T.consolidateOn then return #T.windBlocks end
+    if C.ENERGY_PUSH and T.epBound then return math.max(0, math.min(C.EP_INFLIGHT - #T.consolidateJobs, #T.windBlocks)) end
+    return 0
+end
+
+local function StartConsolidationJob(T, conID, frame, res)
+    res = res or T.lastRes
+    if not res then return false end
+    local st = StartConsolidation(T, conID, res, ConsolForce(T))
+    if st and not T.consolidateOn then
+        T.epStarted = (T.epStarted or 0) + 1
+        Spring.Echo(string.format("[LT] %s ENERGY PUSH: wind block -> fusion (metal %.0f/%.0f, energy %.0f/%.0f, pull %.0f of %.0f E/s), %d so far",
+            Clock(frame), res.metal, res.metalStorage, res.energy, res.energyStorage,
+            res.energyPullS or res.energyPull or 0, res.energyIncomeS or res.energyIncome or 0, T.epStarted))
+    end
+    return st
+end
+
+-- no T2 con for the job: an advanced air lab makes one
+local function ConsolProduce(T, frame)
+    if not T.consolidateOn then MakeEnergyT2Con(T, frame, "ENERGY PUSH")
+    elseif ConsolForce(T) then MakeEnergyT2Con(T, frame, "CONSOLIDATION") end
+end
+
+-- FUSION_HELPERS (the "fusionhelp" job): idle air cons guard the builder of each running fusion job (a wind block -> fusion, or an
+-- energy cell), adding their build power; they go back to the pool when the job ends, and any higher job can take them.
+-- (T.fusJobs = the jobs they may guard, refreshed here every 30 frames.)
+-- room left under HELPER_CAP for this helper job (the cap counts both helper jobs' cons)
+local function HelperRoom(T, name)
+    local cap = T.CFG.HELPER_CAP
+    if not cap then return math.huge end
+    local held = CB.HeldCount(T.CB, "gridhelp") + CB.HeldCount(T.CB, "fusionhelp")
+    return math.max(0, cap - held)
+end
+
+local function FusionHelperWant(T)
+    local K = T.CFG.FUSION_HELPERS
+    if not K or T.ecoPaused or #(T.fusJobs or {}) == 0 then return 0 end
+    if K == true then return math.min(64, HelperRoom(T)) end
+    local have = {}
+    for _, cs in pairs(T.fusHelpers) do have[cs] = (have[cs] or 0) + 1 end
+    local n = 0
+    for _, cs in ipairs(T.fusJobs) do n = n + math.max(0, K - (have[cs] or 0)) end
+    return math.min(n, HelperRoom(T))
+end
+
+-- every con that is available goes to a fusion job, always the CLOSEST one (a con flying across the map to the "emptiest" job
+-- wastes its time); full jobs (K = a number caps each job; true = no cap) are skipped
+local function StartFusionHelper(T, id)
+    local K = T.CFG.FUSION_HELPERS
+    local cap = (K == true) and math.huge or K
+    local have = {}
+    for _, cs in pairs(T.fusHelpers) do have[cs] = (have[cs] or 0) + 1 end
+    local x, _, z = Spring.GetUnitPosition(id)
+    local pick, bestD
+    for _, cs in ipairs(T.fusJobs or {}) do
+        if not cs.done and cs.builderID and Spring.GetUnitDefID(cs.builderID) and (have[cs] or 0) < cap then
+            local bx, _, bz = Spring.GetUnitPosition(cs.builderID)
+            local d = (bx and x) and ((bx - x) ^ 2 + (bz - z) ^ 2) or 0
+            if not bestD or d < bestD then pick, bestD = cs, d end
+        end
+    end
+    if not pick then return false end
+    Spring.GiveOrderToUnit(id, CMD_GUARD, { pick.builderID }, {})
+    T.fusHelpers[id] = pick
+    return true
+end
+
 local function UpdateFusionHelpers(T, frame)
     local K = T.CFG.FUSION_HELPERS
     if not K or frame % 30 ~= 0 then return end
-    T.fusHelpers = T.fusHelpers or {}
-    if RetrofitsWaiting(T) > 0 and #T.freeT2Cons == 0 then TryAssignUpgrades(T) end
     local jobs = {}
     for _, list in ipairs({ T.consolidateJobs, T.ecellStates or {} }) do
         for _, cs in ipairs(list) do
@@ -1145,55 +1225,16 @@ local function UpdateFusionHelpers(T, frame)
             if not cs.done and cs.builderID and Spring.GetUnitDefID(cs.builderID) then jobs[#jobs + 1] = cs end
         end
     end
-    local have = {}
+    T.fusJobs = jobs
+    -- helpers whose job ended go back to the pool
     for id, cs in pairs(T.fusHelpers) do
         local live = false
         for _, j in ipairs(jobs) do if j == cs then live = true; break end end
         if not Spring.GetUnitDefID(id) then
             T.fusHelpers[id] = nil
-        elseif not live or #T.pendingGrids > #T.freeAirCons then
+        elseif not live then
             T.fusHelpers[id] = nil
-            Spring.GiveOrderToUnit(id, CMD_STOP, {}, {})
-            if IsT2Con(T, Spring.GetUnitDefID(id)) then T.freeT2Cons[#T.freeT2Cons + 1] = id else T.freeAirCons[#T.freeAirCons + 1] = id end
-        else
-            have[cs] = (have[cs] or 0) + 1
-        end
-    end
-    -- every con that is available goes to a fusion job, always to the job with the fewest helpers (K = a number caps each job; true = no cap)
-    local cap = (K == true) and math.huge or K
-    local function TakeCon()
-        if #T.freeAirCons > #T.pendingGrids then return table.remove(T.freeAirCons, 1) end
-        for hid in pairs(T.helpers or {}) do T.helpers[hid] = nil; return hid end      -- energy first: off a grid it is helping
-        if T.CFG.ENERGY_PRIORITY then
-            for cid, m in pairs(T.nanoCrew or {}) do
-                if not m.items then T.nanoCrew[cid] = nil; return cid end                -- an idle crew con
-            end
-        end
-        -- an idle T2 con (nothing to retrofit, no fusion job left to start): its BP helps too, and a retrofit can take it back
-        if #T.freeT2Cons > 0 and #T.windBlocks == 0 and RetrofitsWaiting(T) == 0 then return table.remove(T.freeT2Cons, 1) end
-        return nil
-    end
-    while #jobs > 0 do
-        local id = TakeCon()
-        if not id then break end
-        if Spring.GetUnitDefID(id) then
-            -- the CLOSEST job (a con flying across the map to the "emptiest" job wastes its time); full jobs (cap) are skipped
-            local x, _, z = Spring.GetUnitPosition(id)
-            local pick, bestD
-            for _, cs in ipairs(jobs) do
-                if (have[cs] or 0) < cap then
-                    local bx, _, bz = Spring.GetUnitPosition(cs.builderID)
-                    local d = (bx and x) and ((bx - x) ^ 2 + (bz - z) ^ 2) or 0
-                    if not bestD or d < bestD then pick, bestD = cs, d end
-                end
-            end
-            if not pick then
-                if IsT2Con(T, Spring.GetUnitDefID(id)) then T.freeT2Cons[#T.freeT2Cons + 1] = id else T.freeAirCons[#T.freeAirCons + 1] = id end
-                break
-            end
-            Spring.GiveOrderToUnit(id, CMD_GUARD, { pick.builderID }, {})
-            T.fusHelpers[id] = pick
-            have[pick] = (have[pick] or 0) + 1
+            CB.Release(T.CB, id, true)
         end
     end
     local n = 0
@@ -1206,146 +1247,11 @@ end
 
 local function UpdateConsolidation(T, frame, res)
     UpdateEnergyPush(T, frame, res)
-    if T.consolidateOn then
-        if frame % T.CFG.CONSOLIDATE_SCAN == 0 or #T.windBlocks == 0 then ScanWindBlocks(T) end
-        -- Converting wind beats retrofitting another grid at the cap: every free T2 con starts a job at once.
-        local force = (T.epBound and T.CFG.FUSION_HELPERS) and (T.CFG.ENERGY_BUILDING or "corfus") or nil     -- energy first: fusions
-        while #T.freeT2Cons > 0 and #T.windBlocks > 0 do
-            local conID = T.freeT2Cons[1]
-            if not Spring.GetUnitDefID(conID) then table.remove(T.freeT2Cons, 1)
-            elseif StartConsolidation(T, conID, res, force) then table.remove(T.freeT2Cons, 1)
-            else break end
-        end
-        if force and #T.freeT2Cons == 0 and #T.windBlocks > 0 then MakeEnergyT2Con(T, frame, "CONSOLIDATION") end
-    end
-    local i = 1
-    while i <= #T.consolidateJobs do
-        local cs = T.consolidateJobs[i]
-        if cs.done then
-            if cs.builderID and Spring.GetUnitDefID(cs.builderID) then T.freeT2Cons[#T.freeT2Cons + 1] = cs.builderID end
-            table.remove(T.consolidateJobs, i)
-        else
-            T.BP.Update(cs, frame, res)
-            i = i + 1
-        end
-    end
+    if T.consolidateOn and (frame % T.CFG.CONSOLIDATE_SCAN == 0 or #T.windBlocks == 0) then ScanWindBlocks(T) end
     UpdateFusionHelpers(T, frame)
 end
 
--- ── Energy cells (ECELL, see LT.CFG) ────────────────────────────────────────────────────────────────────────
--- How many of the cell's fusion spots can be built at (ax, az)?
-local function EcellSpots(T, ax, az)
-    local n = 0
-    for _, u in ipairs(T.ecellBP.layout) do
-        if u.n == "corfus" then
-            local ud = UnitDefNames[u.n]
-            if ud then
-                local x, z = T.BP.SnapToBuildGrid(ud.id, ax + u.x, az + u.z, u.f or 0)
-                local r = Spring.TestBuildOrder(ud.id, x, Spring.GetGroundHeight(x, z) or 0, z, u.f or 0)
-                if r and r ~= 0 then n = n + 1 end
-            end
-        end
-    end
-    return n
-end
-
--- Best free lattice cell next to a grid we own: nearest the base, off the line/spine/enemy side, enough fusion spots.
-local function PickEcellSite(T)
-    local sources = {}
-    for _, g in ipairs(T.allAnchors) do sources[#sources + 1] = g end
-    for _, a in ipairs(T.completed) do sources[#sources + 1] = a end
-    local C, seen, best, bestD = T.BP.GRID_SPACING, {}, nil, math.huge
-    local waiting = {}                     -- cells queued as mex-grid candidates are fair game: no grid has them yet
-    for idx, r in ipairs(T.gridCands) do waiting[Key(r.anchorX, r.anchorZ)] = idx end
-    local ring = {}                        -- every lattice step up to two cells from a grid (mex grids take the near ones)
-    for i = -2, 2 do for j = -2, 2 do if i ~= 0 or j ~= 0 then ring[#ring + 1] = { i * C, j * C } end end end
-    for _, s in ipairs(sources) do
-        for _, d in ipairs(ring) do
-            local ax, az = s.anchorX + d[1], s.anchorZ + d[2]
-            local k = Key(ax, az)
-            if not seen[k] and (not T.assigned[k] or waiting[k]) and not InsideLine(T, ax, az) and not T.OverlapsSpine(T, ax, az)
-               and not T.OnEnemySide(T, ax, az) and ax > 240 and az > 240 and ax < T.L.mapX - 240 and az < T.L.mapZ - 240 then
-                seen[k] = true
-                local dist = (ax - T.L.anchorX) ^ 2 + (az - T.L.anchorZ) ^ 2
-                if dist < bestD and EcellSpots(T, ax, az) >= T.CFG.ECELL_PROBE_MIN then best, bestD = { anchorX = ax, anchorZ = az, key = k }, dist end
-            end
-        end
-    end
-    return best
-end
-
-local function UpdateEnergyCells(T, frame, res)
-    local C = T.CFG
-    if not (C.ECELL and T.ecellBP) then return end
-    local i = 1
-    while i <= #T.ecellStates do
-        local es = T.ecellStates[i]
-        if es.done then
-            if es.builderID and Spring.GetUnitDefID(es.builderID) then
-                T.freeT2Cons[#T.freeT2Cons + 1] = es.builderID
-                TryAssignUpgrades(T)
-            end
-            Spring.Echo(string.format("[LT] %s energy cell (%d, %d) finished", Clock(frame), es.anchorX, es.anchorZ))
-            table.remove(T.ecellStates, i)
-        else
-            T.BP.Update(es, frame, res)
-            i = i + 1
-        end
-    end
-    if frame - (T.ecellFrame or -1e9) < C.ECELL_EVERY then return end
-    T.ecellFrame = frame
-    local eFrac = res.energyStorage > 0 and res.energy / res.energyStorage or 1
-    local ei = res.energyIncomeS or res.energyIncome or 0
-    local ep = res.energyPullS or res.energyPull or 0
-    local bound = EnergyBound(T, frame, res)
-        or (frame >= C.EP_START and (eFrac < C.ECELL_ALWAYS_BELOW or (C.EP_BANK_SECONDS and res.energy < C.EP_BANK_SECONDS * ep)) and ep >= ei)
-    T.ecellWant = bound and T.ecellStarted < C.ECELL_TOTAL and #T.ecellStates < C.ECELL_MAX_ACTIVE
-    if not T.ecellWant then return end
-    if frame - (T.ecellDbg or -1e9) >= 1800 then
-        T.ecellDbg = frame
-        Spring.Echo(string.format("[LT] %s ecell wanted: free T2 cons %d, cell jobs %d, wind jobs %d, started %d",
-            Clock(frame), #T.freeT2Cons, #T.ecellStates, #T.consolidateJobs, T.ecellStarted))
-    end
-    if C.ECELL_MAKE_CON and #T.freeT2Cons == 0 then MakeEnergyT2Con(T, frame, "ENERGY CELL") end
-    -- wind blocks first (they cost no new ground), unless T2 cons stand idle anyway
-    if (T.consolidateOn or T.epBound) and not C.ECELL_FIRST then
-        ScanWindBlocks(T)
-        if #T.windBlocks > 0 and #T.freeT2Cons <= C.EP_INFLIGHT then return end
-    end
-    while #T.freeT2Cons > 0 do
-        local conID = T.freeT2Cons[1]
-        local cdef = Spring.GetUnitDefID(conID)
-        if not cdef then
-            table.remove(T.freeT2Cons, 1)
-        elseif not T.BP.CanBuild(cdef, UnitDefNames["corfus"].id) then
-            Spring.Echo("[LT] " .. Clock(frame) .. " ecell: free con " .. conID .. " (" .. tostring(UnitDefs[cdef].name) .. ") cannot build corfus")
-            return
-        else
-            local site = PickEcellSite(T)
-            if not site then
-                if frame - (T.ecellNoSiteLog or -1e9) > 3600 then
-                    T.ecellNoSiteLog = frame
-                    Spring.Echo("[LT] " .. Clock(frame) .. " energy cell wanted, no free lattice cell with enough fusion spots")
-                end
-                return
-            end
-            table.remove(T.freeT2Cons, 1)
-            T.assigned[site.key] = true
-            for idx, r in ipairs(T.gridCands) do
-                if Key(r.anchorX, r.anchorZ) == site.key then table.remove(T.gridCands, idx); break end
-            end
-            T.ecellStarted = T.ecellStarted + 1
-            Spring.GiveOrderToUnit(conID, CMD_STOP, {}, {})
-            local st = T.BP.New(T.ecellBP, conID, site.anchorX, site.anchorZ, 0, T.BP.GRID_INTERRUPTS)
-            st.handoffProgress = C.GRID_HANDOFF
-            T.ecellStates[#T.ecellStates + 1] = st
-            Spring.Echo(string.format("[LT] %s ENERGY CELL %d at (%d, %d) by con %d (metal %.0f/%.0f, energy %.0f/%.0f, pull %.0f of %.0f E/s)",
-                Clock(frame), T.ecellStarted, site.anchorX, site.anchorZ, conID, res.metal, res.metalStorage,
-                res.energy, res.energyStorage, ep, ei))
-            if #T.ecellStates >= C.ECELL_MAX_ACTIVE then break end
-        end
-    end
-end
+-- (Energy cells were removed 2026-10-14: never seen built in a real game.  T.ecellStates / T.ecellWant stay as empty hooks.)
 
 local StartSpine      -- defined with the spine glue below
 
@@ -1405,7 +1311,7 @@ local function ReleaseCandidates(T, frame, res)
     -- the paced trickle; after that the bank / fast triggers may run up to GRIDS_OPENING_MAX at once.
     local lineBuilt = T.LC.SlotsRemaining(T.L) == 0
     local why
-    local idleCon = #T.freeAirCons > #T.pendingGrids
+    local idleCon = CB.NFree(T.CB, 1) > #T.pendingGrids
     local energyOK = res.energyStorage > 0 and res.energy / res.energyStorage >= T.CFG.GRID_FAST_ENERGY
     local income = res.metalIncomeS or res.metalIncome or 0
     if opening < T.CFG.GRIDS_OPENING then why = "pace"
@@ -1461,37 +1367,53 @@ local function ReleaseCandidates(T, frame, res)
     QueueAirCon(T, frame)
     Spring.Echo(string.format("[LT] %s grid cell (%d, %d) opened (%s: %d opening, bank %.0f, %d waiting)",
         Clock(frame), r.anchorX, r.anchorZ, why, opening, res.metal, #T.gridCands))
-    TryAssignGrids(T, frame)
+    AssignCons(T, frame)
 end
 
--- GRID_HELPERS: a grid with fewer than HELP_NANOS nanos up gets idle air cons (beyond what pending grids need) guarding
--- its builder, so its first nanos stand quickly.  They go back to the free pool when the nanos are up or a grid needs a con.
+-- GRID_HELPERS (the "gridhelp" job): a grid with fewer than HELP_NANOS nanos up (HELP_ANY: any unfinished grid) gets idle air cons
+-- guarding its builder, HELP_MAX each, so its first nanos stand quickly.  A grid or any higher job takes them back at once.
+local function HelpSlots(T)
+    local out, total = {}, 0
+    if not T.CFG.GRID_HELPERS or T.ecoPaused then return out, 0 end
+    local need = T.CFG.HELP_NANOS or 2
+    for _, gs in ipairs(T.gridStates) do
+        if not gs.done and gs.builderID and Spring.GetUnitDefID(gs.builderID) and (#gs.nanoUnitIDs < need or T.CFG.HELP_ANY) then
+            local have = 0
+            for _, g in pairs(T.helpers) do if g == gs then have = have + 1 end end
+            local open = (T.CFG.HELP_MAX or 2) - have
+            if open > 0 then out[#out + 1] = { gs = gs, n = open }; total = total + open end
+        end
+    end
+    return out, total
+end
+
+-- the grid nearest the con that still has a helper slot (fewest nanos up first on a tie): a helper flying across the map adds nothing
+local function StartGridHelper(T, id)
+    local slots = HelpSlots(T)
+    if #slots == 0 then return false end
+    local x, _, z = Spring.GetUnitPosition(id)
+    local gs, bestD
+    for _, sl in ipairs(slots) do
+        local bx, _, bz = Spring.GetUnitPosition(sl.gs.builderID)
+        local d = (bx and x) and ((bx - x) ^ 2 + (bz - z) ^ 2) or 0
+        d = d + #sl.gs.nanoUnitIDs * 1e4                -- a tie-break only: a grid with more nanos is a little less needy
+        if not bestD or d < bestD then gs, bestD = sl.gs, d end
+    end
+    Spring.GiveOrderToUnit(id, CMD_GUARD, { gs.builderID }, {})
+    T.helpers[id] = gs
+    return true
+end
+
+-- upkeep: helpers whose grid is done (or has its nanos) go back to the pool
 local function UpdateGridHelpers(T, frame)
     if not T.CFG.GRID_HELPERS or frame % 15 ~= 0 then return end
-    T.helpers = T.helpers or {}
     local need = T.CFG.HELP_NANOS or 2
-    local function NanosUp(gs) return #gs.nanoUnitIDs end
     for id, gs in pairs(T.helpers) do
         if not Spring.GetUnitDefID(id) then
             T.helpers[id] = nil
-        elseif gs.done or (NanosUp(gs) >= need and not T.CFG.HELP_ANY) or #T.pendingGrids > #T.freeAirCons then
+        elseif gs.done or (#gs.nanoUnitIDs >= need and not T.CFG.HELP_ANY) then
             T.helpers[id] = nil
-            Spring.GiveOrderToUnit(id, CMD_STOP, {}, {})
-            T.freeAirCons[#T.freeAirCons + 1] = id
-        end
-    end
-    for _, gs in ipairs(T.gridStates) do
-        if not gs.done and gs.builderID and Spring.GetUnitDefID(gs.builderID) and (NanosUp(gs) < need or T.CFG.HELP_ANY) then
-            local have = 0
-            for _, g in pairs(T.helpers) do if g == gs then have = have + 1 end end
-            while have < (T.CFG.HELP_MAX or 2) and #T.freeAirCons > #T.pendingGrids do
-                local id = table.remove(T.freeAirCons, 1)
-                if Spring.GetUnitDefID(id) then
-                    Spring.GiveOrderToUnit(id, CMD_GUARD, { gs.builderID }, {})
-                    T.helpers[id] = gs
-                    have = have + 1
-                end
-            end
+            CB.Release(T.CB, id, true)
         end
     end
 end
@@ -1499,10 +1421,20 @@ end
 -- NANO_CREW: see the config note.  Members come from the free air con pool AHEAD of pending grids and stay crew.
 local function NanoCrewRelease(T, id, toPool)
     T.nanoCrew[id] = nil
-    if toPool and Spring.GetUnitDefID(id) then
-        Spring.GiveOrderToUnit(id, CMD_STOP, {}, {})
-        T.freeAirCons[#T.freeAirCons + 1] = id
-    end
+    if toPool and Spring.GetUnitDefID(id) then CB.Release(T.CB, id, true) end
+end
+
+-- The nanocrew job: members are recruited from the free pool AHEAD of pending grids (user, 2026-10-12) and stay crew.
+local function NanoCrewWant(T, frame)
+    if T.ecoPaused then return 0 end
+    return math.max(0, NanoCrewTarget(T, frame) - CB.HeldCount(T.CB, "nanocrew"))
+end
+
+local function StartCrewMember(T, id, frame)
+    T.nanoCrew[id] = { since = frame, idleSince = frame }
+    local size = CB.HeldCount(T.CB, "nanocrew") + 1
+    Spring.Echo(string.format("[LT] %s nano crew: air con %d joins (%d/%d, %d grids short of nanos)", Clock(frame), id, size, T.crewTarget or 0, T.crewDemand or 0))
+    return true
 end
 
 local function UpdateNanoCrew(T, frame)
@@ -1515,17 +1447,8 @@ local function UpdateNanoCrew(T, frame)
         if frame % 15 == 0 then for id in pairs(T.nanoCrew) do NanoCrewRelease(T, id, true) end end
         return
     end
-    -- recruit: the crew has PRIORITY over new grids (user, 2026-10-12) -- it is filled from the free pool every frame, before
-    -- TryAssignGrids hands a con to a pending grid (a new air con is claimed in OnUnitFinished the same way)
     local target = NanoCrewTarget(T, frame)
-    while size < target and #T.freeAirCons > 0 do
-        local id = table.remove(T.freeAirCons, 1)
-        if Spring.GetUnitDefID(id) then
-            T.nanoCrew[id] = { since = frame, idleSince = frame }
-            size = size + 1
-            Spring.Echo(string.format("[LT] %s nano crew: air con %d joins (%d/%d, %d grids short of nanos)", Clock(frame), id, size, target, T.crewDemand or 0))
-        end
-    end
+    -- (recruiting is the nanocrew job's: the crew has PRIORITY over new grids, user 2026-10-12)
     if frame % 15 ~= 0 then return end
     -- shrink: a member with no job for NANO_CREW_IDLE frames goes back to the pool while the crew is over its target
     if size > target then
@@ -1677,15 +1600,417 @@ local function AuditGrids(T, frame)
     local nHelp = 0
     for _ in pairs(T.fusHelpers or {}) do nHelp = nHelp + 1 end
     Spring.Echo(string.format("[AUDIT] %s T2 cons alive %d (free %d), retrofits running %d, grids retrofit-eligible %d, retrofitted-started %d, helpers on jobs %d",
-        Clock(frame), t2cons, #T.freeT2Cons, #T.upgradeStates, #T.completed, (function() local c = 0 for _ in pairs(T.upgradedKeys) do c = c + 1 end return c end)(), nHelp))
+        Clock(frame), t2cons, FreeT2(T), #T.upgradeStates, #T.completed, (function() local c = 0 for _ in pairs(T.upgradedKeys) do c = c + 1 end return c end)(), nHelp))
     Spring.Echo(string.format(
         "[AUDIT] %s grids %d | T2 mex %d of %d (%.0f%%) | fusions %d | winds %d | nanos %d (grids by nanos: 0:%d 1:%d 2-5:%d 6-%d:%d all %d:%d) | grids with any T2 %d (%.0f%%), FULLY upgraded %d (%.0f%%)",
         Clock(frame), n, t2, t1 + t2, 100 * t2 / math.max(1, t1 + t2), fus, win, nano, bk[1], bk[2], bk[3], K.AUDIT_FULL_NANOS - 1, bk[4], K.AUDIT_FULL_NANOS, bk[5],
         someT2, 100 * someT2 / n, full, 100 * full / n))
 end
 
+-- ── GRID_RECOVER ─────────────────────────────────────────────────────────────
+
+-- Remember a finished grid's mex spots (merged over re-runs: on a re-run the mexes still standing are "skipped").
+local function RememberGridMexes(T, gs)
+    local key = Key(gs.anchorX, gs.anchorZ)
+    T.gridMexes = T.gridMexes or {}
+    local list = T.gridMexes[key]
+    if not list then list = { anchorX = gs.anchorX, anchorZ = gs.anchorZ, spots = {}, have = {} }; T.gridMexes[key] = list end
+    for _, it in ipairs(gs.queue) do
+        if it.cls == "metal" and it.act ~= "reclaim" and it.status == "built" then
+            local sk = math.floor(it.wx) .. "," .. math.floor(it.wz)
+            if not list.have[sk] then list.have[sk] = true; list.spots[#list.spots + 1] = { x = it.wx, z = it.wz } end
+        end
+    end
+end
+
+-- Is any mex of ours (T1 or T2, finished or a frame) standing on this spot?
+local function MexAt(T, x, z)
+    for _, uid in ipairs(Spring.GetUnitsInCylinder(x, z, 40, T.teamID) or {}) do
+        local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+        if d and (d.extractsMetal or 0) > 0 then return true end
+    end
+    return false
+end
+
+local function ThreatNear(T, x, z, r)
+    local mb = T.WG and T.WG.MetalBot
+    for _, t in ipairs((mb and mb.threats) or {}) do
+        if t.x and (t.x - x) ^ 2 + (t.z - z) ^ 2 <= r * r then return true end
+    end
+    return false
+end
+
+local function UpdateRecovery(T, frame)
+    local C = T.CFG
+    if not C.GRID_RECOVER or not T.gridMexes or frame - (T.recoverF or -1e9) < C.RECOVER_EVERY then return end
+    T.recoverF = frame
+    -- grids being built, re-run or retrofitted right now are not judged (a retrofit reclaims its T1 mexes on purpose)
+    local busy = {}
+    for _, gs in ipairs(T.gridStates) do busy[Key(gs.anchorX, gs.anchorZ)] = true end
+    for _, us in ipairs(T.upgradeStates) do busy[Key(us.anchorX, us.anchorZ)] = true end
+    for _, g in ipairs(T.pendingGrids) do busy[Key(g.anchorX, g.anchorZ)] = true end
+    T.recoverMiss = T.recoverMiss or {}
+    for key, list in pairs(T.gridMexes) do
+        if busy[key] then
+            T.recoverMiss[key] = nil
+        else
+            local gone = 0
+            for _, s in ipairs(list.spots) do if not MexAt(T, s.x, s.z) then gone = gone + 1 end end
+            if gone < C.RECOVER_MIN_MEX then
+                T.recoverMiss[key] = nil
+            elseif not T.recoverMiss[key] then
+                T.recoverMiss[key] = frame                     -- first look: confirm on the next one
+            elseif ThreatNear(T, list.anchorX, list.anchorZ, C.RECOVER_SAFE_R) then
+                -- the raid is still there: wait
+            else
+                T.recoverMiss[key] = nil
+                T.recovered = (T.recovered or 0) + 1
+                if T.upgradedKeys[key] and T.upgradeBP then
+                    T.upgradedKeys[key] = nil                  -- retrofit again: the T2 con rebuilds the mohos
+                    Spring.Echo(string.format("[LT] %s RECOVER grid (%d, %d): %d of %d mex spots empty -> retrofit re-opened (%d recoveries)",
+                        Clock(frame), list.anchorX, list.anchorZ, gone, #list.spots, T.recovered))
+                    AssignCons(T)
+                else
+                    table.insert(T.pendingGrids, 1, { anchorX = list.anchorX, anchorZ = list.anchorZ,
+                                                      rotation = T.gridRotation[key] or 0, recover = true })
+                    Spring.Echo(string.format("[LT] %s RECOVER grid (%d, %d): %d of %d mex spots empty -> grid re-run queued first (%d recoveries)",
+                        Clock(frame), list.anchorX, list.anchorZ, gone, #list.spots, T.recovered))
+                end
+            end
+        end
+    end
+end
+
+-- ── LINE_RECOVER (the "linenano" job) ───────────────────────────────────────
+-- Round 3 (user 2026-10-13): after the line is built its builders are released, so a destroyed line nano was never
+-- rebuilt (14 -> 7 nanos by 12:00).  Only the nano spots near a T1 air lab matter (their build power makes the air cons):
+-- a spot that stays empty over two looks with no raid near is rebuilt by a free air con.
+-- queued slots still empty (a stood-up or reclaimed one drops out)
+local function LineNanoWant(T)
+    local q, n = T.lineRecQueue, 0
+    for i = #q, 1, -1 do
+        if q[i].state ~= "free" or q[i].recCon then q[i].recQueued = nil; table.remove(q, i) else n = n + 1 end
+    end
+    return n
+end
+
+-- the con holds out of the pool until the nano stands
+local function StartLineNano(T, conID, frame)
+    local nanoID = UnitDefNames.cornanotc and UnitDefNames.cornanotc.id
+    local s = table.remove(T.lineRecQueue, 1)
+    if not (s and nanoID) then return false end
+    local y = Spring.GetGroundHeight(s.wx, s.wz) or 0
+    Spring.GiveOrderToUnit(conID, -nanoID, { s.wx, y, s.wz, 0 }, {})
+    s.recCon, s.recAt = conID, frame
+    T.lineRecovered = (T.lineRecovered or 0) + 1
+    Spring.Echo(string.format("[LT] %s RECOVER line nano at (%d, %d): con %d rebuilds it (%d so far)",
+        Clock(frame), s.wx, s.wz, conID, T.lineRecovered))
+    return true
+end
+
+local function UpdateLineRecovery(T, frame)
+    local C = T.CFG
+    if not C.LINE_RECOVER or not T.L or not T.L.nanos or frame - (T.lineRecF or -1e9) < C.RECOVER_EVERY then return end
+    T.lineRecF = frame
+    local nanoID = UnitDefNames.cornanotc and UnitDefNames.cornanotc.id
+    if not nanoID then return end
+    local labs = {}
+    for _, id in ipairs({ T.airLabID, T.lab2 and T.lab2.labID }) do
+        if id and Spring.GetUnitDefID(id) then
+            local x, _, z = Spring.GetUnitPosition(id)
+            if x then labs[#labs + 1] = { x = x, z = z } end
+        end
+    end
+    if #labs == 0 then return end
+    for _, s in ipairs(T.L.nanos) do
+        if s.state == "nano" then
+            s.wasNano = true
+        elseif s.state == "free" and s.wasNano then
+            local near = false
+            for _, lb in ipairs(labs) do
+                if (s.wx - lb.x) ^ 2 + (s.wz - lb.z) ^ 2 <= C.LINE_RECOVER_R ^ 2 then near = true end
+            end
+            if near and not ThreatNear(T, s.wx, s.wz, C.RECOVER_SAFE_R) then
+                if s.recMiss then
+                    -- is it already up (a rebuild that finished)?
+                    for _, uid in ipairs(Spring.GetUnitsInCylinder(s.wx, s.wz, 40, T.teamID) or {}) do
+                        if Spring.GetUnitDefID(uid) == nanoID then
+                            s.state, s.unitID, s.recMiss = "nano", uid, nil
+                            if s.recCon then CB.Release(T.CB, s.recCon); s.recCon = nil end
+                            s.recQueued = nil
+                            if T.crew then T.crew.nNano = (T.crew.nNano or 0) + 1 end
+                            break
+                        end
+                    end
+                    if s.recCon and frame - s.recAt > 1800 then      -- the rebuild stalled: give the con back, try again
+                        CB.Release(T.CB, s.recCon, true)
+                        s.recCon, s.recQueued = nil, nil
+                    end
+                    if s.state == "free" and not s.recCon and not s.recQueued then
+                        s.recQueued = true                            -- the linenano job gives it a con
+                        T.lineRecQueue[#T.lineRecQueue + 1] = s
+                    end
+                else
+                    s.recMiss = frame                              -- first look: confirm on the next one
+                end
+            end
+        end
+    end
+end
+
+-- ── SECOND_AIR_LAB ───────────────────────────────────────────────────────────
+
+-- A 3x2 block of wind / mex / free line slots (never a starter, reserved or dead slot): the fewest mexes first (the real
+-- line is about half mexes, mixed in with the winds), then nearest the first air lab; and LAB2_NANOS slots of the same
+-- kinds beside it, winds first.  Returns { slots, nanos, wx, wz } or nil.
+local function PickLab2Site(T)
+    local LC = T.LC
+    local ok = function(s) return s and (s.state == "wind" or s.state == "free" or s.state == "mex") end
+    local lx, lz
+    if T.airLabID then local x, _, z = Spring.GetUnitPosition(T.airLabID); lx, lz = x, z end
+    local best
+    for _, lane in ipairs(T.L.lanes) do
+        local at = {}
+        for _, s in ipairs(lane.slots) do at[s.row] = at[s.row] or {}; at[s.row][s.k] = s end
+        for k0 = LC.K_FIRST, LC.K_LAST - 2 do
+            for r0 = 1, 1 do                -- rows 1-2, as the first air lab (other row pairs may not be adjacent)
+                local slots, good = {}, true
+                for row = r0, r0 + 1 do
+                    for k = k0, k0 + 2 do
+                        local s = at[row] and at[row][k]
+                        if ok(s) then slots[#slots + 1] = s else good = false end
+                    end
+                end
+                if good then
+                    local wx, wz, mexes = 0, 0, 0
+                    for _, s in ipairs(slots) do
+                        wx, wz = wx + s.wx, wz + s.wz
+                        if s.state == "mex" then mexes = mexes + 1 end
+                    end
+                    wx, wz = wx / 6, wz / 6
+                    local d = (lx and math.sqrt((wx - lx) ^ 2 + (wz - lz) ^ 2) or 0) + mexes * 100000
+                    if not best or d < best.d then
+                        best = { d = d, lane = lane, slots = slots, wx = wx, wz = wz, k0 = k0, r0 = r0, mexes = mexes }
+                    end
+                end
+            end
+        end
+    end
+    if not best then return nil end
+    local inLab = {}
+    for _, s in ipairs(best.slots) do inLab[s] = true end
+    local cands = {}
+    for _, s in ipairs(best.lane.slots) do
+        if ok(s) and not inLab[s] and s.row >= best.r0 and s.row <= best.r0 + 1
+           and (s.k == best.k0 - 1 or s.k == best.k0 + 3 or s.k == best.k0 - 2 or s.k == best.k0 + 4) then
+            cands[#cands + 1] = { s = s, d = math.abs(s.k - (best.k0 + 1)) + (s.state == "mex" and 10 or 0) }
+        end
+    end
+    table.sort(cands, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.s.row < b.s.row end)
+    best.nanos = {}
+    for i = 1, math.min(T.CFG.LAB2_NANOS, #cands) do best.nanos[i] = cands[i].s end
+    return best
+end
+
+-- Planning: is the second lab due, and where would it go?  (T.lab2Site; the "lab2" job gives it a con.)
+local function UpdateSecondLab(T, frame, res)
+    local C = T.CFG
+    if not C.SECOND_AIR_LAB or not T.labDefID or not T.airLabID then T.lab2Site = nil; return end
+    local L2 = T.lab2
+    if not L2 then
+        T.lab2Site = nil
+        if frame < C.LAB2_FRAME then return end
+        if T.LC.SlotsRemaining(T.L) > 0 and frame < C.LAB2_LATEST then return end
+        local site = PickLab2Site(T)
+        if not site then
+            if frame - (T.lab2LogF or -1e9) >= 900 then
+                T.lab2LogF = frame
+                Spring.Echo("[LT] " .. Clock(frame) .. " second air lab: no 3x2 block of built line slots")
+            end
+            return
+        end
+        T.lab2Site = site
+        if not T.lab2Logged then
+            T.lab2Logged = true
+            Spring.Echo("[LT] " .. Clock(frame) .. " second air lab due: an air con is wanted for it")
+        end
+        return
+    end
+    if L2.st and not L2.st.done and L2.st.builderID and Spring.GetUnitDefID(L2.st.builderID) then
+        -- LAB2_NANO_HELP (round 3): every nano in reach reclaims the winds / mexes in the way, then builds the lab frame
+        local NANO = T.BP.NANO
+        if C.LAB2_NANO_HELP and NANO and frame % 60 == 0 then
+            local lab
+            for _, uid in ipairs(Spring.GetUnitsInCylinder(L2.x, L2.z, 60, T.teamID) or {}) do
+                if Spring.GetUnitDefID(uid) == T.labDefID then lab = uid; break end
+            end
+            if lab then
+                L2.labID = lab
+                for _, nid in ipairs(T.BP.NanosInRange(L2.x, L2.z) or {}) do NANO.Guard(NANO.PRIO.BALANCE, nid, lab) end
+            else
+                local windID = T.windDefID or (UnitDefNames.corwin or {}).id
+                for _, uid in ipairs(Spring.GetUnitsInCylinder(L2.x, L2.z, 220, T.teamID) or {}) do
+                    local did = Spring.GetUnitDefID(uid)
+                    if did == windID or did == (UnitDefNames.cormex or {}).id then
+                        local x, _, z = Spring.GetUnitPosition(uid)
+                        for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Reclaim(NANO.PRIO.WIND_RECLAIM, nid, uid) end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- The lab2 job: one con while the lab is due; later one more if the lab's builder dies mid-job (it then takes the session over).
+local function Lab2Want(T)
+    local L2 = T.lab2
+    if not L2 then return T.lab2Site and 1 or 0 end
+    local st = L2.st
+    if st and not st.done and st.builderID and not Spring.GetUnitDefID(st.builderID) then return 1 end
+    return 0
+end
+
+local function StartLab2(T, conID, frame)
+    local L2 = T.lab2
+    if L2 then                                           -- its con died: this one takes the job over
+        L2.st.builderID, L2.st.currentTask = conID, nil
+        Spring.Echo(string.format("[LT] %s second air lab: builder died, con %d takes over", Clock(frame), conID))
+        return true
+    end
+    local site = T.lab2Site
+    if not site then return false end
+    local x, z, f = LT.LabSpot(T, site)
+    if not x then
+        -- the winds still stand there: TestBuildOrder fails, so place it on the slot centre and let the placer clear it
+        x, z = T.BP.SnapToBuildGrid(T.labDefID, site.wx, site.wz, T.BP.RotateFacing(0, T.L.rot))
+        f = T.BP.RotateFacing(0, T.L.rot)
+    end
+    for _, s in ipairs(site.slots) do s.state = "reserved" end
+    for _, s in ipairs(site.nanos) do s.state = "reserved" end
+    local layout = {}
+    for _, s in ipairs(site.nanos) do layout[#layout + 1] = { n = "cornanotc", x = s.wx - x, z = s.wz - z, f = 0 } end
+    layout[#layout + 1] = { n = UnitDefs[T.labDefID].name, x = 0, z = 0, f = f }
+    local st = T.BP.New({ layout = layout }, conID, x, z, 0, {})
+    st.clearBlockers = true
+    st.clearOnlyDefIDs = { [(UnitDefNames.corwin or {}).id or -1] = true, [(UnitDefNames.cormex or {}).id or -1] = true }
+    T.lab2 = { st = st, x = x, z = z, site = site, since = frame }
+    T.lab2Site = nil
+    Spring.Echo(string.format("[LT] %s SECOND AIR LAB: %s at (%d, %d), %d line slots reserved (%d of them mexes) + %d nanos, built by con %d",
+        Clock(frame), UnitDefs[T.labDefID].name, x, z, #site.slots, site.mexes or 0, #site.nanos, conID))
+    return st
+end
+
+-- ── The jobs ─────────────────────────────────────────────────────────────────
+-- Every job that wants an air con is registered here; con_broker hands the cons out in priority order.  The jobs keep their
+-- own logic above (what to build, where); the broker owns WHICH con does it, the reserve, and the cons' return to the pool.
+-- To add a job: one CB.AddJob below (see the header of con_broker.lua).
+
+RegisterJobs = function(T)
+    local cb = T.CB
+    T.IsT2 = function(defID) return IsT2Con(T, defID) end
+    cb.hooks.reserve = function(frame, res) KeepAirConReserve(T, frame, res) end
+    cb.hooks.before = function() SetReserves(T) end
+    local function CanBuildDef(name)
+        return function(id)
+            local ud = UnitDefNames[name]
+            return ud and T.BP.CanBuild(Spring.GetUnitDefID(id), ud.id) or false
+        end
+    end
+
+    -- T2 cons ───────────────────────────────────────────────────────────────
+    CB.AddJob(cb, { name = "silo", prio = 90, tier = "t2", useReserve = true,
+        sessions = T.siloJobs, paused = function() return T.ecoPaused end,
+        want = function() return SiloWant(T) end,
+        start = function(id) return StartSilo(T, id) end })
+
+    CB.AddJob(cb, { name = "consolidate", tier = "t2", useReserve = true, prio = 45,   -- after the retrofits, but it may use the T2 hold
+        sessions = T.consolidateJobs, paused = function() return T.ecoPaused end,
+        want = function() return ConsolWant(T) end,
+        start = function(id, frame, res) return StartConsolidationJob(T, id, frame, res) end,
+        canTake = function(id)
+            local force = ConsolForce(T)
+            local ud = force and UnitDefNames[force]
+            return not ud or T.BP.CanBuild(Spring.GetUnitDefID(id), ud.id)
+        end,
+        produce = function(frame) ConsolProduce(T, frame) end })
+
+    CB.AddJob(cb, { name = "retrofit", prio = 50, tier = "t2",
+        sessions = T.upgradeStates, paused = function() return T.ecoPaused or T.retrofitPaused end,
+        preemptMax = 4,                                            -- helpers released for retrofits: a few at a time
+        want = function() return (T.upgradeBP and not T.ecoPaused) and RetrofitsWaiting(T) or 0 end,
+        start = function(id) return StartRetrofit(T, id) end,
+        produce = function(frame, res) UpdateRetrofitCons(T, frame, res) end })
+
+    -- T1 cons ───────────────────────────────────────────────────────────────
+    CB.AddJob(cb, { name = "lab2", prio = 78, tier = "t1", useReserve = true,
+        sessions = T.lab2Sessions,
+        want = function() return Lab2Want(T) end,
+        start = function(id, frame) return StartLab2(T, id, frame) end,
+        onOrphan = function(st) return T.lab2 ~= nil and T.lab2.st == st end,     -- wait for a new builder (it takes the job over)
+        onDone = function(st, frame)
+            local L2 = T.lab2
+            if L2 and L2.st == st and not L2.logged then
+                L2.logged = true
+                Spring.Echo(string.format("[LT] %s second air lab site done (lab %s)", Clock(frame), tostring(L2.labID)))
+            end
+            if st.builderID and Spring.GetUnitDefID(st.builderID) then CB.Release(cb, st.builderID) end
+        end })
+
+    CB.AddJob(cb, { name = "linenano", prio = 75, tier = "t1", useReserve = true,
+        want = function() return T.CFG.LINE_RECOVER and LineNanoWant(T) or 0 end,
+        start = function(id, frame) return StartLineNano(T, id, frame) end,
+        onLost = function(id)
+            for _, s in ipairs((T.L and T.L.nanos) or {}) do
+                if s.recCon == id then s.recCon, s.recQueued = nil, nil end
+            end
+        end })
+
+    CB.AddJob(cb, { name = "nanocrew", prio = 72, tier = "t1", useReserve = true, urgent = false,
+        preemptable = true,                                        -- only an idle member, only for the energy push
+        canPreempt = function(id) local m = T.nanoCrew[id]; return T.CFG.ENERGY_PRIORITY and m and not m.items end,
+        heldPrio = function(id) local m = T.nanoCrew[id]; return (m and not m.items) and 25 or 72 end,
+        want = function(frame) return NanoCrewWant(T, frame) end,
+        start = function(id, frame) return StartCrewMember(T, id, frame) end,
+        idleCount = function()
+            local n = 0
+            for id, m in pairs(T.nanoCrew) do if not m.items and Spring.GetUnitDefID(id) then n = n + 1 end end
+            return n
+        end,
+        onPreempt = function(id) T.nanoCrew[id] = nil end,
+        onLost = function(id) T.nanoCrew[id] = nil end })
+
+    CB.AddJob(cb, { name = "grid", prio = 70, tier = "t1", useReserve = true,
+        sessions = T.gridStates, paused = function() return T.ecoPaused end,
+        want = function() return T.ecoPaused and 0 or #T.pendingGrids end,
+        start = function(id, frame) return StartGrid(T, id, frame) end,
+        onDone = function(st)
+            if st.builderID and Spring.GetUnitDefID(st.builderID) then CB.Release(cb, st.builderID) end
+            if T.CFG.GRID_RECOVER then RememberGridMexes(T, st) end
+        end })
+
+    -- helpers: they take what is idle and give it back to any job above them ──────
+    CB.AddJob(cb, { name = "fusionhelp", tier = "any", preemptable = true,
+        prio = function() return 30 end,
+        want = function() return FusionHelperWant(T) end,
+        start = function(id) return StartFusionHelper(T, id) end,
+        canTake = function(id, tier)                              -- a T2 con helps only when no wind block or retrofit needs it
+            return tier == 1 or (#T.windBlocks == 0 and RetrofitsWaiting(T) == 0)
+        end,
+        onPreempt = function(id) T.fusHelpers[id] = nil end,
+        onLost = function(id) T.fusHelpers[id] = nil end })
+
+    CB.AddJob(cb, { name = "gridhelp", prio = 20, tier = "t1", preemptable = true, urgent = false,
+        want = function() local _, n = HelpSlots(T); return math.min(n, HelperRoom(T)) end,
+        start = function(id) return StartGridHelper(T, id) end,
+        onPreempt = function(id) T.helpers[id] = nil end,
+        onLost = function(id) T.helpers[id] = nil end })
+end
+
 local function UpdateGrids(T, frame, res)
     AuditGrids(T, frame)
+    UpdateRecovery(T, frame)
+    UpdateLineRecovery(T, frame)
+    UpdateSecondLab(T, frame, res)
     if T.CFG.RETROFIT_MEX_DONE and frame % 60 == 0 then
         for _, gs in ipairs(T.gridStates) do
             local key = Key(gs.anchorX, gs.anchorZ)
@@ -1705,7 +2030,7 @@ local function UpdateGrids(T, frame, res)
                         gs.skipDefIDs[T.windDefID or UnitDefNames.corwin.id] = true
                     end
                     Spring.Echo(string.format("[LT] %s grid (%d, %d) mexes up -- retrofit eligible", Clock(frame), gs.anchorX, gs.anchorZ))
-                    TryAssignUpgrades(T)
+                    AssignCons(T)
                 end
             end
         end
@@ -1721,34 +2046,37 @@ local function UpdateGrids(T, frame, res)
             LiftAirConCap(T, string.format("first grid %d%% built", n > 0 and math.floor(100 * done / n) or 100))
         end
     end
-    local i = 1
-    while i <= #T.gridStates do
-        local gs = T.gridStates[i]
-        if gs.done then
-            if gs.builderID and Spring.GetUnitDefID(gs.builderID) then T.freeAirCons[#T.freeAirCons + 1] = gs.builderID end
-            table.remove(T.gridStates, i)
-        else
-            if not T.ecoPaused then T.BP.Update(gs, frame, res) end    -- ecoPaused: spend_governor holds the eco pipeline
-            i = i + 1
-        end
-    end
+    -- every job's build sessions run now (grids, retrofits, fusions, silos, cells, the second lab); a finished one frees its con
+    CB.RunSessions(T.CB, frame, res)
     if not T.ecoPaused then UpdateGridHelpers(T, frame) end
     if not T.ecoPaused then ReleaseCandidates(T, frame, res) end
-    if #T.freeAirCons > 0 and #T.pendingGrids > 0 and not T.ecoPaused then TryAssignGrids(T, frame) end
     CheckCapPressure(T, res, frame)
     if not T.ecoPaused then
         UpdateRetrofits(T, frame, res)
         UpdateConsolidation(T, frame, res)
-        UpdateEnergyCells(T, frame, res)
     end
     if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end
     UpdateSpendPressure(T, res)
-    while #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT do
-        Spring.Echo("[LT] an air con order never came out; forgetting it")
-        AirConOrderDone(T)
+    -- hand the cons out, ask the labs for what is short (T1: the reserve; T2: the jobs' `produce`)
+    CB.Update(T.CB, frame, res, true)
+    -- an order older than AIR_CON_TIMEOUT is forgotten only if the air lab no longer has it queued: a deep queue (30 cons ordered at
+    -- once) takes longer than the timeout to work off, and forgetting orders that are still queued made the labs order the same cons again
+    if #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT then
+        local queued = 0
+        local lab = T.airLabID
+        if lab and T.airConDefID and Spring.GetFactoryCommands then
+            for _, c in ipairs(Spring.GetFactoryCommands(lab, -1) or {}) do
+                if c.id == -T.airConDefID then queued = queued + 1 end
+            end
+        end
+        while #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT and T.airConsOrdered > queued do
+            Spring.Echo("[LT] an air con order never came out; forgetting it")
+            AirConOrderDone(T)
+        end
+        -- (still queued: re-date the oldest so the check is not repeated every frame)
+        if #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT then T.orders[1] = frame - T.CFG.AIR_CON_TIMEOUT + 300 end
     end
     UpdateLabAssist(T, frame)
-    KeepAirConReserve(T, frame)
 end
 
 -- ── Spine (TILE_BOT's unit production, hosted here) ──────────────────────────────────────────────────────────
@@ -1758,36 +2086,15 @@ end
 -- lab stands.  Everything unit-related lives in bar_framework/spine.lua.
 
 local function SpineTakeCon(T, defID, t1Only)
-    local lists = t1Only and { T.freeAirCons } or { T.freeAirCons, T.freeT2Cons }
-    for _, list in ipairs(lists) do
-        local i = 1
-        while i <= #list do
-            local cid  = list[i]
-            local cdef = Spring.GetUnitDefID(cid)
-            if not cdef then
-                table.remove(list, i)
-            elseif not defID or T.BP.CanBuild(cdef, defID) then
-                table.remove(list, i)
-                return cid
-            else
-                i = i + 1
-            end
-        end
-    end
-    return nil
+    return CB.Take(T.CB, "spine", { tier = t1Only and 1 or nil,
+        canTake = function(cid) return not defID or T.BP.CanBuild(Spring.GetUnitDefID(cid), defID) end })
 end
 
 local function SpineReturnCon(T, uid)
-    local def = Spring.GetUnitDefID(uid)
-    if not def then return end
-    Spring.GiveOrderToUnit(uid, CMD_STOP, {}, {})
-    if IsT2Con(T, def) then
-        T.freeT2Cons[#T.freeT2Cons + 1] = uid
-        TryAssignUpgrades(T)
-    else
-        T.freeAirCons[#T.freeAirCons + 1] = uid
-        TryAssignGrids(T, T.frame)
-    end
+    if not Spring.GetUnitDefID(uid) then return end
+    CB.Add(T.CB, uid)                          -- (already known: no-op)
+    CB.Release(T.CB, uid, true)
+    AssignCons(T, T.frame)
 end
 
 -- Metal value of our finished ground army (armed, mobile, non-air, non-builder).  Gates the T2 labs.
@@ -2067,6 +2374,7 @@ end
 
 function LT.Update(T, frame, res)
     T.frame = frame
+    T.lastRes = res
     local i = 1
     while i <= #T.pendingStops do
         local ps = T.pendingStops[i]
@@ -2104,57 +2412,62 @@ end
 function LT.OnUnitFinished(T, unitID, defID, x, z)
     local d = UnitDefs[defID]
     if T.sg then T.sgMod.OnUnitFinished(T.sg, unitID, defID) end
-    -- A capstone (advanced) air lab can make the T2 con that does retrofits.
-    if d and d.isFactory and T.upgradeBP and unitID ~= T.airLabID then
-        local t2 = FindAirConDef(defID)
-        if t2 and IsT2Con(T, t2) then
-            for _ = 1, T.CFG.UPGRADE_CONS_PER_LAB do Spring.GiveOrderToUnit(unitID, -t2, { 0 }, {}) end
-        end
-    end
+    -- (A finished advanced air lab orders no T2 cons itself: they are built only when a job wants one -- UpdateRetrofitCons / MakeEnergyT2Con.)
     -- Air cons come out guarding the lab: stop them now and again once that order has landed.
     if T.airLabID and d and d.isBuilder and d.canFly and not d.isFactory then
         Spring.GiveOrderToUnit(unitID, CMD_STOP, {}, {})
         T.pendingStops[#T.pendingStops + 1] = { id = unitID, fire = T.frame + 30 }
-        if IsT2Con(T, defID) then
-            T.freeT2Cons[#T.freeT2Cons + 1] = unitID
-            TryAssignUpgrades(T)
-        else
+        -- the broker hands the new con to the highest job that wants one (the second lab, the nano crew, a grid, ...); the
+        -- spine gets it only when no job did and no grid is waiting
+        local t1 = not IsT2Con(T, defID)
+        if not t1 and T.t2Orders and #T.t2Orders > 0 then table.remove(T.t2Orders, 1) end
+        if t1 then
             AirConOrderDone(T)
             T.airConsAlive[unitID] = true
-            -- The nano crew (NANO_CREW) is filled first, then grids (starting them fast is what scales the economy); the spine gets a new con only when
-            -- no grid is waiting for one.
-            local K = T.CFG
-            local crewN = 0
-            for _ in pairs(T.nanoCrew) do crewN = crewN + 1 end
-            if crewN < NanoCrewTarget(T, T.frame) then
-                T.nanoCrew[unitID] = { since = T.frame, idleSince = T.frame }     -- crew first, then grids
-                Spring.Echo(string.format("[LT] %s nano crew: new air con %d joins (%d/%d, %d grids short of nanos)", Clock(T.frame), unitID, crewN + 1, T.crewTarget or 0, T.crewDemand or 0))
-            elseif not (#T.pendingGrids == 0 and T.spineOn and T.spineMod.OfferCon(unitID)) then
-                T.freeAirCons[#T.freeAirCons + 1] = unitID
-                TryAssignGrids(T, T.frame)
-            end
+        end
+        CB.Add(T.CB, unitID, defID)
+        AssignCons(T, T.frame)
+        if t1 and CB.Owner(T.CB, unitID) == nil and #T.pendingGrids == 0 and T.spineOn and T.spineMod.OfferCon(unitID) then
+            CB.Claim(T.CB, unitID, "spine")
         end
     end
     if T.spineOn then T.spineMod.OnUnitFinished(unitID, defID, x, z) end
-    for _, gs in ipairs(T.gridStates) do
-        if not gs.done then T.BP.OnUnitFinished(gs, unitID, defID, x, z) end
+    CB.EachSession(T.CB, function(st) T.BP.OnUnitFinished(st, unitID, defID, x, z) end)
+    local L2 = T.lab2
+    if L2 and L2.st then
+        if defID == T.labDefID and not L2.labID and x and (x - L2.x) ^ 2 + (z - L2.z) ^ 2 < 200 * 200 then
+            L2.labID = unitID
+            Spring.Echo(string.format("[LT] %s SECOND AIR LAB finished (%d), %.0fs after it was started", Clock(T.frame), unitID,
+                (T.frame - L2.since) / 30))
+        end
     end
-    for _, us in ipairs(T.upgradeStates) do
-        if not us.done then T.BP.OnUnitFinished(us, unitID, defID, x, z) end
-    end
-    for _, cs in ipairs(T.consolidateJobs) do
-        if not cs.done then T.BP.OnUnitFinished(cs, unitID, defID, x, z) end
-    end
-    for _, ss in ipairs(T.siloJobs) do
-        if not ss.done then T.BP.OnUnitFinished(ss, unitID, defID, x, z) end
-    end
-    for _, es in ipairs(T.ecellStates) do
-        if not es.done then T.BP.OnUnitFinished(es, unitID, defID, x, z) end
-    end
+end
+
+-- A ground constructor (or necro) of ours joins the broker too: the cons the line / the spine / the rez crew run are CLAIMED by
+-- those systems (owner "line" / "spine" / "rez"), so defense_crew and the jobs leave them alone; one from any other factory is a
+-- free ground con that a job with kind = "ground" (or `defs`) may take.  owner = nil: free.
+local function IsGroundCon(d)
+    return d and d.isBuilder and not d.isFactory and not d.canFly and (d.speed or 0) > 0
+       and not (d.customParams and d.customParams.iscommander)
+end
+
+function LT.AdoptCon(T, unitID, owner)
+    local defID = Spring.GetUnitDefID(unitID)
+    if not defID or not IsGroundCon(UnitDefs[defID]) then return false end
+    CB.Add(T.CB, unitID, defID)
+    if owner then CB.Claim(T.CB, unitID, owner) end
+    return true
 end
 
 function LT.OnUnitFromFactory(T, unitID, defID, factID)
     if factID and factID == T.airLabID then Spring.GiveOrderToUnit(unitID, CMD_STOP, {}, {}) end
+    local gd = UnitDefs[defID]
+    if IsGroundCon(gd) then
+        local owner
+        if gd.canResurrect then owner = "rez"
+        elseif factID and factID == T.vpID then owner = "spine" end
+        LT.AdoptCon(T, unitID, owner)
+    end
     if T.spineOn then T.spineMod.OnUnitFromFactory(unitID, defID, factID) end
 end
 
@@ -2164,13 +2477,26 @@ function LT.OnUnitDestroyed(T, unitID)
     -- ends the session itself; a nil id made that call error and removed the whole macro widget (seen at 6:30 when
     -- an enemy air raid killed an air con).
     T.airConsAlive[unitID] = nil
+    CB.Remove(T.CB, unitID)
     if unitID == T.airLabID then T.airLabID = nil end
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID) end
 end
 
+-- What defense_crew needs from the broker (its `pool` option): which cons it may use, taking one, giving it back.
+function LT.ConPool(T)
+    return { Usable  = function(id) return CB.Usable(T.CB, id) end,
+             Seize   = function(id, owner) return CB.Seize(T.CB, id, owner) end,
+             Release = function(id) if CB.IsManaged(T.CB, id) then CB.Release(T.CB, id, true) end end }
+end
+
 function LT.Status(T)
     return string.format("phase %s grids %d (open %d) aircons free %d ordered %d", T.phase, T.gridsAssigned,
-        #T.pendingGrids, #T.freeAirCons, T.airConsOrdered)
+        #T.pendingGrids, CB.NFree(T.CB, 1), T.airConsOrdered)
 end
+
+-- For tests only (tests/test_con_hold.lua): the air / T2 con order paths that CON_HOLD gates.
+LT._test = { QueueAirCon = QueueAirCon, MakeEnergyT2Con = MakeEnergyT2Con, UpdateRetrofitCons = UpdateRetrofitCons,
+             RememberGridMexes = RememberGridMexes, UpdateRecovery = UpdateRecovery, PickLab2Site = PickLab2Site,
+             UpdateSecondLab = UpdateSecondLab }
 
 return LT

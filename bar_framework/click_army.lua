@@ -36,6 +36,7 @@
 -- stage/reinforce values while waiting, bomber runs, and a once-a-minute total.
 
 local M = {}
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
 local CFG = {
     STAGE_FRAC      = 0.45,   -- stage this far along home->foe (human: ~(6000-6400, 2400-3100) of ~8000)
@@ -190,6 +191,61 @@ local CFG = {
     -- Bombers as behaviours too: { "bomber_run" } replaces the built-in UpdateBombers (empty = the built-in one).
     BOMBER_BEHAVIORS  = {},
     BOMBER_BEHAVIOR_CFG = {},
+    -- RAID_BOT (game review 2026-10-13: the army idled at the stage until 8:00, then 7 groups lost 33k for 0 kills).
+    -- Every key below defaults to the old behaviour.
+    -- Early launch: the smallest group ramps linearly from av0 at frame f0 to av1 at f1 (LAUNCH_MIN_AV before/after
+    -- is replaced by av0/av1); nil = flat LAUNCH_MIN_AV.  LAUNCH_RATIO_EARLY replaces LAUNCH_RATIO before f1.
+    EARLY_LAUNCH       = nil,     -- e.g. { f0 = 5400, av0 = 350, f1 = 18000, av1 = 1800 }
+    LAUNCH_RATIO_EARLY = nil,
+    BLIND_LAUNCH       = false,   -- launch while the foe is still the mirror guess (the no-target branch scouts it)
+    MIN_GROUP_UNITS    = 1,       -- a group needs this many units (3: no lone-Demon groups)
+    -- Fresh enemy units leaving a factory do not steer the legs: armed mobile enemies within LAB_EXIT_R of a known
+    -- enemy factory count LAB_EXIT_W of their value in LegPoint (they still count for ENGAGE).
+    LAB_EXIT_R         = 0,
+    LAB_EXIT_W         = 1,
+    -- ENGAGE: per group, advance / commit / escape.  Dancing while surrounded is the worst option: either commit to the
+    -- enemy build power next to the group, or run all the way back to our line front.
+    ENGAGE             = false,
+    ENGAGE_R           = 900,     -- local threat = armed enemy value this close to the core (mobile seen <= 300 frames)
+    SECTOR_MIN_FRAC    = 0.10,    -- a sector (of 6) is "occupied" when its threat is >= this x the core value
+    SURROUND_SECTORS   = 3,       -- occupied sectors that make the group surrounded
+    SURROUND_MIN_FRAC  = 0.6,     -- ...and surrounded only matters when the total threat is >= this x the core
+    COMMIT_RATIO       = 1.2,     -- threat >= this x the core is danger
+    ESCAPE_RATIO       = 2.0,     -- danger with no build power near: escape when threat >= this x (or surrounded/losing)
+    ESCAPE_LOSS_FRAC   = 0.25,    -- lost this share of the group's value within ENGAGE_LOSS_WINDOW = danger
+    ENGAGE_LOSS_WINDOW = 300,
+    COMMIT_R           = 700,     -- enemy build power (lab, nano, con, commander) this close = something to commit to
+    COMMIT_KEEP_R      = 1000,    -- a commit continues while build power is this close
+    ESCAPE_FRAC        = 0.25,    -- escape to this share of home->foe (our line front), not the stage
+    ESCAPE_ARRIVE      = 900,
+    ESCAPE_MAX_FRAMES  = 2700,
+    -- HOLE_FIND: from HOLE_MIN_D..HOLE_MAX_D off the target, go to the least defended of HOLE_N points on a ring of HOLE_R
+    -- around it and strike in from there, instead of walking the straight line (replaces FLANK while it applies).
+    -- Ring points nobody has seen are sent to the scouts.
+    HOLE_FIND          = false,
+    HOLE_R             = 1400,
+    HOLE_N             = 12,
+    HOLE_MIN_D         = 1200,
+    HOLE_MAX_D         = 4500,
+    HOLE_ARRIVE        = 450,
+    HOLE_REPICK_FRAC   = 0.5,     -- re-pick when the chosen point's threat rises above this x the core
+    HOLE_SCOUTS        = 2,       -- unseen ring points added to the group's scout requests
+    -- Game plan (M.SetMode): "hold" launches nothing, recalls the groups and moves the stage back to HOLD_STAGE_FRAC.
+    HOLD_STAGE_FRAC    = 0.25,
+    TRADE_WINDOW       = 5400,    -- frames M.TradeSummary looks back
+    -- FIGHTER_POST (user 2026-10-13: "stage the fighters closer to the front, still far enough back that enemy ground AA
+    -- cannot hit them"): the dedicated fighters click_army holds wait FIGHT-ing at M.FighterPost() -- FIGHTER_POST_BACK
+    -- elmos behind the biggest attacking group (else the stage) toward home, pulled further back in FIGHTER_POST_STEP steps
+    -- while the known enemy AA there is above FIGHTER_POST_AA -- instead of flying over the group (into its AA).
+    FIGHTER_POST       = false,
+    FIGHTER_POST_BACK  = 900,
+    FIGHTER_POST_STEP  = 300,
+    FIGHTER_POST_STEPS = 15,
+    FIGHTER_POST_AA    = 150,     -- air threat value (enemy_intel.ThreatAt "air") allowed at the post
+    -- SCOUT_ROUTE (user 2026-10-13: raid groups call scouts "to go down the path they want to attack"): a group's scout
+    -- requests are a point SCOUT_AHEAD along the way it is actually going (toward its hole / flank waypoint, not straight
+    -- at the target), the target itself, and the unseen ring points round it (HOLE_FIND).
+    SCOUT_ROUTE        = false,
 }
 M.CFG = CFG
 
@@ -208,6 +264,8 @@ end
 local MM, UQ, EI, ARMY
 local combat, guards, muster, scouts, responding, bombers
 local isHunting = function() return false end
+local NotHeld = function() return false end
+local isHeld = NotHeld      -- o.isHeld(uid, frame): a behaviour (range_kite, kite) is moving the unit on purpose
 
 local groups      = {}      -- array of attack groups
 local byId        = {}      -- [id] = group
@@ -220,6 +278,11 @@ local lastBombF   = -99999
 local lastWaitLog = -99999
 local stageAV, reinforceAV = 0, 0
 local totals      = { launches = 0, kills = 0, killBP = 0, killValue = 0, lostUnits = 0, lostValue = 0 }
+local mode        = "raid"  -- M.SetMode: "raid" | "hold"
+local stageFrac   = nil     -- the STAGE_FRAC the stage point was computed with
+local tradeLog    = {}      -- { f, killed, lost }: every enemy death near a group / every group loss (TradeSummary)
+local groupEnds   = {}      -- { f, killed, lost, reason } per ended group, oldest first
+local lastPruneF  = -99999
 
 local function Alive(uid) return Spring.GetUnitDefID(uid) ~= nil end
 local function Dist(ax, az, bx, bz) local dx, dz = ax - bx, az - bz; return math.sqrt(dx * dx + dz * dz) end
@@ -244,17 +307,52 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[CK] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
+M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
-    for k, v in pairs(o.cfg or {}) do CFG[k] = v end    -- caller overrides (LINE_CLICK: no automatic slow group)
+    BC.Apply("click_army", CFG, o.cfg, o.label, M.NIL_OPTIONS)    -- caller overrides (LINE_CLICK: no automatic slow group)
     combat, guards, muster = o.combat, o.guards, o.muster
     scouts, responding, bombers = o.scouts, o.responding, o.bombers
     if o.isHunting then isHunting = o.isHunting end
+    isHeld = o.isHeld or NotHeld
     groups, byId, unitGroup, squad, slowCache = {}, {}, {}, {}, {}
     nextId, lastBombF, lastWaitLog = 1, -99999, -99999
     stageX, stageZ, foeSeenSrc = nil, nil, nil
     stageAV, reinforceAV = 0, 0
     totals = { launches = 0, kills = 0, killBP = 0, killValue = 0, lostUnits = 0, lostValue = 0 }
+    mode, stageFrac, tradeLog, groupEnds, lastPruneF = "raid", nil, {}, {}, -99999
+end
+
+-- Game plan: "raid" (default) or "hold".  Hold launches nothing, sends every attacking group back (they fall to the
+-- stage, which moves to HOLD_STAGE_FRAC of home->foe) and leaves the stage units for the base defence to pick up.
+function M.SetMode(m, frame)
+    if m ~= "raid" and m ~= "hold" then return false end
+    if m == mode then return false end
+    mode = m
+    local f = frame or 0
+    local sec = math.floor(f / 30)
+    Spring.Echo(string.format("[CK] %d:%02d mode -> %s", math.floor(sec / 60), sec % 60, m))
+    return true
+end
+function M.Mode() return mode end
+
+-- What the attack groups traded over the last `window` frames (default TRADE_WINDOW): value killed near a group (any
+-- enemy unit, army included), value lost from groups, and how many of the most recent ended groups in a row were
+-- spent while killing under a quarter of what they lost (badEnds).
+function M.TradeSummary(frame, window)
+    window = window or CFG.TRADE_WINDOW
+    local killed, lost = 0, 0
+    for _, e in ipairs(tradeLog) do
+        if frame - e.f <= window then killed, lost = killed + e.killed, lost + e.lost end
+    end
+    local bad = 0
+    for i = #groupEnds, 1, -1 do
+        local e = groupEnds[i]
+        if frame - e.f > window then break end
+        if e.reason == "group spent" and e.killed < 0.25 * e.lost then bad = bad + 1 else break end
+    end
+    return { killed = killed, lost = lost, ratio = lost > 0 and killed / lost or (killed > 0 and 99 or 1),
+             badEnds = bad, ends = #groupEnds }
 end
 
 -- ── Queries other widgets use ─────────────────────────────────────────────────
@@ -287,6 +385,36 @@ function M.ScoutRequests()
         end
     end
     return out
+end
+
+-- FIGHTER_POST: where fighters wait -- behind the front (the biggest attacking group while raiding, else the stage),
+-- toward home, out of the known enemy AA.  Returns x, z (nil before the stage exists).
+local postF, postX, postZ = -1, nil, nil
+function M.FighterPost(frame)
+    if postF == frame then return postX, postZ end
+    postF = frame
+    if not stageX then postX, postZ = nil, nil; return nil end
+    local fx, fz = stageX, stageZ
+    if mode ~= "hold" then
+        local best
+        for _, g in ipairs(groups) do
+            if g.state == "attack" and g.cx and (not best or g.value > best.value) then best = g end
+        end
+        if best then fx, fz = best.cx, best.cz end
+    end
+    local hx, hz = MM.Home()
+    local dx, dz = hx - fx, hz - fz
+    local d = math.sqrt(dx * dx + dz * dz)
+    if d < 1 then postX, postZ = MM.Clamp(fx, fz, CFG.MARGIN); return postX, postZ end
+    dx, dz = dx / d, dz / d
+    local px, pz
+    for i = 0, CFG.FIGHTER_POST_STEPS do
+        local back = math.min(d, CFG.FIGHTER_POST_BACK + i * CFG.FIGHTER_POST_STEP)
+        px, pz = MM.Clamp(fx + dx * back, fz + dz * back, CFG.MARGIN)
+        if EI.ThreatAt(frame, px, pz, "air") <= CFG.FIGHTER_POST_AA or back >= d then break end
+    end
+    postX, postZ = px, pz
+    return px, pz
 end
 
 -- How many scouts the labs should keep for the groups out now.
@@ -333,6 +461,65 @@ local function ArmedValueNear(frame, x, z, r, mobileMaxAge, skipUid)
         end
     end
     return v
+end
+
+-- Known enemy factory positions, once per frame (LAB_EXIT).
+local labsF, labsList = -1, {}
+local function EnemyLabs(frame)
+    if labsF == frame then return labsList end
+    labsF, labsList = frame, {}
+    for _, rec in pairs(EI.Records()) do
+        if rec.c.factory then labsList[#labsList + 1] = rec end
+    end
+    return labsList
+end
+
+-- ArmedValueNear for steering: fresh units at an enemy factory's exit count LAB_EXIT_W of their value (there will
+-- always be units coming off the labs; turning away from each one made the groups dance).  Same as ArmedValueNear
+-- while LAB_EXIT_R is 0.
+local function SteerValueNear(frame, x, z, r, skipUid)
+    if (CFG.LAB_EXIT_R or 0) <= 0 then return ArmedValueNear(frame, x, z, r, nil, skipUid) end
+    local labs = EnemyLabs(frame)
+    local v = 0
+    for _, rec in pairs(EI.Records()) do
+        local c = rec.c
+        if c.armed and not c.scout and rec.uid ~= skipUid then
+            local reach = r + (c.mobile and 0 or (c.range or 0))
+            if (not c.mobile or frame - rec.frame <= 300) and Dist(rec.x, rec.z, x, z) <= reach then
+                local w = 1
+                if c.mobile then
+                    for _, l in ipairs(labs) do
+                        if Dist(rec.x, rec.z, l.x, l.z) <= CFG.LAB_EXIT_R then w = CFG.LAB_EXIT_W; break end
+                    end
+                end
+                v = v + c.value * w
+            end
+        end
+    end
+    return v
+end
+
+-- ENGAGE: armed enemy ground value within r of (x, z) and how many of 6 sectors around it hold at least minV of it.
+local function LocalThreat(frame, x, z, r, minV)
+    local sect = { 0, 0, 0, 0, 0, 0 }
+    local total = 0
+    for _, rec in pairs(EI.Records()) do
+        local c = rec.c
+        if c.armed and not c.scout and not c.air and c.hitsGnd ~= false then
+            local reach = r + (c.mobile and 0 or (c.range or 0))
+            local d = Dist(rec.x, rec.z, x, z)
+            if (not c.mobile or frame - rec.frame <= 300) and d <= reach then
+                total = total + c.value
+                local a = math.atan2(rec.z - z, rec.x - x)          -- -pi..pi
+                local i = math.floor((a + math.pi) / (2 * math.pi) * 6) + 1
+                if i > 6 then i = 6 elseif i < 1 then i = 1 end
+                sect[i] = sect[i] + c.value
+            end
+        end
+    end
+    local n = 0
+    for i = 1, 6 do if sect[i] > 0 and sect[i] >= minV then n = n + 1 end end
+    return total, n
 end
 
 -- Damage value of killing a target: what it cost, the build power it carries, the income it makes.
@@ -385,7 +572,9 @@ end
 
 -- ── Orders ────────────────────────────────────────────────────────────────────
 
-local function Claim(frame, uid, cmd, x, z, targetID)
+-- A unit a behaviour holds (o.isHeld: kite's step back) is left alone, except by `force` (commit / escape orders).
+local function Claim(frame, uid, cmd, x, z, targetID, force)
+    if not force and isHeld(uid, frame) then return end
     ARMY.Claim(ARMY.PRIO.LINE, uid, {
         role = "BLOB", cmd = cmd, x = x, z = z, targetID = targetID,
     }, frame)
@@ -557,6 +746,8 @@ local function EndGroup(frame, g, reason, n)
         g.id, reason, n, g.peakN, math.floor((frame - g.startF) / 30),
         totals.kills, totals.killBP, totals.killValue, totals.lostUnits, totals.lostValue)
     g.state, g.fallFrame, g.target = "fall", frame, nil
+    groupEnds[#groupEnds + 1] = { f = frame, killed = g.killV or 0, lost = g.lostV or 0, reason = reason }
+    if #groupEnds > 50 then table.remove(groupEnds, 1) end
 end
 
 -- FLANK: the biggest cluster of enemy ground army seen in the last FLANK_MAX_AGE frames (value within
@@ -634,11 +825,61 @@ local function LegPoint(frame, cx, cz, tx, tz, groupValue, skipUid)
         local c, s = math.cos(ang), math.sin(ang)
         local rx, rz = dx * c - dz * s, dx * s + dz * c
         local px, pz = MM.Clamp(cx + rx * step, cz + rz * step, CFG.MARGIN)
-        local cost = ArmedValueNear(frame, px, pz, CFG.ENEMY_NEAR_R, nil, skipUid)
+        local cost = SteerValueNear(frame, px, pz, CFG.ENEMY_NEAR_R, skipUid)
                      + math.abs(ang) * CFG.FLANK_PENALTY * groupValue
         if not bestCost or cost < bestCost then bx, bz, bestCost = px, pz, cost end
     end
     return bx, bz
+end
+
+-- HOLE_FIND: a point on a ring of HOLE_R round the target to strike in from -- the one with the least known armed value
+-- (and away from the enemy army cluster), paying for the detour.  Kept in g.approach until reached (then the group strikes
+-- in) or until it gets defended.  Returns x, z or nil (go straight).  Unseen ring points go to g.holeScout.
+local function ApproachPoint(frame, g, cx, cz, tx, tz, groupValue)
+    local d = Dist(cx, cz, tx, tz)
+    local key = g.target and g.target.uid or nil
+    local a = g.approach
+    if a and (a.key ~= key or Dist(a.tx, a.tz, tx, tz) > CFG.HOLE_R * 0.5) then a = nil; g.approach = nil end
+    if d < CFG.HOLE_MIN_D or (not a and d > CFG.HOLE_MAX_D) then g.holeScout = nil; return nil end
+    if a then
+        if a.done then g.holeScout = nil; return nil end
+        if Dist(cx, cz, a.x, a.z) <= CFG.HOLE_ARRIVE then a.done = true; g.holeScout = nil; return nil end
+        if ArmedValueNear(frame, a.x, a.z, CFG.ENEMY_NEAR_R) <= CFG.HOLE_REPICK_FRAC * groupValue then
+            return a.x, a.z
+        end
+    end
+    local ax, az, av = EnemyArmyCluster(frame)
+    local los = Spring.IsPosInLos
+    local ally = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()
+    local best, bestCost
+    local unseen = {}
+    for i = 0, CFG.HOLE_N - 1 do
+        local ang = 2 * math.pi * i / CFG.HOLE_N
+        local rx, rz = tx + math.cos(ang) * CFG.HOLE_R, tz + math.sin(ang) * CFG.HOLE_R
+        local px, pz = MM.Clamp(rx, rz, CFG.MARGIN)
+        if Dist(px, pz, rx, rz) <= CFG.HOLE_R * 0.5 then           -- mostly on the map
+            local cost = ArmedValueNear(frame, px, pz, CFG.ENEMY_NEAR_R)
+            if ax and av > 0 then
+                local dc = Dist(px, pz, ax, az)
+                if dc < CFG.FLANK_CLEAR then cost = cost + av * (1 - dc / CFG.FLANK_CLEAR) end
+            end
+            local detour = Dist(cx, cz, px, pz) + Dist(px, pz, tx, tz) - d
+            cost = cost + math.max(0, detour) / 1000 * CFG.FLANK_PENALTY * groupValue
+            if not bestCost or cost < bestCost then best, bestCost = { x = px, z = pz }, cost end
+            if los and ally and not los(px, 0, pz, ally) then unseen[#unseen + 1] = { px, pz, cost } end
+        end
+    end
+    table.sort(unseen, function(p, q) return p[3] < q[3] end)
+    g.holeScout = {}
+    for i = 1, math.min(CFG.HOLE_SCOUTS, #unseen) do g.holeScout[i] = { unseen[i][1], unseen[i][2] } end
+    if not best then return nil end
+    g.approach = { x = best.x, z = best.z, key = key, tx = tx, tz = tz }
+    if frame - (g.holeLogF or -99999) >= 450 then
+        g.holeLogF = frame
+        Log(frame, "group #%d approach via (%d,%d): threat there %d (core %d), %d unseen ring points",
+            g.id, best.x, best.z, bestCost, groupValue, #unseen)
+    end
+    return best.x, best.z
 end
 
 local supportCache = {}
@@ -1012,6 +1253,110 @@ local function SetTargets(frame, g, core, cx, cz)
     return set
 end
 
+-- ── ENGAGE: advance / commit / escape ─────────────────────────────────────────
+
+-- Enemy build power within r of (x, z), best first: the commander (when fresh), then builders/nanos next to a factory,
+-- then any builder, nano or factory -- by damage value over distance.  Returns a target record or nil.
+local function BPNear(frame, x, z, r)
+    local best, bestS
+    local cxx, czz, seen, cuid = EI.Commander()
+    if cxx and frame - seen <= CFG.CMDR_FRESH and Dist(x, z, cxx, czz) <= r then
+        return { uid = cuid, x = cxx, z = czz, commander = true }
+    end
+    local labs = EnemyLabs(frame)
+    for _, t in ipairs(EI.RaidTargets(frame)) do
+        if (t.bp or 0) > 0 or t.factory or t.builder then
+            local d = Dist(x, z, t.x, t.z)
+            if d <= r then
+                local s = DamageValue(t)
+                if not t.factory then
+                    for _, l in ipairs(labs) do
+                        if Dist(t.x, t.z, l.x, l.z) <= CFG.LAB_BP_R then s = s * 3; break end
+                    end
+                end
+                s = s / (1 + d / 400)
+                if not bestS or s > bestS then best, bestS = t, s end
+            end
+        end
+    end
+    return best
+end
+
+local function CancelSetTargets(g)
+    if not g.st then return end
+    for uid in pairs(g.st) do Spring.GiveOrderToUnit(uid, CMD_CANCEL_TARGET, {}, {}) end
+    g.st = {}
+end
+
+local function RecentLoss(g, frame)
+    local v = 0
+    local keep = {}
+    for _, e in ipairs(g.losses or {}) do
+        if frame - e.f <= CFG.ENGAGE_LOSS_WINDOW then v = v + e.v; keep[#keep + 1] = e end
+    end
+    g.losses = keep
+    return v
+end
+
+-- Commit: every unit of the group attacks the best build power in reach (the unit's own weapon range + 200), else the
+-- group's commit target.  No steering, no dodging.
+local function CommitOrders(frame, g, list, t)
+    for _, u in ipairs(list) do
+        local reach = (UQ.max_weapon_range(u.defID) or 0) + 200
+        local own = BPNear(frame, u.x, u.z, reach) or t
+        if own.uid and Alive(own.uid) then Claim(frame, u.uid, CMD_ATTACK, own.x, own.z, own.uid, true)
+        else Claim(frame, u.uid, CMD_FIGHT, own.x, own.z, nil, true) end
+    end
+end
+
+-- Returns "done" (escape finished: end the group), true (orders given this tick), or nil (advance as usual).
+local function Engage(frame, g, list, cx, cz, fightV)
+    if g.engage == "escape" then
+        local ex, ez = MM.PointAt(CFG.ESCAPE_FRAC * MM.Dist(), 0)
+        ex, ez = MM.Clamp(ex, ez, CFG.MARGIN)
+        local ax, az = Centroid(list)
+        if not ax or Dist(ax, az, ex, ez) <= CFG.ESCAPE_ARRIVE or frame - g.engageF > CFG.ESCAPE_MAX_FRAMES then
+            return "done"
+        end
+        for i, u in ipairs(list) do
+            local x, z = RingPos(40 * g.id + i - 1, ex, ez)
+            Claim(frame, u.uid, CMD_MOVE, x, z, nil, true)
+        end
+        return true
+    end
+    if g.engage == "commit" then
+        local t = BPNear(frame, cx, cz, CFG.COMMIT_KEEP_R)
+        if t then CommitOrders(frame, g, list, t); return true end
+        g.engage = nil
+        Log(frame, "group #%d commit over: no build power within %d", g.id, CFG.COMMIT_KEEP_R)
+        return nil
+    end
+    local T, sectors = LocalThreat(frame, cx, cz, CFG.ENGAGE_R, CFG.SECTOR_MIN_FRAC * fightV)
+    local loss = RecentLoss(g, frame)
+    local lossFrac = loss / math.max(1, fightV + loss)
+    local surrounded = sectors >= CFG.SURROUND_SECTORS and T >= CFG.SURROUND_MIN_FRAC * fightV
+    local losing = lossFrac >= CFG.ESCAPE_LOSS_FRAC
+    if not (surrounded or losing or T >= CFG.COMMIT_RATIO * fightV) then return nil end
+    local t = BPNear(frame, cx, cz, CFG.COMMIT_R)
+    if t then
+        g.engage, g.engageF = "commit", frame
+        local d = t.defID and UnitDefs[t.defID]
+        Log(frame, "group #%d COMMIT on %s at (%d,%d): threat %d vs core %d, %d sectors, lost %d%% in %ds",
+            g.id, t.commander and "commander" or (d and d.name or "?"), t.x, t.z, T, fightV, sectors,
+            math.floor(lossFrac * 100), math.floor(CFG.ENGAGE_LOSS_WINDOW / 30))
+        CommitOrders(frame, g, list, t)
+        return true
+    end
+    if surrounded or losing or T >= CFG.ESCAPE_RATIO * fightV then
+        g.engage, g.engageF, g.target = "escape", frame, nil
+        CancelSetTargets(g)
+        Log(frame, "group #%d ESCAPE to the line front: threat %d vs core %d, %d sectors, lost %d%% in %ds, no build power within %d",
+            g.id, T, fightV, sectors, math.floor(lossFrac * 100), math.floor(CFG.ENGAGE_LOSS_WINDOW / 30), CFG.COMMIT_R)
+        return Engage(frame, g, list, cx, cz, fightV)
+    end
+    return nil
+end
+
 local function UpdateAttack(frame, g, list)
     local n = #list
     if n > g.peakN then g.peakN = n end
@@ -1108,6 +1453,12 @@ local function UpdateAttack(frame, g, list)
         end
     end
 
+    if CFG.ENGAGE then
+        local e = Engage(frame, g, list, cx, cz, fightV)
+        if e == "done" then return EndGroup(frame, g, "escaped", n) end
+        if e then return end
+    end
+
     if CFG.SET_TARGET then
         -- keep moving: the shooting is done by SET_TARGET on whatever is in range (see SetTargets)
         local nset = SetTargets(frame, g, core, cx, cz)
@@ -1141,7 +1492,16 @@ local function UpdateAttack(frame, g, list)
         end
     else
         local ltx, ltz = tx, tz
-        if CFG.FLANK then
+        local hx, hz
+        if CFG.HOLE_FIND and g.target then
+            hx, hz = ApproachPoint(frame, g, cx, cz, tx, tz, fightV)
+            if g.scoutPts and g.holeScout then
+                for _, p in ipairs(g.holeScout) do g.scoutPts[#g.scoutPts + 1] = p end
+            end
+        end
+        if hx then
+            ltx, ltz = hx, hz
+        elseif CFG.FLANK then
             local wx, wz, av = FlankPoint(frame, g, cx, cz, tx, tz, fightV)
             if wx then
                 ltx, ltz = wx, wz
@@ -1151,6 +1511,22 @@ local function UpdateAttack(frame, g, list)
                         fightV, wx, wz, g.flankSide or 0)
                 end
             end
+        end
+        if CFG.SCOUT_ROUTE then
+            local pts = {}
+            local rdx, rdz = ltx - cx, ltz - cz
+            local rd = math.sqrt(rdx * rdx + rdz * rdz)
+            if rd > 1 then
+                local k = math.min(CFG.SCOUT_AHEAD, rd)
+                local px, pz = MM.Clamp(cx + rdx / rd * k, cz + rdz / rd * k, CFG.MARGIN)
+                pts[#pts + 1] = { px, pz }
+            end
+            if g.target then
+                local px, pz = MM.Clamp(tx, tz, CFG.MARGIN)
+                pts[#pts + 1] = { px, pz }
+            end
+            for _, p in ipairs(g.holeScout or {}) do pts[#pts + 1] = p end
+            g.scoutPts = pts
         end
         local lx, lz = LegPoint(frame, cx, cz, ltx, ltz, fightV, g.target and g.target.uid)
         for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, lx, lz) end
@@ -1359,13 +1735,20 @@ function M.Update(frame)
     -- foe, and no group leaves on a guess.
     local fx, fz = MM.Foe()
     local src = MM.FoeSource()
-    if not stageX or Dist(fx, fz, foeSeenX, foeSeenZ) > 300 or src ~= foeSeenSrc then
-        foeSeenX, foeSeenZ, foeSeenSrc = fx, fz, src
-        stageX, stageZ = MM.PointAt(CFG.STAGE_FRAC * MM.Dist(), 0)
+    local wantFrac = (mode == "hold") and CFG.HOLD_STAGE_FRAC or CFG.STAGE_FRAC
+    if not stageX or Dist(fx, fz, foeSeenX, foeSeenZ) > 300 or src ~= foeSeenSrc or wantFrac ~= stageFrac then
+        foeSeenX, foeSeenZ, foeSeenSrc, stageFrac = fx, fz, src, wantFrac
+        stageX, stageZ = MM.PointAt(wantFrac * MM.Dist(), 0)
         stageX, stageZ = MM.Clamp(stageX, stageZ, CFG.MARGIN)
         Log(frame, "stage point (%d,%d), foe (%d,%d) via %s", stageX, stageZ, fx, fz, tostring(src))
     end
-    local foeKnown = src ~= "mirror" or frame >= CFG.BLIND_DIVE_FRAME
+    local foeKnown = src ~= "mirror" or frame >= CFG.BLIND_DIVE_FRAME or CFG.BLIND_LAUNCH
+    if frame - lastPruneF >= 900 then
+        lastPruneF = frame
+        local keep = {}
+        for _, e in ipairs(tradeLog) do if frame - e.f <= 2 * CFG.TRADE_WINDOW then keep[#keep + 1] = e end end
+        tradeLog = keep
+    end
 
     local ground, air = Members()
     if CFG.DIRECT or #CFG.BOMBER_BEHAVIORS > 0 then RunArmyBehaviors(frame, ground) end
@@ -1392,6 +1775,7 @@ function M.Update(frame)
     for i, g in ipairs(groups) do snapshot[i] = g end
     for _, g in ipairs(snapshot) do
         local list = byGroup[g.id] or {}
+        if g.state == "attack" and mode == "hold" then EndGroup(frame, g, "hold", #list) end
         if g.state == "attack" then UpdateAttack(frame, g, list) else UpdateFall(frame, g, list) end
     end
 
@@ -1444,7 +1828,7 @@ function M.Update(frame)
             reinforceAV = reinforceAV + u.v
         end
     end
-    if not HasSlowGroup() and foeKnown and slowAV >= CFG.SLOW_MIN_AV then
+    if mode ~= "hold" and not HasSlowGroup() and foeKnown and slowAV >= CFG.SLOW_MIN_AV then
         -- the escorts: the fast units nearest the stage, up to the share of the slow value
         local want = CFG.SLOW_ESCORT_SHARE * slowAV
         local picked, have = {}, 0
@@ -1471,13 +1855,22 @@ function M.Update(frame)
             Log(frame, "slow group waiting for escorts: slow av=%d, fast escorts av=%d of %d wanted", slowAV, have, want)
         end
     end
-    if FastCount() < CFG.MAX_GROUPS and foeKnown and stageAV >= CFG.LAUNCH_MIN_AV then
-        if stageAV >= CFG.LAUNCH_RATIO * reinforceAV or stageAV >= CFG.LAUNCH_FORCE_AV then
+    local minAV, ratio = CFG.LAUNCH_MIN_AV, CFG.LAUNCH_RATIO
+    local e = CFG.EARLY_LAUNCH
+    if e then
+        if frame <= e.f0 then minAV = e.av0
+        elseif frame >= e.f1 then minAV = e.av1
+        else minAV = e.av0 + (e.av1 - e.av0) * (frame - e.f0) / (e.f1 - e.f0) end
+        if CFG.LAUNCH_RATIO_EARLY and frame < e.f1 then ratio = CFG.LAUNCH_RATIO_EARLY end
+    end
+    if mode ~= "hold" and FastCount() < CFG.MAX_GROUPS and foeKnown and stageAV >= minAV
+       and #stagedFast >= CFG.MIN_GROUP_UNITS then
+        if stageAV >= ratio * reinforceAV or stageAV >= CFG.LAUNCH_FORCE_AV then
             Launch(frame, stagedFast, false)
         elseif frame - lastWaitLog >= CFG.WAIT_LOG_EVERY then
             lastWaitLog = frame
             Log(frame, "waiting for reinforcements: stage av=%d, reinforcing av=%d (needs %.1fx)",
-                stageAV, reinforceAV, CFG.LAUNCH_RATIO)
+                stageAV, reinforceAV, ratio)
         end
     end
 
@@ -1486,9 +1879,12 @@ function M.Update(frame)
     for _, g in ipairs(groups) do
         if g.state == "attack" and g.cx and (not escort or g.value > escort.value) then escort = g end
     end
+    local postX, postZ
+    if CFG.FIGHTER_POST then postX, postZ = M.FighterPost(frame) end
     for _, u in ipairs(air) do
         if UQ.is_dedicated_aa(u.defID) then
-            if escort then Claim(frame, u.uid, CMD_MOVE, escort.cx, escort.cz)
+            if postX then Claim(frame, u.uid, CMD_FIGHT, postX, postZ)
+            elseif escort then Claim(frame, u.uid, CMD_MOVE, escort.cx, escort.cz)
             else Claim(frame, u.uid, CMD_MOVE, stageX, stageZ) end
         end
     end
@@ -1508,11 +1904,31 @@ function M.OnDestroyed(uid, defID, isMine, frame, x, z)
     if isMine then
         local g = byId[unitGroup[uid]]
         if g and g.state == "attack" then
+            local v = Value(defID)
             totals.lostUnits = totals.lostUnits + 1
-            totals.lostValue = totals.lostValue + math.floor(Value(defID))
+            totals.lostValue = totals.lostValue + math.floor(v)
+            g.lostV = (g.lostV or 0) + v
+            g.losses = g.losses or {}
+            g.losses[#g.losses + 1] = { f = frame or 0, v = v }
+            tradeLog[#tradeLog + 1] = { f = frame or 0, killed = 0, lost = v }
         end
         unitGroup[uid], squad[uid] = nil, nil
         return
+    end
+    -- the trade (any enemy unit, army included) goes to the nearest attacking group within KILL_R
+    if x then
+        local nearG, nd
+        for _, g in ipairs(groups) do
+            if g.state == "attack" and g.cx then
+                local d = Dist(x, z, g.cx, g.cz)
+                if d <= CFG.KILL_R and (not nd or d < nd) then nearG, nd = g, d end
+            end
+        end
+        if nearG then
+            local v = Value(defID)
+            nearG.killV = (nearG.killV or 0) + v
+            tradeLog[#tradeLog + 1] = { f = frame or 0, killed = v, lost = 0 }
+        end
     end
     -- Only what a group (or a bomber run) was actually near counts: the end-of-match commander
     -- self-destruct chain-kills a whole base and is not a result of the attack.

@@ -15,6 +15,7 @@
 -- Log rows, all "[AW]": sorties, strikes, KILLs of builders/eco near a sortie, a once-a-minute total.
 
 local M = {}
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
 local CFG = {
     START_FRAME   = 7 * 60 * 30,
@@ -45,6 +46,7 @@ local CMD_MOVE, CMD_FIGHT, CMD_ATTACK = 10, 16, 20
 local MM, UQ, EI, ARMY
 local combat, guards, bombersSet
 local wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
+local stationFn = nil      -- o.station(frame) -> x, z: where the idle wing waits (RAID_BOT: click_army.FighterPost)
 local totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
                  killValue = 0 }
 local nextLog = 0
@@ -60,10 +62,12 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[AW] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
+M.NIL_OPTIONS = { "ECO_BONUS", "VALUE_WEIGHT" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     combat, guards, bombersSet = o.combat, o.guards, o.bombers
-    for k, v in pairs(o.cfg or {}) do CFG[k] = v end
+    stationFn = o.station
+    BC.Apply("air_wing", CFG, o.cfg, o.label, M.NIL_OPTIONS)
     wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
     totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
                killValue = 0 }
@@ -180,7 +184,11 @@ local function PickAirTarget(frame, fighterValue)
 end
 
 -- Orders -----------------------------------------------------------------------------------------------------
-local function Station()
+local function Station(frame)
+    if stationFn then
+        local ok, x, z = pcall(stationFn, frame)
+        if ok and x then return MM.Clamp(x, z, CFG.MARGIN) end
+    end
     local x, z = MM.PointAt(CFG.STATION_FRAC * MM.Dist(), 0)
     return MM.Clamp(x, z, CFG.MARGIN)
 end
@@ -207,7 +215,7 @@ function M.Update(frame)
     for _, u in ipairs(bombers) do wing.members[u.uid] = true end
 
     local fly = #fighters >= CFG.FIGHTER_MIN
-    local stx, stz = Station()
+    local stx, stz = Station(frame)
 
     -- end of a sortie / run
     if wing.mode == "hunt" or wing.mode == "strike" then

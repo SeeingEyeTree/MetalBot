@@ -61,6 +61,14 @@ M.ORDER_MOVE_EPS        = 250  -- target must move this far to be worth re-issui
 M.STUCK_FRAMES          = 150  -- no progress for this long ...
 M.STUCK_DIST            = 40   -- ... measured as less than this much movement
 
+M.ORDER_LOW_INTERVAL = 150  -- floor between orders to a LOW-tier unit (unit_clock.lua)
+
+local CLK = nil      -- bar_framework/unit_clock.lua (ARMY.SetClock); nil = every order goes out the moment it is claimed
+local pending = {}   -- [unitID] = frame its held order was claimed: sent by Flush on the unit's own frame
+
+function M.SetClock(clock) CLK = clock end
+function M.Clock() return CLK end
+
 local duty = {}   -- [unitID] = {role, prio, cmd, tx, tz, targetID, slot, since,
                   --             expires, prevRole, lastOrderFrame, lastCmd,
                   --             lastX, lastZ, lastMoveFrame}
@@ -170,6 +178,11 @@ function M.Claim(prio, unitID, spec, frame)
 
     local interval = (prio <= M.PRIO.RESPOND)
         and M.ORDER_URGENT_INTERVAL or M.ORDER_MIN_INTERVAL
+    if CLK then
+        local t = CLK.Tier(unitID)
+        if t == CLK.HIGH then interval = M.ORDER_URGENT_INTERVAL
+        elseif t == CLK.LOW and prio > M.PRIO.RESPOND then interval = M.ORDER_LOW_INTERVAL end
+    end
     local needs = NeedsOrder(d, spec, unitID, frame)
     local rateOK = (not d.lastOrderFrame) or (frame - d.lastOrderFrame) >= interval
 
@@ -181,13 +194,72 @@ function M.Claim(prio, unitID, spec, frame)
     d.slot     = spec.slot
     d.expires  = spec.expires
 
-    if needs and rateOK then Issue(unitID, spec, frame) end
+    local heldSince = pending[unitID]      -- a re-claim keeps the wait running (a 0.5 Hz unit is re-claimed twice a period)
+    d.pendingSpec = nil
+    pending[unitID] = nil
+    if needs and rateOK then
+        -- Unit clock: only the urgent duties (retreat, raid, respond) go out at once; the rest wait for the unit's own
+        -- frame, which spreads the orders over the second instead of one frame.
+        if CLK and prio > M.PRIO.RESPOND and not CLK.Due(unitID, frame) then
+            d.pendingSpec, pending[unitID] = spec, heldSince or frame
+        else
+            Issue(unitID, spec, frame)
+        end
+    end
     return true
+end
+
+-- Send the held orders whose unit's frame has come.  Call every frame (it walks only the held orders).
+function M.Flush(frame)
+    if not CLK then return end
+    for unitID in pairs(pending) do
+        local d = duty[unitID]
+        if not d or not d.pendingSpec or not Alive(unitID) then
+            pending[unitID] = nil
+        elseif frame - pending[unitID] >= CLK.Wait(unitID, pending[unitID]) then
+            -- the unit's first frame at or after the claim has come (or been skipped by a coarse caller)
+            local t = CLK.Tier(unitID)
+            local interval = (d.prio <= M.PRIO.RESPOND or t == CLK.HIGH) and M.ORDER_URGENT_INTERVAL
+                             or (t == CLK.LOW and M.ORDER_LOW_INTERVAL or M.ORDER_MIN_INTERVAL)
+            if (not d.lastOrderFrame) or frame - d.lastOrderFrame >= interval then
+                local spec = d.pendingSpec
+                d.pendingSpec, pending[unitID] = nil, nil
+                Issue(unitID, spec, frame)
+            end
+        end
+    end
+end
+
+-- Re-tier every unit that holds a duty (call about once a second, with the threat map's contacts): raiding / urgent duties
+-- or an enemy within the clock's ENEMY_R -> HIGH (2 Hz); scouts and quiet standing duties with no enemy near -> LOW (0.5 Hz);
+-- the rest NORMAL (1 Hz).  Does nothing without a clock.
+local RAIDING = { RAID = true, STRIKE = true, PUSH = true, FOCUS = true, BOMBRUN = true, BLOB = true }
+local SCOUTING = { SCOUT = true, SCOUT_CALL = true, RADAR = true }
+local QUIET = { HOME_GUARD = true, MUSTER = true, AA_SCREEN = true, REZ = true, BOMBER_WAIT = true }
+function M.UpdateClock(frame, contacts)
+    if not CLK then return end
+    CLK.BuildEnemyIndex(contacts, frame)
+    for unitID, d in pairs(duty) do
+        local x, _, z = Spring.GetUnitPosition(unitID)
+        local near = x ~= nil and CLK.EnemyNear(x, z)
+        CLK.Classify(unitID, {
+            raiding = RAIDING[d.role] or d.prio <= M.PRIO.RAID,
+            urgent = d.prio <= M.PRIO.RESPOND,
+            enemyNear = near,
+            scout = SCOUTING[d.role],
+            quiet = QUIET[d.role],
+        }, frame)
+    end
+end
+
+-- Visit every unit that holds a duty: fn(unitID, duty).
+function M.EachDuty(fn)
+    for unitID, d in pairs(duty) do fn(unitID, d) end
 end
 
 -- Give the unit up so a lower-priority planner can have it.
 function M.Release(unitID)
-    duty[unitID] = nil
+    duty[unitID], pending[unitID] = nil, nil
 end
 
 function M.Duty(unitID)   return duty[unitID] end
@@ -216,7 +288,8 @@ end
 function M.Sweep(frame)
     for unitID, d in pairs(duty) do
         if not Alive(unitID) then
-            duty[unitID] = nil
+            duty[unitID], pending[unitID] = nil, nil
+            if CLK then CLK.Forget(unitID) end
         elseif d.expires and frame >= d.expires then
             -- Fall back rather than going idle: an expired duty means the job is
             -- over, not that the unit should stand still.

@@ -65,6 +65,19 @@ function M.Collect(frame, o)
         s.blobs = o.EI.Blobs and o.EI.Blobs(frame) or {}
     end
     s.spine = o.Spine and o.Spine.Status and o.Spine.Status() or nil
+    -- RAID_BOT (published by its unit controller; nil elsewhere):
+    --   armyGround / armyAir   value of our armed ground / air units
+    --   armyRatio              armyGround / scouted enemy ground value (nil while no enemy ground is known)
+    --   trade                  click_army.TradeSummary: { killed, lost, ratio, badEnds, ends } over its window
+    --   airKills / airLost     enemy air value killed / own air value lost, last 120 s
+    --   airSuperior            our armed air >= 1.5 x the scouted enemy air AND airKills >= airLost
+    s.armyGround, s.armyAir = mb.armyGround, mb.armyAir
+    if s.armyGround and s.enemyGround > 0 then s.armyRatio = s.armyGround / s.enemyGround end
+    s.trade = mb.trade
+    s.airKills, s.airLost = mb.airKills, mb.airLost
+    if s.armyAir then
+        s.airSuperior = s.armyAir > 0 and s.armyAir >= 1.5 * s.enemyAir and (s.airKills or 0) >= (s.airLost or 0)
+    end
     return s
 end
 

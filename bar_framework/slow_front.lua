@@ -32,6 +32,7 @@
 -- Log rows, all "[SF]": launch, objective changes, back-offs, spent, a once-a-minute summary.
 
 local M = {}
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
 local CFG = {
     STAGE_FRAC    = 0.40,   -- the stage is this far along home->foe (the human gathered at ~45-50%)
@@ -144,7 +145,7 @@ end
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     myAlly = o.allyID or (Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID()) or 0
-    for k, v in pairs(o.cfg or {}) do CFG[k] = v end
+    BC.Apply("slow_front", CFG, o.cfg, o.label)
     units, crew, last, busy, wrecks, obj = {}, {}, {}, {}, {}, nil
     launched, peak, wrecksF, lastLog, pickF = false, 0, -1e9, -1e9, -1e9
     lastBackF, backHold, lastKiteLog = -1e9, 0, -1e9

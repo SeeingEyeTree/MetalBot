@@ -56,7 +56,9 @@ local CMD_INSERT    = (CMD and CMD.INSERT) or 1
 local CMD_ATTACK    = (CMD and CMD.ATTACK) or 20
 local CMD_STOCKPILE = (CMD and CMD.STOCKPILE) or 100
 
-function M.Init(opts) myTeamID = opts.teamID; M.WG = opts.WG end
+local pool          -- opts.pool (line_transition's con broker): { Usable(id), Seize(id, owner), Release(id) }; nil = take any builder
+function M.Init(opts) myTeamID = opts.teamID; M.WG = opts.WG; pool = opts.pool end
+local function Usable(uid) return not pool or pool.Usable(uid) end
 
 local function Clock(frame) return string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60) end
 
@@ -116,7 +118,7 @@ local function PickBuilder(defID, x, z)
         local bd = Spring.GetUnitDefID(uid)
         local d = bd and UnitDefs[bd]
         if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
-           and IsDone(uid) and CanBuild(bd, defID) then
+           and IsDone(uid) and CanBuild(bd, defID) and Usable(uid) then
             local ux, _, uz = Spring.GetUnitPosition(uid)
             if ux then
                 local dist = (ux - x) ^ 2 + (uz - z) ^ 2
@@ -157,6 +159,7 @@ local function Ensure(key, frame, names, want, anchors, minR, maxR)
     if p then
         if have > (p.have or 0) or frame - p.frame > M.ORDER_FAIL_FRAMES or not Spring.GetUnitDefID(p.builder) then
             if have <= (p.have or 0) then t.fails[p.key] = true end
+            if pool then pool.Release(p.builder) end
             t.pending = nil
         elseif frame - p.frame > M.REISSUE_AFTER and not HasOrder(p.builder, p.defID) then
             -- Another widget replaced the order (the grids' placer re-issues its constructors' queues).
@@ -168,7 +171,9 @@ local function Ensure(key, frame, names, want, anchors, minR, maxR)
                 local bd = UnitDefs[Spring.GetUnitDefID(p.builder) or 0]
                 Log(key, frame, string.format("%s: builder %d (%s, queue %s) keeps losing the order, trying elsewhere",
                     key, p.builder, bd and bd.name or "?", table.concat(ids, ",")))
-                t.fails[p.key] = true; t.pending = nil
+                t.fails[p.key] = true
+                if pool then pool.Release(p.builder) end
+                t.pending = nil
             else
                 local y = Spring.GetGroundHeight(p.x, p.z) or 0
                 OrderBuild(p.builder, p.defID, p.x, y, p.z)
@@ -192,6 +197,7 @@ local function Ensure(key, frame, names, want, anchors, minR, maxR)
                 Log(key .. name .. "-nosite", frame, string.format("%s: no free site for %s near any of %d anchors", key, name, #anchors))
             else
                 local builder = PickBuilder(defID, x, z)
+                if builder and pool and not pool.Seize(builder, "defense") then builder = nil end
                 if not builder then
                     Log(key .. "-nobuilder", frame, string.format("%s: no constructor can build %s", key, name))
                 end
@@ -241,10 +247,23 @@ end
 
 -- â”€â”€ Update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
--- Big structures (silo, anti-nuke) take minutes with one constructor: idle constructors help.
+-- Big structures (silo, anti-nuke) take minutes with one constructor: idle constructors help.  With a con pool the helper is
+-- seized from it for as long as the structure stands unfinished, then given back.
 M.ASSIST_MAX = 8
 local CMD_REPAIR = (CMD and CMD.REPAIR) or 40
+local assisting = {}        -- [con] = the structure it repairs (pool cons only)
+local function AssistRelease()
+    for uid, target in pairs(assisting) do
+        if not Spring.GetUnitDefID(uid) then
+            assisting[uid] = nil
+        elseif not Spring.GetUnitDefID(target) or IsDone(target) then
+            assisting[uid] = nil
+            if pool then pool.Release(uid) end
+        end
+    end
+end
 local function Assist(names, maxDist)
+    AssistRelease()
     local _, units = CountOf(names)
     for _, target in ipairs(units) do
         if not IsDone(target) then
@@ -257,8 +276,10 @@ local function Assist(names, maxDist)
                    and not (d.customParams and d.customParams.iscommander) then
                     local q = Spring.GetUnitCommands(uid, 1)
                     local ux, _, uz = Spring.GetUnitPosition(uid)
-                    if tx and ux and (not q or #q == 0) and (ux - tx) ^ 2 + (uz - tz) ^ 2 <= (maxDist or 2500) ^ 2 then
+                    if tx and ux and (not q or #q == 0) and (ux - tx) ^ 2 + (uz - tz) ^ 2 <= (maxDist or 2500) ^ 2
+                       and (not pool or pool.Seize(uid, "assist")) then
                         Spring.GiveOrderToUnit(uid, CMD_REPAIR, { target }, {})
+                        if pool then assisting[uid] = target end
                         helpers = helpers + 1
                     end
                 end
@@ -276,7 +297,10 @@ M.COVER_MAX        = 8        -- cover points (= Saviors + anti-nukes) at most
 M.COVER_FRAC       = 0.85     -- share of the interceptor's radius used for the plan
 M.COVER_CELL       = 240      -- structures are bucketed into cells this wide before the cover is planned
 M.COVER_STUCK      = 1200     -- frames a Savior may take without getting closer before its point counts as unreachable
-M.COVER_FALLBACK_R = { cormabm = 1200, corfmd = 2000 }
+M.COVER_UNFINISHED = true     -- structures under construction are part of the cover plan
+M.COVER_PERIOD_SILO = 150     -- re-plan period while an enemy silo has been seen
+M.COVER_LOG_PERIOD = 900      -- frames between per-Savior stockpile/goal log rows
+M.COVER_FALLBACK_R ={ cormabm = 1200, corfmd = 2000 }
 local cover = { goal = {}, blocked = {}, fails = {}, last = -1e9, points = {} }
 local CMD_MOVE = (CMD and CMD.MOVE) or 10
 
@@ -334,7 +358,9 @@ local function CoverItems()
     local items = {}
     for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
         local d = UnitDefs[Spring.GetUnitDefID(uid) or 0]
-        if d and (d.speed or 0) == 0 and IsDone(uid)
+        -- unfinished structures count too (M.COVER_UNFINISHED): a Savior has to walk to a new expansion, so it
+        -- starts before the grid is done instead of after the next re-plan
+        if d and (d.speed or 0) == 0 and (M.COVER_UNFINISHED or IsDone(uid))
            and ((d.extractsMetal or 0) > 0 or d.isFactory or d.isBuilder or (d.energyMake or 0) >= 200) then
             local x, _, z = Spring.GetUnitPosition(uid)
             if x then items[#items + 1] = { x = x, z = z, w = d.metalCost or 50 } end
@@ -386,13 +412,22 @@ local function CoverSite(defID, px, pz)
 end
 
 -- Constructors that can build defID, best first: idle air cons, idle ground cons, then busy ones.
+-- (the cover job's cons are seized from the pool and given back when the job ends)
+local function ClearCoverJob()
+    local job = cover.job
+    if job and pool then
+        for _, id in ipairs(job.cons or {}) do pool.Release(id) end
+    end
+    cover.job = nil
+end
+
 local function CoverBuilders(defID, x, z)
     local list = {}
     for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
         local bd = Spring.GetUnitDefID(uid)
         local d = bd and UnitDefs[bd]
         if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
-           and IsDone(uid) and CanBuild(bd, defID) then
+           and IsDone(uid) and CanBuild(bd, defID) and Usable(uid) then
             local ux, _, uz = Spring.GetUnitPosition(uid)
             if ux then
                 local q = Spring.GetUnitCommands(uid, 1)
@@ -417,17 +452,17 @@ local function CoverBuild(frame, p, nFixed)
             local x, _, z = Spring.GetUnitPosition(uid)
             if x and (x - job.x) ^ 2 + (z - job.z) ^ 2 <= 500 ^ 2 and IsDone(uid) then
                 Log("covjobdone" .. job.key, frame, string.format("cover: anti-nuke finished at (%d, %d)", job.x, job.z))
-                cover.job = nil
+                ClearCoverJob()
                 return
             end
         end
         if frame - job.since > M.COVER_JOB_TTL then
             cover.fails[job.key] = (cover.fails[job.key] or 0) + 1
             Log("covjobexp" .. job.key .. frame, frame, string.format("cover: anti-nuke at (%d, %d) timed out", job.x, job.z))
-            cover.job = nil
+            ClearCoverJob()
             return
         end
-        if not Spring.GetUnitDefID(job.lead) then cover.job = nil; return end
+        if not Spring.GetUnitDefID(job.lead) then ClearCoverJob(); return end
         local q = Spring.GetUnitCommands(job.lead, 1)
         if (not q or #q == 0) and frame - job.since > 150 and frame - job.lastSend > 240 then
             job.lastSend = frame
@@ -448,29 +483,33 @@ local function CoverBuild(frame, p, nFixed)
         Log("covnobuilder", frame, "cover: no constructor can build an anti-nuke (needs a T2 con)")
         return
     end
-    local lead = builders[1]
+    local lead
+    for _, b in ipairs(builders) do
+        if not pool or pool.Seize(b.uid, "cover") then lead = b; break end
+    end
+    if not lead then return end
     local opts = lead.busy and { "shift" } or {}
     for i, b in ipairs(blockers) do
         Spring.GiveOrderToUnit(lead.uid, CMD_RECLAIM, { b }, (i == 1 and not lead.busy) and {} or { "shift" })
     end
     Spring.GiveOrderToUnit(lead.uid, -defID, { x, y, z, 0 }, (#blockers > 0 or lead.busy) and { "shift" } or {})
-    local helpers = 0
-    for i = 2, #builders do
-        local b = builders[i]
+    local helpers, cons = 0, { lead.uid }
+    for _, b in ipairs(builders) do
         if helpers >= M.COVER_HELPERS then break end
-        if not b.busy then
+        if b ~= lead and not b.busy and (not pool or pool.Seize(b.uid, "cover")) then
             Spring.GiveOrderToUnit(b.uid, CMD_GUARD, { lead.uid }, {})
+            cons[#cons + 1] = b.uid
             helpers = helpers + 1
         end
     end
-    cover.job = { x = x, y = y, z = z, key = key, lead = lead.uid, since = frame, lastSend = frame }
+    cover.job = { x = x, y = y, z = z, key = key, lead = lead.uid, since = frame, lastSend = frame, cons = cons }
     Log("covjob" .. key .. frame, frame, string.format(
         "cover: anti-nuke at (%d, %d): lead con %d (%s), %d helpers, %d structures to reclaim first",
         x, z, lead.uid, (UnitDefs[Spring.GetUnitDefID(lead.uid)] or {}).canFly and "air" or "ground", helpers, #blockers))
 end
 
 local function CoverUpdate(frame, income, silosSeen)
-    if frame - cover.last < M.COVER_PERIOD then return end
+    if frame - cover.last < (silosSeen and M.COVER_PERIOD_SILO or M.COVER_PERIOD) then return end
     cover.last = frame
     local G = M.WG
     if not G then return end
@@ -555,6 +594,16 @@ local function CoverUpdate(frame, income, silosSeen)
     G.AntiNuke.points = #points
     local nBlocked = 0
     for _ in pairs(cover.blocked) do nBlocked = nBlocked + 1 end
+    -- per-Savior position and distance to its cover point, to see how late a Savior is for a new expansion
+    if frame - (cover.lastLog or -1e9) >= M.COVER_LOG_PERIOD then
+        cover.lastLog = frame
+        for _, uid in ipairs(savs) do
+            local g, x, _, z = cover.goal[uid], Spring.GetUnitPosition(uid)
+            local dist = (g and x) and math.floor(math.sqrt((x - g.x) ^ 2 + (z - g.z) ^ 2)) or -1
+            Log("covsav" .. uid .. frame, frame, string.format("cover: Savior %d at (%d, %d) goal_dist %d",
+                uid, x or -1, z or -1, dist))
+        end
+    end
     Log("coverplan", frame, string.format("cover plan: %d points, %d fixed anti-nukes, %d Saviors wanted (%d standing), %d unreachable",
         #points, #fixed, want, #savs, nBlocked))
 end

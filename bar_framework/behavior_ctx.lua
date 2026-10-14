@@ -2,7 +2,7 @@
 -- The ctx behavior_host hands to behaviours, built from the framework's own modules (unit_query, map_model):
 --   EnemiesNear(x, z, r) -> { {uid, x, z, range, value, mobile, vx, vz (elmos/s)} }  armed enemies that can hit ground
 --   TargetsNear(x, z, r) -> { {id, x, z, hp, mhp, para, value} }                      visible mobile enemies
---   Axis() -> ux, uz (home -> foe)    Clamp(x, z)    Speed(defID)
+--   Axis() -> ux, uz (home -> foe)    Clamp(x, z)    Speed(defID)    Range(defID) (max weapon range)
 -- One ctx per unit controller; `New` takes the modules, nothing is global.
 
 local M = {}
@@ -52,6 +52,8 @@ function M.New(o)
     function ctx.Axis() return MM.Axis() end
     function ctx.Clamp(x, z) return MM.Clamp(x, z, o.margin or 150) end
     function ctx.Speed(defID) return UQ.max_speed and UQ.max_speed(defID) or nil end
+    function ctx.Range(defID) return UQ.max_weapon_range and UQ.max_weapon_range(defID) or nil end
+    -- ctx.Defending(uid) -> bool is the caller's to add (range_kite: no kiting while the unit defends)
     return ctx
 end
 

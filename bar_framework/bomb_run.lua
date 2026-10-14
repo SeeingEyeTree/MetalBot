@@ -17,6 +17,7 @@
 -- Orders go through army_broker (role "BOMBRUN" at RAID priority).  Log rows are "[BR]".  Nothing here builds anything.
 
 local M = {}
+local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
 M.CFG = {
     EVERY         = 30,
@@ -68,10 +69,11 @@ local function Fresh()
              lostBombers = 0, lostFighters = 0, kills = 0, killValue = 0, points = {}, assign = {}, scouts = {} }
 end
 
+M.NIL_OPTIONS = { "ECO_BONUS", "VALUE_WEIGHT" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     bombersSet, combat, guards = o.bombers, o.combat, o.guards or {}
-    for k, v in pairs(o.cfg or {}) do CFG[k] = v end
+    BC.Apply("bomb_run", CFG, o.cfg, o.label, M.NIL_OPTIONS)
     S = Fresh()
 end
 

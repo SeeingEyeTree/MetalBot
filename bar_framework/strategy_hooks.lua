@@ -125,4 +125,80 @@ function M.cap_switch(o)
     end
 end
 
+-- Several switch hooks in order: the first that names a stance wins (put cap_switch first -- once on, it holds).
+function M.chain_switch(list)
+    return function(state, strat)
+        for _, h in ipairs(list) do
+            local name = h(state, strat)
+            if name then return name end
+        end
+    end
+end
+
+-- switch hook (RAID_BOT, game review 2026-10-13): change the game plan from the game state.
+--   raid -> hold  our ground army is under hold_ratio x the scouted enemy ground (state.armyRatio) AND the raids trade badly:
+--                 killed < trade_ratio x lost with at least min_lost lost, or the last bad_ends groups were spent killing
+--                 little (state.trade from click_army.TradeSummary).  At 9:30 in that game: ratio 0.81, 0 kills / 1484 lost.
+--   hold -> raid  armyRatio >= resume_ratio for resume_for frames.
+-- At least min_stay frames in a plan before switching again.  Needs state.armyRatio / state.trade (nil = no switch).
+function M.game_plan(o)
+    o = o or {}
+    local raid, hold = o.raid or "raid_open", o.hold or "hold"
+    local holdRatio, tradeRatio = o.hold_ratio or 0.85, o.trade_ratio or 0.5
+    local minLost, badEnds = o.min_lost or 1000, o.bad_ends or 2
+    local resumeRatio, resumeFor = o.resume_ratio or 1.4, o.resume_for or 1800
+    local minStay = o.min_stay or 2700
+    local cur, since, goodF = raid, -1e9, nil
+    local function Log(f, from, to, state, why)
+        local s = math.floor(f / 30)
+        local t = state.trade or {}
+        Spring.Echo(string.format("[PLAN] %d:%02d %s -> %s: %s | army ratio %.2f (own ground %.0f vs enemy %.0f), trade %.0f/%.0f (%d bad ends), air superior %s",
+            math.floor(s / 60), s % 60, from, to, why, state.armyRatio or -1, state.armyGround or 0, state.enemyGround or 0,
+            t.killed or 0, t.lost or 0, t.badEnds or 0, tostring(state.airSuperior)))
+    end
+    return function(state)
+        local f = state.frame or 0
+        local ratio, t = state.armyRatio, state.trade
+        if cur == hold then
+            if ratio and ratio >= resumeRatio then goodF = goodF or f else goodF = nil end
+        end
+        if f - since >= minStay then
+            if cur == raid then
+                local bad = t and ((t.lost >= minLost and t.ratio < tradeRatio) or (t.badEnds or 0) >= badEnds)
+                if ratio and ratio < holdRatio and bad then
+                    Log(f, raid, hold, state, "behind and the raids are trading badly")
+                    cur, since, goodF = hold, f, nil
+                end
+            elseif goodF and f - goodF >= resumeFor then
+                Log(f, hold, raid, state, string.format("ahead for %ds", math.floor((f - goodF) / 30)))
+                cur, since, goodF = raid, f, nil
+            end
+        end
+        return cur
+    end
+end
+
+-- weights hook: units tagged "mass" (cheap bodies, so the army can spread) get most of the share at low income and little at
+-- high income; units tagged "quality" (the most cost-effective heavies) the other way round.  Linear in metal income from
+-- lo to hi; untagged units keep weight 1.  Weights are renormalised by the stance loader.  nil when the stance has no tags.
+--   o.lo 150, o.hi 1000 (m/s), o.mass_lo 2.0, o.mass_hi 0.3, o.quality_lo 0.5, o.quality_hi 2.0
+function M.income_mix(o)
+    o = o or {}
+    local lo, hi = o.lo or 150, o.hi or 1000
+    local massLo, massHi = o.mass_lo or 2.0, o.mass_hi or 0.3
+    local qLo, qHi = o.quality_lo or 0.5, o.quality_hi or 2.0
+    return function(state, strat)
+        local st = strat and strat.Stance and strat:Stance()
+        if not st then return nil end
+        local inc = (state.metal and state.metal.income) or 0
+        local k = math.max(0, math.min(1, (inc - lo) / (hi - lo)))
+        local w, any = {}, false
+        for _, u in ipairs(st.units) do
+            if u.tag == "mass" then w[u.n] = massLo + (massHi - massLo) * k; any = true
+            elseif u.tag == "quality" then w[u.n] = qLo + (qHi - qLo) * k; any = true end
+        end
+        return any and w or nil
+    end
+end
+
 return M
