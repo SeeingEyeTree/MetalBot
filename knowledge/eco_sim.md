@@ -86,3 +86,21 @@ Real vacuum games (single mode, vs INACTIVE_BOT, 20 min; `runs_stance/<tag>_<bot
 
 STANCE_ECO2 matched the sim's prediction within 2% (one game; real run-to-run spread ~25%).  Sim vs real for STANCE_ECO: the sim is ~1.3x optimistic at 18-20 min; the clearest gap is the first fusion (real: none by 14:00,
 sim: 10) and T2 labs (real 25 at 20:00, sim 38).  Next calibration item: why the real energy push starts later.
+
+## Spending the eco: the Dragon army sink (user, 2026-10-14)
+
+"More eco is only good to spend on units."  `--sink` (physics `SINK`, world.lua "army spending sink") adds magic blocks of 1 coraap +
+40 cordecom (12.6k BP) building Dragons (corcrwh 5.1k m / 72k E / 120k BP) on repeat: 535 m/s + 7.6k E/s per block, after a setup of
+32.9k m / 548k E; 46 unit slots each.  A block is added while metal stays banked above max(3k, 10% storage) for 20 s, one per 20 s,
+from `SINK.start` s.  Each block competes for resources like any other low-priority builder.  Score: metal into Dragons by 20/25 min.
+
+| sweep | finding |
+|---|---|
+| sink1 (20 min) | Dragons by 20:00 hardly depend on the trigger (230-280k): starting early converts eco sooner but stalls it (income at 20:00 3-5k vs 8k) |
+| sink25 (25 min) | **start at 16-17 min** best: 1.45M metal into Dragons by 25:00 (eager default 1.14M, 18:00 1.09M, 20:00 0.45M) |
+| sinkeco (6 seeds) | with the sink, CAPSTONE_MAX 6 (1.67M) and RETROFIT_MIN_NANOS 9 (1.62M) looked better than ECO2 (1.33M); EP_RATIO 20 (0.86M) and GRID_CAP_FRAC 0.7 (1.10M) worse |
+| sinkeco2 (8 seeds) | **all combos 1.60-1.71M -- within noise of ECO2 (1.60M)**: the eco knobs are on a plateau once the sink runs |
+
+The wall is now the **unit cap**: from ~22:00 every run sits at ~2950-3000 units with 10-13 blocks, metal banks 270-600k and energy
+is full while income keeps rising (~9.2k at 24:00).  More Dragons need more BP per unit slot or fewer eco units per m/s (consolidation
+earlier), not more eco.  (cornanotct2 is 600 BP per slot vs cordecom's 300, if a nano T2 block can serve a lab.)

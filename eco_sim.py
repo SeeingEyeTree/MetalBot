@@ -163,7 +163,7 @@ def simulate(cfg):
         "widgets": cfg.get("widgets") or WIDGETS, "vacuum": cfg.get("vacuum", True),
         "end_frame": int(cfg.get("minutes", 20) * 1800), "seed": cfg.get("seed", 1),
         "phys": cfg.get("phys") or {}, "set": cfg.get("set") or {}, "presets": cfg.get("presets") or {},
-        "snap_every": cfg.get("snap_every", 1800),
+        "snap_every": cfg.get("snap_every", 1800), "sink": bool(cfg.get("sink")),
     }
     if cfg.get("trace"):
         args["trace"] = list(cfg["trace"])
@@ -225,7 +225,7 @@ def parse_seeds(s):
 def cfg_from_args(a):
     cfg = {"bot": a.bot, "minutes": a.minutes, "vacuum": not a.no_vacuum,
            "set": parse_kv(a.set, nested=True), "presets": parse_presets(a.preset), "phys": parse_kv(a.phys),
-           "patch": a.patch, "trace": a.trace}
+           "patch": a.patch, "trace": a.trace, "sink": a.sink}
     if a.no_unit_controller:
         cfg["widgets"] = WIDGETS[:2]
     return cfg
@@ -265,6 +265,9 @@ def cmd_sweep(a):
     base = dict(spec.get("base") or {})
     base.setdefault("bot", DEFAULT_BOT)
     base.setdefault("minutes", spec.get("minutes", 20))
+    if spec.get("sink"):
+        base["sink"] = True
+    rank_key = a.rank or spec.get("rank", "inc20")
     jobs = []
     for vname, v in (spec.get("variants") or {"base": {}}).items():
         cfg = json.loads(json.dumps(base))
@@ -273,7 +276,7 @@ def cmd_sweep(a):
         for mod, kv in (v.get("presets") or {}).items():
             cfg.setdefault("presets", {})[mod] = kv
         cfg.setdefault("phys", {}).update(v.get("phys") or {})
-        for k in ("bot", "patch", "widgets", "vacuum", "minutes"):
+        for k in ("bot", "patch", "widgets", "vacuum", "minutes", "sink"):
             if k in v:
                 cfg[k] = v[k]
         for s in seeds:
@@ -289,12 +292,14 @@ def cmd_sweep(a):
     rank = []
     for v, sums in by.items():
         ok = [s for s in sums if "crash" not in s]
-        inc20 = [s.get("inc20", 0) for s in ok]
-        rank.append((statistics.median(inc20) if inc20 else 0, v, sums))
+        vals = [s.get(rank_key, 0) or 0 for s in ok]
+        rank.append((statistics.median(vals) if vals else 0, v, sums))
     rank.sort(reverse=True)
     reals = [real_minutes(p) for p in sorted(glob.glob(a.calibrate))] if a.calibrate else None
-    print(f"\n{'variant':24s} {'n':>2} {'inc20 med [range]':>22} " + " ".join(f"{m:>6}" for m in (8, 10, 12, 14, 16, 18))
-          + "   t1600  t3200  errs" + ("  calib" if reals else ""))
+    sinky = any("dragon20" in s for _, _, sums in rank for s in sums)
+    print(f"\nranked by median {rank_key}")
+    print(f"{'variant':24s} {'n':>2} {'inc20 med [range]':>22} " + " ".join(f"{m:>6}" for m in (8, 10, 12, 14, 16, 18))
+          + "   t1600  t3200  errs" + ("  calib" if reals else "") + (f"   {rank_key if rank_key.startswith('dragon') else 'dragon20'}k [range]  blocks  first" if sinky else ""))
     out = {}
     for med, v, sums in rank:
         ok = [s for s in sums if "crash" not in s]
@@ -305,9 +310,16 @@ def cmd_sweep(a):
         i20 = [s.get("inc20", 0) for s in ok]
         t16 = [s["t1600"] for s in ok if s.get("t1600")]
         t32 = [s["t3200"] for s in ok if s.get("t3200")]
-        line = (f"{v:24s} {len(ok):2d} {med:7.0f} [{min(i20) if i20 else 0:5.0f}-{max(i20) if i20 else 0:5.0f}] " + " ".join(cols)
+        mi20 = statistics.median(i20) if i20 else 0
+        line = (f"{v:24s} {len(ok):2d} {mi20:7.0f} [{min(i20) if i20 else 0:5.0f}-{max(i20) if i20 else 0:5.0f}] " + " ".join(cols)
                 + f"  {statistics.median(t16) if t16 else float('nan'):5.2f}  {statistics.median(t32) if t32 else float('nan'):5.2f}"
                 + f"  {sum(s.get('errors', 0) for s in ok) + len(sums) - len(ok):4d}")
+        if sinky:
+            dk = [s.get(rank_key if rank_key.startswith("dragon") else "dragon20", 0) / 1000 for s in ok]
+            bl = [s.get("blocks20", 0) for s in ok]
+            fi = [s["sink_first"] for s in ok if s.get("sink_first")]
+            line += (f"   {statistics.median(dk):6.0f} [{min(dk):4.0f}-{max(dk):4.0f}]  {statistics.median(bl):5.1f}"
+                     f"  {statistics.median(fi) if fi else float('nan'):5.2f}")
         if reals:
             sims = [sim_minutes(json.load(open(os.path.join(RUNS, tag, v, f"s{s}", "run.json"), encoding="utf-8"))) for s in seeds]
             sc, _ = calib_score(reals, sims)
@@ -344,13 +356,25 @@ def avg_income(tl, frame, window=900):
 def summarize(res):
     tl = res.get("timeline") or []
     s = {"errors": len(res.get("errors") or []), "wall": round(res.get("wall_secs", 0), 1)}
-    for m in (6, 8, 10, 12, 14, 16, 18, 20):
+    for m in (6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 30):
         v = avg_income(tl, m * 1800)
         if v is not None:
             s[f"inc{m}"] = round(v)
     for x in MILESTONES:
         hit = next((r["frame"] for r in tl if r["mi"] >= x), None)
         s[f"t{x}"] = round(hit / 1800, 2) if hit else None
+    if tl and "dragon_m" in tl[-1]:
+        at20 = next((r for r in tl if r["frame"] == 36000), tl[-1])
+        s["dragon20"] = round(at20.get("dragon_m", 0))          # metal into Dragons by 20:00
+        s["dragons20"] = at20.get("dragons", 0)
+        s["blocks20"] = at20.get("sink_blocks", 0)
+        first = next((r["frame"] for r in tl if r.get("sink_blocks", 0) > 0), None)
+        s["sink_first"] = round(first / 1800, 2) if first else None
+        s["dragon_end"] = round(tl[-1].get("dragon_m", 0))     # metal into Dragons by the end of the run
+        for m in (22, 25, 30):
+            r = next((x for x in tl if x["frame"] == m * 1800), None)
+            if r:
+                s[f"dragon{m}"] = round(r.get("dragon_m", 0))
     if tl:
         last = tl[-1]
         s["mprod"] = round(last["mprod"])
@@ -369,6 +393,9 @@ def print_summary(res):
     print(f"time to m/s (min)           {ms}")
     print(f"metal produced {s.get('mprod')}  used {s.get('mused')}  wasted {s.get('mwaste')}  bank at end {s.get('bank_end')}"
           f"  units {s.get('units_end')}")
+    if "dragon20" in s:
+        print(f"army sink: {s['blocks20']} Dragon blocks by 20:00 (first at {s['sink_first']} min), {s['dragon20']} metal into Dragons"
+              f" ({s['dragons20']} Dragons)")
     p = res.get("prof", {})
     print(f"wall {res.get('wall_secs', 0):.1f}s (bot callins {p.get('callin', 0):.1f}s, physics {p.get('step', 0):.1f}s)"
           f"  orders {p.get('orders_given')}  Lua errors {s['errors']}  missing API: {', '.join(res.get('missing') or []) or '-'}")
@@ -735,11 +762,13 @@ def main():
     p.add_argument("--patch", help="Lua file run after the widgets load")
     p.add_argument("--trace", type=int, nargs="+", help="unit ids whose orders and command pops are logged ([TRACE])")
     p.add_argument("--no-vacuum", action="store_true"); p.add_argument("--no-unit-controller", action="store_true")
+    p.add_argument("--sink", action="store_true", help="army spending sink: Dragon blocks absorb metal eco cannot spend (physics SINK)")
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("sweep")
     p.add_argument("spec"); p.add_argument("--tag"); p.add_argument("--seeds"); p.add_argument("--jobs", type=int, default=6)
     p.add_argument("--calibrate", help="glob of real result jsons: add a calibration-error column (for physics sweeps)")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--rank", help="summary key to rank by (inc20, dragon20, ...); default the spec's 'rank' or inc20")
     p.set_defaults(fn=cmd_sweep)
     p = sub.add_parser("compare", help="A vs B per window: run.json, run dir, or a sweep variant dir (seed medians)")
     p.add_argument("a"); p.add_argument("b"); p.add_argument("--window", type=float, default=2.0)

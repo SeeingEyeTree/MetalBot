@@ -1,0 +1,17 @@
+{
+  "tag": "sinkeco2",
+  "seeds": "1-8",
+  "sink": true,
+  "minutes": 25,
+  "rank": "dragon25",
+  "base": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 10, "EP_INFLIGHT": 14}}, "phys": {"SINK.start": 990}},
+  "variants": {
+    "eco2": {},
+    "cap6": {"set": {"line_transition": {"CAPSTONE_MAX": 6}}},
+    "cap6_rn9": {"set": {"line_transition": {"CAPSTONE_MAX": 6, "RETROFIT_MIN_NANOS": 9}}},
+    "cap6_rn9_if10": {"set": {"line_transition": {"CAPSTONE_MAX": 6, "RETROFIT_MIN_NANOS": 9, "EP_INFLIGHT": 10}}},
+    "cap4_rn9": {"set": {"line_transition": {"CAPSTONE_MAX": 4, "RETROFIT_MIN_NANOS": 9}}},
+    "cap6_rn12": {"set": {"line_transition": {"CAPSTONE_MAX": 6, "RETROFIT_MIN_NANOS": 12}}},
+    "cap6_rn9_r10": {"set": {"line_transition": {"CAPSTONE_MAX": 6, "RETROFIT_MIN_NANOS": 9, "EP_RATIO": 10}}}
+  }
+}

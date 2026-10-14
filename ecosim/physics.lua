@@ -49,6 +49,11 @@ local P = {
     MM_LEVEL      = 0.75,
     -- stockpiled missiles: metal, energy, seconds per missile (weapondefs metalpershot / energypershot / stockpiletime, BAR archive)
     STOCKPILE     = { corsilo = { 1500, 187500, 180 }, corfmd = { 150, 7500, 90 }, cormabm = { 150, 7500, 90 } },
+    -- army spending sink (world.lua "army spending sink"): blocks of 1 coraap + 40 cordecom building corcrwh (Dragons) on repeat,
+    -- added while metal stays banked above max(bank_min, bank_frac x storage) for `hold` s, one per `gap` s.  Off unless on = true
+    -- (eco_sim.py --sink turns it on).
+    SINK = { on = false, unit = "corcrwh", lab = "coraap", builder = "cordecom", builders = 40, slots = 46,
+             bank_min = 3000, bank_frac = 0.10, hold = 20, gap = 20, max_blocks = 40, cap_margin = 50, start = 0 },
     SAMPLE_EVERY  = 300,     -- frames between timeline rows (10 game-s)
     HASH          = 256,     -- spatial hash bucket size (elmos)
 }

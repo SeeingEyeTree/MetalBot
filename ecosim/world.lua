@@ -958,6 +958,53 @@ local function LedgerAdd(T, cls, key, v)
     l[key] = (l[key] or 0) + v
 end
 
+-- ── army spending sink (user, 2026-10-14) ────────────────────────────────────
+-- "More eco is only good to spend on units": once metal can no longer be spent on eco, blocks of 1 T2 air lab + 40 decoy commanders
+-- (cordecom, 300 BP each: the most BP per unit slot) build Dragons (corcrwh) on repeat.  Modelled as magic: no units, no positions; a
+-- block first pays its own setup cost (40 x cordecom + coraap) at its full build rate, then pulls Dragon costs at 12.6k BP.  Each block
+-- competes for resources like any other low-priority builder and holds SINK.slots unit-cap slots (41 builders + ~5 Dragons alive in
+-- the vacuum test).  Off unless P.SINK.on.
+
+local function SinkInit(T)
+    local S = P.SINK
+    local dd, lab, dec = W.defsByName[S.unit], W.defsByName[S.lab], W.defsByName[S.builder]
+    T.sink = {
+        blocks = {}, bp = S.builders * (dec.buildSpeed or 0) + (lab.buildSpeed or 0),
+        unitM = dd.metalCost, unitE = dd.energyCost, unitBT = dd.buildTime,
+        setupM = S.builders * dec.metalCost + lab.metalCost, setupE = S.builders * dec.energyCost + lab.energyCost,
+        setupBT = S.builders * dec.buildTime + lab.buildTime,
+        floatSince = nil, lastAdd = -1e9, unitsDone = 0, unitM_spent = 0, setupM_spent = 0, stalled = 0,
+    }
+end
+
+local function SinkMaybeAdd(T, t)
+    local S, K = P.SINK, T.sink
+    local need = max(S.bank_min, S.bank_frac * T.mStor)
+    if T.metal >= need then K.floatSince = K.floatSince or W.frame else K.floatSince = nil end
+    if not K.floatSince or W.frame - K.floatSince < S.hold * 30 or W.frame - K.lastAdd < S.gap * 30 then return end
+    if #K.blocks >= S.max_blocks or T.count + S.slots > P.MAX_UNITS - S.cap_margin then return end
+    local b = { sink = true, passive = true, team = t, prioKey = ((#K.blocks + 7) * PRIO_HASH * 7919) % 4294967296, setup = 0, prog = 0 }
+    K.blocks[#K.blocks + 1] = b
+    K.lastAdd = W.frame
+    T.count = T.count + S.slots          -- the block's builders and its live Dragons hold unit slots
+    Event("sink_block", { n = #K.blocks, bank = T.metal, inc = T.mInc })
+    Log(string.format("[SIM] army sink block %d added (bank %.0f, metal income %.0f)", #K.blocks, T.metal, T.mInc))
+end
+
+-- one block's draw this step: returns metal, energy, and a function that applies the progress
+local function SinkDemand(K, b, dt)
+    if b.setup < 1 then
+        local p = min(K.bp / K.setupBT * dt, 1 - b.setup)
+        return K.setupM * p, K.setupE * p, function() b.setup = b.setup + p; K.setupM_spent = K.setupM_spent + K.setupM * p end
+    end
+    local p = K.bp / K.unitBT * dt
+    return K.unitM * p, K.unitE * p, function()
+        b.prog = b.prog + p
+        K.unitM_spent = K.unitM_spent + K.unitM * p
+        while b.prog >= 1 do b.prog = b.prog - 1; K.unitsDone = K.unitsDone + 1 end
+    end
+end
+
 function W.Step(nframes)
     local dt = nframes / 30
     local units = W.units
@@ -991,6 +1038,12 @@ function W.Step(nframes)
             end
             if u.isBuilder and u.work and units[u.work] and u.active then demands[#demands + 1] = u end
         end
+    end
+    if P.SINK and P.SINK.on then
+        local T = W.teams[W.myTeam]
+        if not T.sink then SinkInit(T) end
+        if W.frame >= (P.SINK.start or 0) * 30 then SinkMaybeAdd(T, W.myTeam) end
+        for _, b in ipairs(T.sink.blocks) do demands[#demands + 1] = b end
     end
 
     -- 3. resources: income first
@@ -1079,6 +1132,20 @@ function W.Step(nframes)
     local reclaimAmt = {}
     for i = 1, #demands do
         local u = demands[i]
+        if u.sink then
+            local T = W.teams[u.team]
+            local m, e, apply = SinkDemand(T.sink, u, dt)
+            if budM[u.team] - m > 0 and budE[u.team] - e > 0 then
+                budM[u.team], budE[u.team] = budM[u.team] - m, budE[u.team] - e
+                spendM[u.team], spendE[u.team] = spendM[u.team] + m, spendE[u.team] + e
+                T.spentBy.dragons = (T.spentBy.dragons or 0) + (u.setup >= 1 and m or 0)
+                T.spentBy.sink_setup = (T.spentBy.sink_setup or 0) + (u.setup < 1 and m or 0)
+                apply()
+            else
+                T.sink.stalled = T.sink.stalled + 1
+            end
+            pullM[u.team], pullE[u.team] = pullM[u.team] + m, pullE[u.team] + e
+        else
         local t = units[u.work]
         local T = W.teams[u.team]
         local cls = u.bclass or BuilderClass(u)
@@ -1122,6 +1189,7 @@ function W.Step(nframes)
             reclaimAmt[t.id] = (reclaimAmt[t.id] or 0) + frac
             LedgerAdd(T, cls, "reclaim", bp * dt)
             u.used = 1
+        end
         end
     end
     for tid, p in pairs(progress) do

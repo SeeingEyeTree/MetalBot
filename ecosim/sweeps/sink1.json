@@ -1,0 +1,21 @@
+{
+  "tag": "sink1",
+  "seeds": "1-6",
+  "sink": true,
+  "rank": "dragon20",
+  "base": {"set": {"line_transition": {"SILO_GRIDS": {}, "CAPSTONE_MAX": 10, "EP_INFLIGHT": 14}}},
+  "variants": {
+    "default":       {},
+    "frac20":        {"phys": {"SINK.bank_frac": 0.2}},
+    "frac30":        {"phys": {"SINK.bank_frac": 0.3}},
+    "hold60":        {"phys": {"SINK.hold": 60}},
+    "gap60":         {"phys": {"SINK.gap": 60}},
+    "frac20_gap60":  {"phys": {"SINK.bank_frac": 0.2, "SINK.gap": 60}},
+    "start15":       {"phys": {"SINK.start": 900}},
+    "start16":       {"phys": {"SINK.start": 960}},
+    "start17":       {"phys": {"SINK.start": 1020}},
+    "start16_gap40": {"phys": {"SINK.start": 960, "SINK.gap": 40}},
+    "start16_frac20":{"phys": {"SINK.start": 960, "SINK.bank_frac": 0.2}},
+    "start18":       {"phys": {"SINK.start": 1080}}
+  }
+}

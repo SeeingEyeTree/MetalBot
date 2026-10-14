@@ -7,7 +7,11 @@
 return function(args)
     local root = args.root
     local P = dofile(root .. "ecosim/physics.lua")
-    for k, v in pairs(args.phys or {}) do P[k] = v end
+    for k, v in pairs(args.phys or {}) do
+        local sub = type(k) == "string" and k:match("^SINK%.(.+)$")      -- --phys SINK.hold=10 sets one field
+        if sub then P.SINK[sub] = v else P[k] = v end
+    end
+    if args.sink then P.SINK.on = true end
     P.SEED = args.seed or 1
     math.randomseed(args.seed or 1)
 
@@ -187,6 +191,8 @@ return function(args)
             mrecl = T.mReclaimed, units = T.count, fin = fin, wip = wip, bp = bp, mexfrac = T.mexFrac,
             ledger = CopyLedger(T.ledger), spent = CopyLedger({ x = T.spentBy }).x,
             stallM = T.stallM, stallE = T.stallE, blocked = T.blockedBuilds or 0,
+            sink_blocks = T.sink and #T.sink.blocks or 0, dragon_m = T.sink and T.sink.unitM_spent or 0,
+            dragons = T.sink and T.sink.unitsDone or 0, sink_setup_m = T.sink and T.sink.setupM_spent or 0,
         }
     end
     local function Snap(frame)
