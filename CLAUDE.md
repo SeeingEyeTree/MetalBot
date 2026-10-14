@@ -124,7 +124,7 @@ footprints, builder reach/travel, BAR's builder-priority stall rule, extraction,
 vacuum games.  Calibrated against real `[SNAP]` dumps (`metalbot_state_dump.lua`, installed by the harness); ~1.3x optimistic at 18-20 min
 for tuned configs.  Docs, calibration and the tuning log: `knowledge/eco_sim.md`.  `candidates/STANCE_ECO` (no silo capstones, T2 lab
 capstones on 15 grids, 10 fusion jobs) reached 5.7k m/s at 20:00 in a real vacuum game and `candidates/STANCE_ECO2` (capstones on
-10 grids, 14 fusion jobs) **8.1k** (one game each; STANCE_BOT 4.2-5.6k).
+10 grids, 14 fusion jobs) **6.6-8.2k, mean 7.6k over 4 games** (sim 8.0k; STANCE_BOT 4.2-5.6k).
 
 ## Running a test
 

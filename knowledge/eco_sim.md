@@ -82,9 +82,11 @@ Real vacuum games (single mode, vs INACTIVE_BOT, 20 min; `runs_stance/<tag>_<bot
 |---|---|---|---|
 | STANCE_BOT (simcal, 3 games) | as is | 4.0-4.3k | 4248, 5567, 4562 (mean 4.8k) |
 | `candidates/STANCE_ECO` (ecoreal) | no silos, CAPSTONE_MAX 15, EP_INFLIGHT 10 | 7.4-7.5k | **5697** (12:00 750, 14:00 1106, 16:00 2335, 18:00 3472) |
-| `candidates/STANCE_ECO2` (ecoreal2) | no silos, CAPSTONE_MAX 10, EP_INFLIGHT 14 | 8.2k | **8081** (12:00 848, 14:00 1782, 16:00 2856, 18:00 5020) |
+| `candidates/STANCE_ECO2` (ecoreal2 + ecoreal3, 4 games) | no silos, CAPSTONE_MAX 10, EP_INFLIGHT 14 | 8.2k [7.0-8.9k] | **8081, 6599, 7663, 8213** (mean 7.6k) |
 
-STANCE_ECO2 matched the sim's prediction within 2% (one game; real run-to-run spread ~25%).  Sim vs real for STANCE_ECO: the sim is ~1.3x optimistic at 18-20 min; the clearest gap is the first fusion (real: none by 14:00,
+STANCE_ECO2, 4 real games vs 8 sim seeds (`calibrate`): metal income 10:00 382 vs 478 (x1.25), 12:00 930 vs 1141 (x1.23), 14:00 1838 vs
+1991 (x1.08), 16:00 3141 vs 3279 (x1.04), 18:00 5106 vs 5562 (x1.09), 20:00 **7639 vs 8001 (x1.05)**; fusions/mohos/winds within
+~10-20% from 16:00; calibration error 0.150 (better than for base STANCE_BOT).  Sim vs real for STANCE_ECO: the sim is ~1.3x optimistic at 18-20 min; the clearest gap is the first fusion (real: none by 14:00,
 sim: 10) and T2 labs (real 25 at 20:00, sim 38).  Next calibration item: why the real energy push starts later.
 
 ## Spending the eco: the Dragon army sink (user, 2026-10-14)
@@ -103,4 +105,5 @@ from `SINK.start` s.  Each block competes for resources like any other low-prior
 
 The wall is now the **unit cap**: from ~22:00 every run sits at ~2950-3000 units with 10-13 blocks, metal banks 270-600k and energy
 is full while income keeps rising (~9.2k at 24:00).  More Dragons need more BP per unit slot or fewer eco units per m/s (consolidation
-earlier), not more eco.  (cornanotct2 is 600 BP per slot vs cordecom's 300, if a nano T2 block can serve a lab.)
+earlier), not more eco.  (cornanotct2 cannot be built in a normal game.)  User, 2026-10-14: in a real game Dragons start trading out at ~50 alive, so the
+sink's ~300 Dragons by 25:00 is a spending capacity, not an army; the sim has done its job for this round.
