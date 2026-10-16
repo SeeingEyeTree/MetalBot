@@ -44,7 +44,7 @@ function M.Prepare(raw)
     local st = { name = raw.name or "?", intent = raw.intent, control = raw.control,
                  suggestedShare = tonumber(tostring(raw.suggestedShare or ""):match("(%d+)%D*$")) or nil,
                  plan = type(raw.plan) == "table" and raw.plan or nil,
-                 units = {}, byName = {}, byDef = {} }
+                 units = {}, byName = {}, byDef = {}, extras = {}, extraByDef = {} }
     local sum = 0
     for _, u in ipairs(raw.units) do
         local ud = UnitDefNames and UnitDefNames[u.n]
@@ -57,6 +57,16 @@ function M.Prepare(raw)
         end
     end
     if #st.units == 0 or sum <= 0 then return nil end
+    -- extras (optional): units the stance does not BUILD through the spine (the Dragons from their own lab) but still wants
+    -- controlled -- { n, behaviors, cfg } as for a unit, no share.  strategy:BehaviorsFor reads them.
+    for _, u in ipairs(type(raw.extras) == "table" and raw.extras or {}) do
+        local ud = UnitDefNames and UnitDefNames[u.n]
+        if ud then
+            local e = { n = u.n, defID = ud.id, behaviors = u.behaviors, cfg = u.cfg, note = u.note }
+            st.extras[#st.extras + 1] = e
+            st.extraByDef[ud.id] = e
+        end
+    end
     for _, u in ipairs(st.units) do
         u.share = u.share / sum
         st.byName[u.n] = u

@@ -23,6 +23,7 @@
 
 local NANO = VFS.Include("LuaUI/Widgets/bar_framework/nano_broker.lua")
 local EG   = VFS.Include("LuaUI/Widgets/bar_framework/escape_guard.lua")
+local BT   = VFS.Include("LuaUI/Widgets/bar_framework/build_tree.lua")
 
 local M = {}
 
@@ -1247,20 +1248,10 @@ end
 -- and immediately places the next one, so there is always a fresh nanoframe
 -- standing for the nanos to pour build power into.
 
--- Which defIDs a builder def can actually place.
-local canBuildCache = {}
+-- Which defIDs a builder def can actually place: the build tree's answer (bar_framework/build_tree.lua, one cache for everyone).
 local function CanBuild(builderDefID, defID)
     if not builderDefID or not defID then return false end
-    local set = canBuildCache[builderDefID]
-    if not set then
-        set = {}
-        local ud = UnitDefs[builderDefID]
-        if ud and ud.buildOptions then
-            for _, optID in ipairs(ud.buildOptions) do set[optID] = true end
-        end
-        canBuildCache[builderDefID] = set
-    end
-    return set[defID] == true
+    return BT.CanBuild(builderDefID, defID)
 end
 M.CanBuild = CanBuild
 

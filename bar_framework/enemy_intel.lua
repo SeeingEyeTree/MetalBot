@@ -27,6 +27,18 @@
 --   EI.OnDestroyed(unitID)            -- from widget:UnitDestroyed, enemy units only
 --   local v = EI.AirValue(frame)
 
+local UQS = VFS and VFS.Include and VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua") or nil   -- the per-frame unit snapshot (C5); nil when loaded bare
+-- the enemy units / our own units, from the shared per-frame snapshot when unit_query is there (C5), else a direct engine walk
+local function EnemyList(team, ally)
+    if UQS then return UQS.enemies(team, ally) end
+    local out = {}
+    for _, uid in ipairs(Spring.GetAllUnits and Spring.GetAllUnits() or {}) do
+        if Spring.GetUnitAllyTeam(uid) ~= ally then out[#out + 1] = uid end
+    end
+    return out
+end
+local function OwnIds(team) return UQS and UQS.snapshot(team).ids or (Spring.GetTeamUnits(team) or {}) end
+
 local M = {}
 
 -- ── Tunables ──────────────────────────────────────────────────────────────────
@@ -159,12 +171,12 @@ end
 -- Remember everything we can see now.  Radar-only blips report no def; for a unit we
 -- already know that is still enough to say it is alive and roughly where.
 function M.Scan(frame)
-    local all = Spring.GetAllUnits and Spring.GetAllUnits()
-    if not all or not myAllyID then return end
+    if not myAllyID then return end
+    local all = EnemyList(Spring.GetMyTeamID(), myAllyID)          -- one GetAllUnits walk per frame, shared (C5)
     local visible = {}
     for i = 1, #all do
         local uid = all[i]
-        if Spring.GetUnitAllyTeam(uid) ~= myAllyID then
+        do
             local x, _, z = Spring.GetUnitPosition(uid)
             if x then
                 Note(uid, Spring.GetUnitDefID(uid), x, z, frame)

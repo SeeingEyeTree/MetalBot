@@ -24,6 +24,9 @@
 --   defs         { corca = true, ... } unit names the job accepts (any kind / tier); lets a job ask for one type (a proxy-defence
 --                job that only wants Twitchers, a ground con that pre-builds a blueprint), with its own production hook,
 --   name, prio (number, or function(cb) -> number), tier "t1" | "t2" | "any" (any: T1 first),
+--   section      which system the job belongs to: "grid" | "energy" | "crew" | "line" | "spine" | "dragon" ... (free text; only for
+--                reading: CB.Sections / CB.SectionHeld group jobs and their cons by it, priorities stay global).  A job that only
+--                names an owner for cons a system takes itself (the spine's Take) registers with want = 0.
 --   urgent       (default true; or a function) may take cons from lower-priority preemptable jobs when none is free;
 --                false = free cons only.  preemptMax = at most this many cons taken that way per hand-out pass
 --   useReserve   may take the cons the hold keeps back (default false: the job must leave `hold[tier]` free cons); a function: evaluated per pick,
@@ -103,6 +106,8 @@ function CB.Remove(cb, id)
     local job = c.owner and cb.byName[c.owner]
     if job and job.onLost then job.onLost(id) end
 end
+
+function CB.Forget(cb, id) if cb.lent then cb.lent[id] = nil end end    -- a pooled con died: no longer lent
 
 function CB.Owner(cb, id) local c = cb.cons[id]; return c and c.owner end
 function CB.IsManaged(cb, id) return cb.cons[id] ~= nil end
@@ -263,6 +268,58 @@ function CB.Take(cb, owner, opts)
     if not c then return nil end
     c.owner = owner
     return c.id
+end
+
+-- ── pools (C2): constructors another system keeps, asked for through the broker ─────────────────────────────────
+-- A POOL is a source of ground cons the broker does not track itself (slot_spine's cons and block residents).  It registers
+--     CB.AddPool(cb, "spine-ground", { take = function(owner, req) -> uid|nil, give = function(uid, owner), count = function() -> { total, idle } })
+-- and everyone else asks through CB.TakeAny(cb, owner, req) instead of reaching into the pool's own tables: the broker then knows who
+-- holds which con (CB.Status lists it), a con can only be given back by the one that took it, and the pool's inner states stay private.
+--   req: { defID = the unit the con must place, kind = "ground" (default: pools only) | "any" (pools, then the broker's air cons),
+--          near = { x, z }, allowBlock = true (the pool may take a builder off a live block job: off by default) }
+function CB.AddPool(cb, name, spec)
+    cb.pools = cb.pools or { list = {}, byName = {} }
+    assert(not cb.pools.byName[name], "con_broker pool registered twice: " .. name)
+    assert(spec.take and spec.give, "con_broker pool needs take and give")
+    spec.name = name
+    cb.pools.list[#cb.pools.list + 1] = spec
+    cb.pools.byName[name] = spec
+    return spec
+end
+
+function CB.TakeAny(cb, owner, req)
+    req = req or {}
+    cb.lent = cb.lent or {}
+    for _, pool in ipairs(cb.pools and cb.pools.list or {}) do
+        local uid = pool.take(owner, req)
+        if uid then
+            cb.lent[uid] = { pool = pool.name, owner = owner }
+            return uid, pool.name
+        end
+    end
+    if req.kind == "any" or req.kind == "air" then
+        local uid = CB.Take(cb, owner, { canTake = req.canTake, near = req.near, kind = "air" })
+        if uid then return uid, "broker" end
+    end
+    return nil
+end
+
+-- Give a con back to the pool it came from.  false when `owner` is not the one that took it (nothing happens).
+function CB.GiveBack(cb, uid, owner)
+    local l = cb.lent and cb.lent[uid]
+    if not l then return false end
+    if owner and l.owner ~= owner then return false end
+    local pool = cb.pools and cb.pools.byName[l.pool]
+    cb.lent[uid] = nil
+    if pool then pool.give(uid, l.owner) end
+    return true
+end
+
+function CB.RemoveJob(cb, name)
+    local j = cb.byName[name]
+    if not j then return end
+    cb.byName[name] = nil
+    for i, x in ipairs(cb.jobs) do if x == j then table.remove(cb.jobs, i); break end end
 end
 
 -- Can an outside owner (defense_crew) use this con now?  Unmanaged cons: yes (not ours).  Managed: free, or held by a preemptable
@@ -481,6 +538,30 @@ function CB.Update(cb, frame, res, sessionsDone)
     end
 end
 
+-- { [section] = { jobName, ... } } in registration order; jobs without a section go under "other".
+function CB.Sections(cb)
+    local out = {}
+    for _, job in ipairs(cb.jobs) do
+        local sec = job.section or "other"
+        out[sec] = out[sec] or {}
+        out[sec][#out[sec] + 1] = job.name
+    end
+    return out
+end
+
+-- cons held by the jobs of one section: T1 count, T2 count
+function CB.SectionHeld(cb, section)
+    local t1, t2 = 0, 0
+    for _, job in ipairs(cb.jobs) do
+        if (job.section or "other") == section then
+            for _, c in ipairs(cb.list) do
+                if c.owner == job.name then if c.tier == 1 then t1 = t1 + 1 else t2 = t2 + 1 end end
+            end
+        end
+    end
+    return t1, t2
+end
+
 function CB.Status(cb)
     local held, parts = {}, {}
     for _, c in ipairs(cb.list) do
@@ -492,7 +573,20 @@ function CB.Status(cb)
     for k in pairs(held) do names[#names + 1] = k end
     table.sort(names)
     for _, k in ipairs(names) do parts[#parts + 1] = string.format("%s %d+%d", k, held[k][1], held[k][2]) end
-    return string.format("cons T1+T2: %s | reserve %d+%d", table.concat(parts, ", "), cb.reserve[1] or 0, cb.reserve[2] or 0)
+    local pools = {}
+    for _, pool in ipairs(cb.pools and cb.pools.list or {}) do
+        local lent = {}
+        for _, l in pairs(cb.lent or {}) do if l.pool == pool.name then lent[l.owner] = (lent[l.owner] or 0) + 1 end end
+        local lk = {}
+        for k in pairs(lent) do lk[#lk + 1] = k end
+        table.sort(lk)
+        local lp = {}
+        for _, k in ipairs(lk) do lp[#lp + 1] = string.format("%s %d", k, lent[k]) end
+        local c = pool.count and pool.count() or {}
+        pools[#pools + 1] = string.format("%s %d (idle %d%s)", pool.name, c.total or 0, c.idle or 0, #lp > 0 and (", lent: " .. table.concat(lp, ", ")) or "")
+    end
+    return string.format("cons T1+T2: %s | reserve %d+%d%s", table.concat(parts, ", "), cb.reserve[1] or 0, cb.reserve[2] or 0,
+        #pools > 0 and (" | pools: " .. table.concat(pools, "; ")) or "")
 end
 
 return CB

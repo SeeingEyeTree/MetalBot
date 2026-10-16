@@ -1,0 +1,30 @@
+-- macro_controller.lua -- CORE_SINK: the configuration-driven bot (2026-10-16).
+-- Same bot as RAID_BOT (stances raid_open -> hold -> raid_late), with the macro and lab rules moved into the framework
+-- (bar_framework/macro_runtime.lua, bar_framework/lab_rules.lua).  A bot is this config: change a key, not the code.
+-- Keys and their defaults: the header and M.DEFAULTS of macro_runtime.lua.  unit_controller.lua is still RAID_BOT's, unchanged.
+
+function widget:GetInfo()
+    return {
+        name    = "Macro Controller",
+        desc    = "CORE: build the line, the grids, the spine (bar_framework/macro_runtime.lua)",
+        author  = "",
+        date    = "2026",
+        license = "GNU GPL, v3 or later",
+        layer   = 0,
+        enabled = true
+    }
+end
+
+local MACRO = VFS.Include("LuaUI/Widgets/bar_framework/macro_runtime.lua")
+
+MACRO.Install(widget, WG, {
+    NAME = "CORE_SINK", SINK = true,
+    STANCE      = "raid_open",     -- opening game plan
+    HOLD_STANCE = "hold",          -- after bad trades while behind (strategy_hooks.game_plan)
+    LATE_STANCE = "raid_late",     -- once the unit cap is filling (strategy_hooks.cap_switch)
+    -- fast stance transitions (2026-10-16, slot_spine.lua): labs swapped in two waves, a resident T1 vehicle + T2 bot con per block,
+    -- no nano parking near a swap, an idle lab becomes a T2 bot lab
+    LT_CFG      = { T2BOT_LAB = true, DECOY_LINE = true },        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
+    SPINE_CFG   = { FLOAT_MULT = 2.5, LAB_CANDIDATES = { "corlab", "corvp", "corap", "coralab", "coravp", "coraap", "corgant" }, FRONT = 600, BLOCK_PITCH = 320, WAVE_SWAP = true, BLOCK_CONS = true, IDLE_LAB_T2 = true },
+    -- everything else: the defaults in macro_runtime.lua (RAID_BOT's values)
+})

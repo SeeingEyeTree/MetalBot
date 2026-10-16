@@ -185,5 +185,10 @@ do
         print(S.Log("%[CB%]")[#S.Log("%[CB%]")])
     end
 end
+do  -- every WG channel the bot published fits bar_framework/wg_channels.lua SCHEMA
+    local CHK = VFS.Include("LuaUI/Widgets/bar_framework/wg_channels.lua")
+    local bad = CHK.Validate(WG)
+    check(#bad == 0, "WG channels match the schema" .. (bad[1] and (": " .. bad[1]) or ""))
+end
 print(string.format("raid_bot: %d checks, %d failures", checks, failures))
 if failures > 0 then os.exit(1) end

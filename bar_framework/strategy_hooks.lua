@@ -125,6 +125,32 @@ function M.cap_switch(o)
     end
 end
 
+-- switch hook (DRAGON_ECO, user 2026-10-14): once metal income has held at `income` m/s or more for `hold_s` seconds, take the
+-- stance `to` for the rest of the game.  The income is smoothed (EMA, `smooth` per call; strategy ticks once a second).
+--   hooks = { switch = H.income_switch{ to = "mammoth_hold", income = 1100, hold_s = 20 } }
+function M.income_switch(o)
+    o = o or {}
+    local to, income, holdF, smooth = o.to, o.income or 1100, (o.hold_s or 20) * 30, o.smooth or 0.2
+    local on, ema, since = false, nil, nil
+    return function(state)
+        if on then return to end
+        local inc = (state.metal and state.metal.income) or 0
+        ema = ema and (ema + smooth * (inc - ema)) or inc
+        local f = state.frame or 0
+        if ema >= income then
+            since = since or f
+            if f - since >= holdF then
+                on = true
+                Spring.Echo(string.format("[STRAT] metal income %.0f >= %d for %d s at %.1f min: switching to stance %s",
+                    ema, income, holdF / 30, state.minute or f / 1800, tostring(to)))
+                return to
+            end
+        else
+            since = nil
+        end
+    end
+end
+
 -- Several switch hooks in order: the first that names a stance wins (put cap_switch first -- once on, it holds).
 function M.chain_switch(list)
     return function(state, strat)

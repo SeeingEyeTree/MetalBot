@@ -231,6 +231,7 @@ local BLACKLIST = {
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
+local CH = VFS.Include("LuaUI/Widgets/bar_framework/wg_channels.lua")   -- typed WG access (bar_framework/wg_channels.lua)
 local myTeamID     = nil
 local LB, lb       = nil, nil   -- bar_framework/lab_broker.lua and this widget's broker (wants registered in RegisterWants)
 local RegisterWants           -- defined with the wants, below FighterWant
@@ -588,7 +589,8 @@ local function SaviorWant()
     inc = inc or 0
     local mb = WG and WG.MetalBot
     local silos = mb and mb.intel and mb.intel.silos or 0
-    if WG and WG.AntiNuke and WG.AntiNuke.saviorWant then return WG.AntiNuke.saviorWant end   -- defense_crew cover plan
+    local cover = CH.SaviorWant(WG)   -- defense_crew cover plan
+    if cover then return cover end
     local want = 0
     if inc >= 350 or silos > 0 then want = 1 end
     if inc >= 800 or (silos > 0 and inc >= 350) then want = 2 end
@@ -619,7 +621,7 @@ function widget:Initialize()
         LB = rL
         lb = LB.New{ cfg = { ORDER_GRACE = LAB_ORDER_GRACE } }
         RegisterWants()
-        if WG then WG.LabBroker = { LB = LB, lb = lb } end    -- the macro's con orders (line_transition) go through the same broker
+        CH.Publish(WG, "LabBroker", { LB = LB, lb = lb })    -- the macro's con orders (line_transition) go through the same broker
     else Spring.Echo("[LabCtrl] ERROR loading lab_broker: " .. tostring(rL)) end
     if DEBUG then Spring.Echo("[LabCtrl] Initialized team=" .. tostring(myTeamID)) end
 end
@@ -803,7 +805,7 @@ local function Describe(labID, labDefID, frame)
     if lab.skip then return lab end
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
     -- in (or ahead of) either queue then.
-    local airConsFirst = WG and WG.TileLabHold and WG.TileLabHold(labID)
+    local airConsFirst = CH.TileLabHeld(WG, labID)
     -- STANCE_BOT: a raid outranks the macro's hold on the T1 air lab (it owes air cons all game); the stunner / fighter goes in
     -- AHEAD of the queue (the busy-lab branch inserts one at a time), so the cons are delayed by one build at most.
     local liftedHold = false

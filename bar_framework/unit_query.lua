@@ -171,58 +171,138 @@ end
 
 -- ── Team-wide queries ─────────────────────────────────────────────────────────
 
--- Returns alive non-commander units split by role.
--- result = {combat={uid,...}, builders={uid,...}, factories={uid,...}, commanders={uid,...}}
-function M.get_by_role(teamID)
-    local result = {combat={}, builders={}, factories={}, commanders={}}
+-- THE PER-FRAME SNAPSHOT (C5).  `GetTeamUnits` was walked at ~35 places, several of them every few frames, each filtering the same list for its
+-- own purpose.  Snapshot(team) walks it once per game frame and every caller shares the result: it is kept on WG.UQSnap (separate VFS.Include
+-- instances of this file share it there; without a WG each instance keeps its own).
+--   snap = { frame, ids = {uid...}, defOf = {[uid] = defID}, byDef = {[defID] = {uid...}} }  plus, built on first use and kept for the frame:
+--   UQ.Structures(team) = { {uid, x, z, defID, cost}... } immobile own units;  UQ.ByRole(team) = get_by_role's result
+-- A unit destroyed after the snapshot was built is still in it until the next frame (callers that act on a unit re-check GetUnitDefID).
+local localStore = {}
+local function Store()
+    if WG then
+        WG.UQSnap = WG.UQSnap or {}
+        return WG.UQSnap
+    end
+    return localStore
+end
+local function Frame() return (Spring.GetGameFrame and Spring.GetGameFrame()) or 0 end
+
+function M.snapshot(teamID)
+    local store, frame = Store(), Frame()
+    local s = store[teamID]
+    local count = Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(teamID)      -- (a unit made or lost since the walk also ends a snapshot)
+    if s and s.frame == frame and s.count == count then
+        -- spot check: the first and last unit are still what the walk saw (a unit lost and another made in the same frame keeps the count)
+        local first, last = s.ids[1], s.ids[#s.ids]
+        if (first == nil or Spring.GetUnitDefID(first) == s.defOf[first]) and (last == nil or Spring.GetUnitDefID(last) == s.defOf[last]) then return s end
+    end
+    s = { frame = frame, count = count, ids = {}, defOf = {}, byDef = {} }
     for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
         local defID = Spring.GetUnitDefID(uid)
         if defID then
-            if M.is_commander(defID) then
-                table.insert(result.commanders, uid)
-            elseif M.is_factory(defID) then
-                table.insert(result.factories, uid)
-            elseif M.is_builder(defID) then
-                table.insert(result.builders, uid)
-            else
-                table.insert(result.combat, uid)
-            end
+            s.ids[#s.ids + 1] = uid
+            s.defOf[uid] = defID
+            local l = s.byDef[defID]
+            if not l then l = {}; s.byDef[defID] = l end
+            l[#l + 1] = uid
         end
     end
+    store[teamID] = s
+    M.snapshots_built = (M.snapshots_built or 0) + 1
+    return s
+end
+
+-- Units of one def (or any def in a set { [defID] = true }) this frame.
+function M.units_of(teamID, defOrSet)
+    local s = M.snapshot(teamID)
+    if type(defOrSet) == "number" then return s.byDef[defOrSet] or {} end
+    local out = {}
+    for d in pairs(defOrSet or {}) do for _, uid in ipairs(s.byDef[d] or {}) do out[#out + 1] = uid end end
+    return out
+end
+function M.count_of(teamID, defOrSet) return #M.units_of(teamID, defOrSet) end
+
+-- Immobile own units with their position and metal cost (what perimeter_guard / maneuver_defence ring round the base).
+function M.structures(teamID)
+    local s = M.snapshot(teamID)
+    if not s.structures then
+        local out = {}
+        for _, uid in ipairs(s.ids) do
+            local d = UnitDefs[s.defOf[uid]]
+            if d and (d.speed == nil or d.speed == 0) and not d.canFly then
+                local x, _, z = Spring.GetUnitPosition(uid)
+                if x then out[#out + 1] = { uid = uid, x = x, z = z, defID = s.defOf[uid], cost = d.metalCost or 0, w = d.metalCost or 50 } end
+            end
+        end
+        s.structures = out
+    end
+    return s.structures
+end
+
+-- Every non-allied unit once per frame (the enemy scans of threat_map, enemy_intel and the unit controllers share it).
+function M.enemies(teamID, allyTeam)
+    local store, frame = Store(), Frame()
+    local key = "enemies" .. tostring(teamID)
+    local s = store[key]
+    local total = 0                                      -- (units made or lost on any team since the walk end the cache too)
+    for _, t in ipairs(Spring.GetTeamList and Spring.GetTeamList() or {}) do total = total + (Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(t) or 0) end
+    if s and s.frame == frame and s.total == total then return s.list end
+    local list = {}
+    for _, uid in ipairs(Spring.GetAllUnits and Spring.GetAllUnits() or {}) do
+        if Spring.GetUnitAllyTeam(uid) ~= allyTeam then list[#list + 1] = uid end
+    end
+    store[key] = { frame = frame, total = total, list = list }
+    return list
+end
+
+-- Returns alive non-commander units split by role.
+-- result = {combat={uid,...}, builders={uid,...}, factories={uid,...}, commanders={uid,...}}
+function M.get_by_role(teamID)
+    local s = M.snapshot(teamID)
+    if s.roles then return s.roles end
+    local result = {combat={}, builders={}, factories={}, commanders={}}
+    for _, uid in ipairs(s.ids) do
+        local defID = s.defOf[uid]
+        if M.is_commander(defID) then
+            table.insert(result.commanders, uid)
+        elseif M.is_factory(defID) then
+            table.insert(result.factories, uid)
+        elseif M.is_builder(defID) then
+            table.insert(result.builders, uid)
+        else
+            table.insert(result.combat, uid)
+        end
+    end
+    s.roles = result
     return result
 end
 
 -- Total metal value of all alive non-commander units for a team.
 function M.army_metal_value(teamID)
+    local s = M.snapshot(teamID)
     local mv = 0
-    for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
-        local defID = Spring.GetUnitDefID(uid)
-        if defID and not M.is_commander(defID) then
-            mv = mv + M.metal_cost(defID)
-        end
+    for _, uid in ipairs(s.ids) do
+        local defID = s.defOf[uid]
+        if not M.is_commander(defID) then mv = mv + M.metal_cost(defID) end
     end
     return mv
 end
 
 -- Count of alive non-commander units for a team.
 function M.army_count(teamID)
+    local s = M.snapshot(teamID)
     local n = 0
-    for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
-        local defID = Spring.GetUnitDefID(uid)
-        if defID and not M.is_commander(defID) then
-            n = n + 1
-        end
+    for _, uid in ipairs(s.ids) do
+        if not M.is_commander(s.defOf[uid]) then n = n + 1 end
     end
     return n
 end
 
 -- Returns the commander unit ID for a team, or nil if dead/not found.
 function M.get_commander(teamID)
-    for _, uid in ipairs(Spring.GetTeamUnits(teamID) or {}) do
-        local defID = Spring.GetUnitDefID(uid)
-        if defID and M.is_commander(defID) then
-            return uid
-        end
+    local s = M.snapshot(teamID)
+    for _, uid in ipairs(s.ids) do
+        if M.is_commander(s.defOf[uid]) then return uid end
     end
     return nil
 end

@@ -68,6 +68,8 @@ local function Finish(st, it)
     for _, q in ipairs(st.queue) do if q.status ~= "built" and q.status ~= "skipped" then left = true end end
     if not left then st.done = true; if st.onComplete then st.onComplete() end end
 end
+-- the reclaim entry of a clear session (the lab it removes is a built entry in front of it)
+local function RItem(st) for _, it in ipairs(st.queue) do if it.act == "reclaim" then return it end end return st.queue[1] end
 local function FinishAllReleased(st)
     for _, it in ipairs(st.queue) do
         if it.status ~= "built" and it.waitsFor == nil and it.act ~= "reclaim" then Finish(st, it) end
@@ -196,13 +198,13 @@ for _ = 1, 60 do
     for _, ses in ipairs(st.sessions) do if ses.kind == "clear" then clear = ses end end
     if clear then break end
 end
-check(clear ~= nil and clear.state.queue[1].act == "reclaim", "after the delay a reclaim of one unneeded lab starts")
+check(clear ~= nil and RItem(clear.state).act == "reclaim", "after the delay a reclaim of one unneeded lab starts")
 local leavingUid = clear.slot.uid
 check(SS.IsLeaving(leavingUid), "the leaving lab is marked, so the lab controller queues nothing more in it")
 local nClear = 0
 for _, ses in ipairs(st.sessions) do if ses.kind == "clear" then nClear = nClear + 1 end end
 check(nClear == 1, "one slot at a time is cleared")
-Finish(clear.state, clear.state.queue[1])
+Finish(clear.state, RItem(clear.state))
 W.units[leavingUid] = nil
 Tick(3)
 local newJob
@@ -424,6 +426,354 @@ do
         end
     end
     check(dup == 0 and total > 0, "storage rows are shared between blocks (" .. total .. " storages, " .. dup .. " duplicated)")
+end
+
+-- ── RECLAIM_UNNEEDED (DRAGON_ECO): a plant the comp dropped is cleared once a lab for the new comp stands ─────────────
+local function AdoptedClears()
+    local n = 0
+    for _, ses in ipairs(SS.State().sessions) do if ses.kind == "clear" and ses.adoptedUid then n = n + 1 end end
+    return n
+end
+for _, on in ipairs({ false, true }) do
+    SS.CFG.RECLAIM_UNNEEDED = on
+    SS.Init(env)
+    SS.Start(0)
+    income, frame, pool = 40, 0, {}
+    local vp2 = S.Spawn("corvp", 0, 900, 900, { silent = true })
+    SS.AdoptLab(vp2, Id("corvp"), 0)
+    SS.SetUnits({ { defID = Id("corsumo"), share = 1 } })
+    SS.SetShare(0.3)
+    armyValue = 5000
+    Tick(3)
+    check(AdoptedClears() == 0, "unneeded plant: not cleared while no lab for the new comp stands (option " .. tostring(on) .. ")")
+    local al = S.Spawn("coralab", 0, 1300, 900, { silent = true })
+    SS.AdoptLab(al, Id("coralab"), 0)
+    Tick(math.ceil(SS.CFG.RECLAIM_DELAY / 30) - 2)
+    check(AdoptedClears() == 0, "unneeded plant: not cleared before RECLAIM_DELAY (option " .. tostring(on) .. ")")
+    Tick(4)
+    if on then
+        check(AdoptedClears() == 1 and SS.IsLeaving(vp2), "RECLAIM_UNNEEDED: the adopted vehicle plant gets a reclaim session")
+        check(not SS.IsLeaving(al), "RECLAIM_UNNEEDED: the T2 bot lab the comp needs stays")
+        local ses
+        for _, s2 in ipairs(SS.State().sessions) do if s2.adoptedUid then ses = s2 end end
+        Finish(ses.state, RItem(ses.state))
+        Tick(1)
+        check(not SS.IsLab(vp2), "RECLAIM_UNNEEDED: the cleared plant is forgotten")
+    else
+        check(AdoptedClears() == 0 and not SS.IsLeaving(vp2), "default: an adopted plant is never cleared")
+    end
+end
+-- CLEAR_NEEDS_CON (DRAGON_ECO): the dropped plant waits for a con bot that can build the replacement within CLEAR_CON_R
+SS.CFG.RECLAIM_UNNEEDED, SS.CFG.CLEAR_NEEDS_CON = true, true
+SS.Init(env)
+SS.Start(0)
+income, frame, pool = 40, 0, {}
+local vp3 = S.Spawn("corvp", 0, 900, 900, { silent = true })
+SS.AdoptLab(vp3, Id("corvp"), 0)
+SS.SetUnits({ { defID = Id("corsumo"), share = 1 } })
+SS.SetShare(0.3)
+local al3 = S.Spawn("coralab", 0, 1300, 900, { silent = true })
+SS.AdoptLab(al3, Id("coralab"), 0)
+Tick(math.ceil(SS.CFG.RECLAIM_DELAY / 30) + 4)
+check(AdoptedClears() == 0 and not SS.IsLeaving(vp3), "CLEAR_NEEDS_CON: no con bot near -> the plant keeps working")
+local farCon = S.Spawn("corck", 0, 900 + SS.CFG.CLEAR_CON_R + 400, 900, { silent = true })
+SS.AdoptCon(farCon)
+Tick(2)
+check(AdoptedClears() == 0, "CLEAR_NEEDS_CON: a con bot out of range does not count")
+local vcon = S.Spawn("corcv", 0, 950, 950, { silent = true })     -- a vehicle con cannot build the T2 bot lab
+SS.AdoptCon(vcon)
+Tick(2)
+check(AdoptedClears() == 0, "CLEAR_NEEDS_CON: a con that cannot build the replacement does not count")
+local nearCon = S.Spawn("corck", 0, 1000, 950, { silent = true })
+SS.AdoptCon(nearCon)
+Tick(2)
+check(AdoptedClears() == 1 and SS.IsLeaving(vp3), "CLEAR_NEEDS_CON: a con bot in range -> the plant is cleared")
+SS.CFG.RECLAIM_UNNEEDED, SS.CFG.CLEAR_NEEDS_CON = false, false
+
+
+-- LAB_TAKES_BLOCK_CON (DRAGON_ECO): a con bot busy on a nano block moves to the T2 bot lab job
+SS.CFG.RECLAIM_UNNEEDED, SS.CFG.CLEAR_NEEDS_CON, SS.CFG.GATE_MARGIN, SS.CFG.LAB_TAKES_BLOCK_CON = true, true, 0, true
+SS.Init(env); SS.Start(0); income, frame, pool = 1200, 0, {}
+SS.SetUnits({ { defID = Id("corlevlr"), share = 1 } }); SS.SetShare(0.5)
+Tick(5)
+for _, ses in ipairs(SS.State().sessions) do if ses.kind == "lab" or ses.kind == "block" then FinishAllReleased(ses.state) end end
+Tick(5)
+for _, ses in ipairs(SS.State().sessions) do if ses.kind == "lab" then FinishAllReleased(ses.state) end end
+Tick(3)
+do
+    local st0 = SS.State()
+    local ck = S.Spawn("corck", 0, st0.blocks[1].ax, st0.blocks[1].az, { silent = true })
+    SS.AdoptCon(ck)
+    Tick(2)
+    local onBlock = false
+    for _, ses in ipairs(SS.State().sessions) do
+        if ses.kind == "block" then for _, b in ipairs(ses.state.builders) do if b == ck then onBlock = true end end end
+    end
+    check(onBlock, "LAB_TAKES_BLOCK_CON: the con bot first works on a nano block")
+    SS.SetUnits({ { defID = Id("corsumo"), share = 1 } })
+    local labBuilder = false
+    for _ = 1, 60 do
+        Tick(1)
+        for _, ses in ipairs(SS.State().sessions) do
+            if ses.kind == "clear" then for _, it in ipairs(ses.state.queue) do if it.status ~= "built" then Finish(ses.state, it) end end end
+            if ses.kind == "lab" and ses.state.queue[1].n == "coralab" then
+                for _, b in ipairs(ses.state.builders) do if b == ck then labBuilder = true end end
+            end
+        end
+    end
+    check(labBuilder, "LAB_TAKES_BLOCK_CON: the con bot moves off the block to build the T2 bot lab")
+end
+SS.CFG.RECLAIM_UNNEEDED, SS.CFG.CLEAR_NEEDS_CON, SS.CFG.GATE_MARGIN, SS.CFG.LAB_TAKES_BLOCK_CON = false, false, 1.0, false
+
+-- ── REBUILD_NANOS: a nano the enemy destroys is built again ──────────────────────────────────────────────────────────────
+do
+    env.Expect = {}
+    SS.Init(env)
+    SS.Start(0)
+    SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } })
+    SS.SetShare(0)
+    pool = {}
+    frame = 0
+    local safe = true
+    env.Safe = function() return safe end
+    for _ = 1, 40 do
+        for _, blk in ipairs(SS.State().blocks) do FinishAllReleased(blk.ses.state) end
+        Tick(1, { metalIncome = 300 })
+    end
+    local blk = SS.State().blocks[1]
+    local function Nano()
+        for _, it in ipairs(blk.ses.state.queue) do if it.cls == "nano" and it.status == "built" and it.uid and W.units[it.uid] then return it end end
+    end
+    local function Kill(it, attacker) local id = it.uid; S.Kill(id); SS.OnUnitDestroyed(id, attacker) end
+    local function Wait(n) for _ = 1, n do Tick(1, { metalIncome = 300 }) end end
+    local delay = math.ceil(SS.CFG.REBUILD_DELAY / 30) + 2
+
+    local a = Nano()
+    check(a ~= nil, "REBUILD_NANOS: a nano of the first block stands")
+    SS.CFG.REBUILD_NANOS = false
+    Kill(a, 77); Wait(delay)
+    check(a.status == "built", "off (the default): a lost nano stays lost")
+
+    local b = Nano()
+    SS.CFG.REBUILD_NANOS = true
+    Kill(b, nil); Wait(delay)
+    check(b.status == "built", "a nano with no attacker (our own reclaim) is not rebuilt")
+
+    local c = Nano()
+    Kill(c, 77)
+    Wait(3)
+    check(c.status == "built", "...and not before REBUILD_DELAY")
+    safe = false; Wait(delay)
+    check(c.status == "built", "...nor while a threat stands near the spot (env.Safe)")
+    safe = true; Wait(2)
+    check(c.status == "pending" and not c.frameID, "REBUILD_NANOS: after the delay, with no threat near, the nano's item is queued again")
+    local inSessions = false
+    for _, ses in ipairs(SS.State().sessions) do if ses == blk.ses then inSessions = true end end
+    check(inSessions and not blk.ses.done and not blk.ses.state.done, "the block's session is open again for builders")
+    check(#S.Log("%[SLOT%].*lost, built again") >= 1, "the rebuild is logged")
+    SS.CFG.REBUILD_NANOS = false
+    env.Safe = nil
+end
+
+-- SpendCapacity: the full planned spine (MAX_BLOCKS x 16 nanos) x what one nano puts into the comp
+do
+    SS.SetUnits({ { defID = Id("corsumo"), share = 1 } })
+    local cap, planned, standing = SS.SpendCapacity()
+    local K = SS.CFG
+    local d, nd = UnitDefNames.corsumo, UnitDefNames.cornanotc
+    local perNano = (nd.buildSpeed or 200) * d.metalCost / d.buildTime
+    check(planned == math.min(K.MAX_BLOCKS, 2 * K.STACK_HALF + 1) * K.NANOS_PER_BLOCK, "SpendCapacity plans MAX_BLOCKS x 16 nanos (" .. tostring(planned) .. ")")
+    check(cap and math.abs(cap - planned * perNano) < 1e-6, "SpendCapacity = planned nanos x metal/s per nano on the comp (" .. tostring(cap) .. ")")
+    check(standing and standing <= planned, "the standing nano count never exceeds the plan")
+    check(SS.Status().capacity == cap, "Status() reports the capacity")
+end
+
+-- ── WAVE_SWAP / BLOCK_CONS / IDLE_LAB_T2 (CORE, 2026-10-16) ──────────────────────────────────────────────────────────
+do
+    SS.CFG.WAVE_SWAP, SS.CFG.BLOCK_CONS, SS.CFG.IDLE_LAB_T2 = true, true, true
+    env.Expect = {}
+    local maxBlocks = SS.CFG.MAX_BLOCKS
+    SS.CFG.MAX_BLOCKS = 2
+    SS.Init(env)
+    SS.Start(0)
+    local sv = SS.State()
+    SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } })
+    SS.SetShare(1)
+    pool = {}
+    frame = 0
+    for _ = 1, 160 do
+        for _, blk in ipairs(sv.blocks) do FinishAllReleased(blk.ses.state) end
+        Tick(1, { metalIncome = 1500 })
+    end
+    -- put a vehicle plant in every slot (the planner may have placed some already)
+    for _, slot in ipairs(sv.slots) do
+        if slot.state == "free" or slot.state == "build" then
+            local id = S.Spawn("corvp", 0, slot.wx, slot.wz, { silent = true })
+            SS.OnUnitFinished(id, Id("corvp"), slot.wx, slot.wz)
+        end
+    end
+    for _, ses in ipairs(sv.sessions) do if ses.kind == "lab" then ses.done = true end end
+    Tick(2, { metalIncome = 1500 })
+    local labs = {}
+    for _, slot in ipairs(sv.slots) do if slot.state == "lab" then labs[#labs + 1] = slot end end
+    check(#labs >= 4, "WAVE_SWAP setup: at least 4 standing labs (" .. #labs .. ")")
+    local oldUids = {}
+    for _, sl in ipairs(labs) do oldUids[sl.uid] = true end
+
+    -- resident cons: a lab that can make them is asked to, one per role per block
+    local rid
+    for _ = 1, 30 do
+        for uid in pairs(sv.labs) do
+            rid = SS.NextOrder(uid, Id("corvp"))
+            if sv.blocks[1].conOrdered and sv.blocks[1].conOrdered.corcv then break end
+        end
+        if sv.blocks[1].conOrdered and sv.blocks[1].conOrdered.corcv then break end
+    end
+    check(sv.blocks[1].conOrdered and sv.blocks[1].conOrdered.corcv ~= nil, "BLOCK_CONS: once nothing above needs a con, a vehicle plant orders block 1's resident T1 vehicle con (lowest priority)")
+    local con = S.Spawn("corcv", 0, 10, 10, { silent = true })
+    for uid in pairs(sv.labs) do SS.OnUnitFromFactory(con, Id("corcv"), uid); break end
+    check(sv.blocks[1].cons and sv.blocks[1].cons.corcv == con and sv.cons[con] == "res", "...and it becomes block 1's resident, not a pool con")
+    local lent = SS.BorrowCon(nil)
+    check(lent == con and sv.cons[con] == "resbusy", "an idle resident is lent to another job when no pool con is free")
+    SS.GiveBackCon(con)
+    sv.cons[con] = "res"
+
+    -- the stance changes to T2 bot units: wave 1 starts at once (no RECLAIM_DELAY)
+    SS.SetUnits({ { defID = Id("corsumo"), share = 1 } })
+    armyValue = 1e6
+    local before = frame
+    Tick(2, { metalIncome = 1500 })
+    local clearing, leaving = 0, 0
+    for _, slot in ipairs(sv.slots) do if slot.state == "clear" then clearing = clearing + 1 end end
+    check(clearing >= 1 and frame - before < SS.CFG.RECLAIM_DELAY, "WAVE_SWAP: wave 1 clears labs at once (" .. clearing .. ")")
+    check(clearing < #labs, "...but not all of them (half keep producing: " .. clearing .. " of " .. #labs .. ")")
+    check(sv.swap and sv.swap.stage == 1, "...and a swap record tracks the waves")
+    local kept
+    for _, slot in ipairs(sv.slots) do if slot.state == "lab" then kept = slot end end
+    check(kept ~= nil and SS.IsReplacing(kept.uid), "a kept old lab is marked IsReplacing (lab_rules keeps it on the previous stance's units)")
+    check(kept ~= nil and not SS.IsLeaving(kept.uid), "...and is not leaving")
+
+    -- finish wave 1: reclaim ends, the new lab is placed and finishes
+    local function Settle(n)
+        for _ = 1, n do
+            for _, ses in ipairs(sv.sessions) do
+                if ses.kind == "clear" and not ses.done then Finish(ses.state, RItem(ses.state)) end
+                if ses.kind == "lab" and not ses.done and ses.state.queue[1].status ~= "built" and #ses.state.builders > 0 then
+                    Finish(ses.state, ses.state.queue[1])
+                end
+            end
+            Tick(1, { metalIncome = 1500 })
+        end
+    end
+    pool = { S.Spawn("corck", 0, 500, 500, { silent = true }), S.Spawn("corck", 0, 520, 500, { silent = true }),
+             S.Spawn("corck", 0, 540, 500, { silent = true }), S.Spawn("corck", 0, 560, 500, { silent = true }) }
+    Settle(6)
+    local w2 = frame
+    local c2 = 0
+    for _, slot in ipairs(sv.slots) do if slot.state == "clear" then c2 = c2 + 1 end end
+    if sv.swap then
+        check(sv.swap.stage == 2 or c2 == 0, "wave 2 waits for SWAP_WAVE_GAP after wave 1's labs stand (stage " .. tostring(sv.swap.stage) .. ")")
+        check(c2 == 0, "...so no second wave clears yet")
+        Tick(35, { metalIncome = 1500 })
+        local c3 = 0
+        for _, slot in ipairs(sv.slots) do if slot.state == "clear" then c3 = c3 + 1 end end
+        check(c3 >= 1 or sv.swap == nil, "...and it starts once the gap has passed")
+    end
+
+    -- nanos near a slot being cleared or built are not parked
+    for _, slot in ipairs(sv.slots) do
+        if slot.state == "clear" or slot.state == "build" then
+            for n, a in pairs(assign) do
+                local x, _, z = Spring.GetUnitPosition(n)
+                if x and sv.nanos[n] and (x - slot.wx) ^ 2 + (z - slot.wz) ^ 2 < 100 ^ 2 then check(a.mode ~= "park", "no nano within reach of a swapping slot is parked") end
+            end
+        end
+    end
+
+    -- IDLE_LAB_T2: a lab with nothing queued for IDLE_LAB_FRAMES becomes a T2 bot lab (and is kept by the planner afterwards)
+    SS.Init(env)
+    SS.Start(0)
+    sv = SS.State()
+    SS.SetUnits({ { defID = Id("corgator"), share = 1 } })
+    SS.SetShare(0.3)
+    income = 40
+    frame = 0
+    pool = {}
+    Tick(2)
+    local slot1 = sv.slots[1]
+    local id1 = S.Spawn("corvp", 0, slot1.wx, slot1.wz, { silent = true })
+    SS.OnUnitFinished(id1, Id("corvp"), slot1.wx, slot1.wz)
+    SS.AdoptCon(S.Spawn("corck", 0, slot1.wx + 50, slot1.wz, { silent = true }))     -- a con that can place the T2 bot lab
+    SS.CFG.IDLE_LAB_MIN_BANK = 0
+    local busy = true
+    env.LabBusy = function() return busy end
+    Tick(40)
+    check(slot1.state == "lab", "IDLE_LAB_T2: a busy lab stays")
+    busy = false
+    Tick(10)
+    check(slot1.state == "lab", "...an idle lab is not replaced before IDLE_LAB_FRAMES")
+    Tick(30)
+    check(slot1.state == "clear" and slot1.wantLab == "coralab", "...after IDLE_LAB_FRAMES it is cleared to make room for a T2 bot lab")
+    env.LabBusy = nil
+    SS.CFG.WAVE_SWAP, SS.CFG.BLOCK_CONS, SS.CFG.IDLE_LAB_T2 = false, false, false
+    SS.CFG.MAX_BLOCKS = maxBlocks
+    SS.CFG.IDLE_LAB_MIN_BANK = 0.25
+end
+
+-- a lab session the placer ends without a lab (item skipped) frees its slot, which then rests (no endless "build" slot)
+do
+    env.Expect = {}
+    SS.Init(env)
+    SS.Start(0)
+    local sv = SS.State()
+    SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } })
+    SS.SetShare(1)
+    pool = {}
+    frame = 0
+    Tick(3, { metalIncome = 400 })
+    local ses
+    for _, x in ipairs(sv.sessions) do if x.kind == "lab" then ses = x end end
+    check(ses ~= nil and ses.slot.state == "build", "skipped-item setup: a lab job is running")
+    if ses then
+        local slot = ses.slot
+        ses.state.queue[1].status = "skipped"
+        ses.state.done = true
+        ses.state.onComplete()
+        Tick(2, { metalIncome = 400 })
+        check(slot.state == "free" and slot.badUntil ~= nil, "a lab job the placer skipped frees its slot and the slot rests")
+        check(slot.ses == nil and not slot.labName, "...and forgets the lab it wanted")
+    end
+end
+
+-- ── the spine's pool API (C2): borrowers, residents, give-back ────────────────────────────────────────────────
+do
+    SS.CFG.BLOCK_CONS = true
+    env.Expect = {}
+    SS.Init(env)
+    SS.Start(0)
+    local sv = SS.State()
+    SS.SetUnits({ { defID = Id("corgator"), share = 0.5 }, { defID = Id("corraid"), share = 0.5 } })
+    pool = {}
+    frame = 0
+    Tick(3, { metalIncome = 400 })
+    local blk = sv.blocks[1]
+    local con = S.Spawn("corcv", 0, 10, 10, { silent = true })
+    blk.cons, blk.conOrdered = blk.cons or {}, blk.conOrdered or {}
+    blk.cons.corcv, sv.cons[con] = con, "res"                 -- a block resident
+    for _, sl in ipairs(sv.slots) do sl.state = "free" end    -- (no job in the block: an idle resident may be lent)
+    local got = SS.PoolTake("sinklab", {})
+    check(got == con and sv.cons[con] == "resbusy", "PoolTake lends an idle resident when no pool con is free")
+    check(not SS.PoolGive(con, "linedecoy") and sv.cons[con] == "resbusy", "a wrong borrower cannot give it back")
+    check(SS.PoolGive(con, "sinklab") and sv.cons[con] == "res", "the right borrower gives it back and it is a resident again")
+    local free = S.Spawn("corck", 0, 20, 20, { silent = true })
+    SS.AdoptCon(free)
+    local got2 = SS.PoolTake("linedecoy", { defID = Id("corlab") })
+    check(got2 == free, "a free con is taken before a resident")
+    SS.PoolGive(free, "linedecoy")
+    check(sv.cons[free] == true, "a plain pool con comes back as a plain pool con")
+    local c = SS.PoolCount()
+    check(c.total >= 2 and c.idle >= 2, "PoolCount counts the cons (" .. c.total .. " total, " .. c.idle .. " idle)")
+    SS.CFG.BLOCK_CONS = false
 end
 
 check(#W.errors == 0, "no Lua errors")

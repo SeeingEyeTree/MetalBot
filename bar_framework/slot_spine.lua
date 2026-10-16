@@ -32,6 +32,9 @@ do
     SP = ok and r or nil
 end
 
+local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")   -- unit roles per faction (C4)
+local BT = VFS.Include("LuaUI/Widgets/bar_framework/build_tree.lua")   -- the build tree (C1): who can build what
+
 local M = {}
 
 M.CFG = {
@@ -40,7 +43,10 @@ M.CFG = {
     MAX_BLOCKS      = 9,
     STACK_HALF      = 4,
     UPDATE_EVERY    = 30,
-    LAB_CANDIDATES  = { "corlab", "corvp", "corap", "coralab", "coravp", "corgant" },   -- labs the planner may use (no T2 air)
+    LAB_CANDIDATES  = { ROLES.Get("lab_t1_bot"), ROLES.Get("lab_t1_veh"), ROLES.Get("lab_t1_air"), ROLES.Get("lab_t2_bot"), ROLES.Get("lab_t2_veh"), ROLES.Get("lab_t3") },   -- labs the planner may use (no T2 air)
+    AIR_LABS        = { [ROLES.Get("lab_t2_air")] = true },     -- labs only an AIR con can place (a T1 ground con cannot build a T2 air plant; the T1 air lab is placed by ground cons):
+                                             -- a T1 air con is pulled from the host's pool and one is ordered (env.QueueAirCon) when none is free
+    WIDE_LABS       = { [ROLES.Get("lab_t2_air")] = true },     -- labs that take both slots of a block whatever their footprint (user 2026-10-16: one T2 air lab per block; two T1 air labs fit)
     WIDE_ELMOS      = 160,    -- a lab wider than this takes BOTH slots of a block (the gantry), centred between them
     WIDE_X          = 72,     -- where a wide lab's centre sits in front of the block
     COVER_FRAC      = 0.95,   -- stop adding labs once this share of the comp can be built
@@ -61,6 +67,34 @@ M.CFG = {
     FLOAT_MULT      = 1,      -- while both banks float (free run) nanos and labs are planned for this multiple of income (capacity look-ahead)
     MAX_JOBS_FLOAT  = 6,      -- ... while metal and energy both bank (free run): spending capacity is what is short then
     RECLAIM_DELAY   = 900,    -- frames a lab must have been unneeded before it may be reclaimed
+    RECLAIM_UNNEEDED = false, -- DRAGON_ECO: a lab the plan no longer has at all (slot or adopted) is reclaimed after RECLAIM_DELAY even when
+                              -- no slot is wanted, once a lab that builds the comp stands (false: only when its slot is wanted)
+    CLEAR_NEEDS_CON = false,  -- DRAGON_ECO: a lab is cleared (any path) only while one of the spine's cons that can build its replacement is
+                              -- within CLEAR_CON_R of it, so the slot is rebuilt at once
+    CLEAR_CON_R     = 900,
+    LAB_TAKES_BLOCK_CON = false,  -- DRAGON_ECO: a lab job with no free con takes one off a nano block's job (a block keeps held
+                                  -- nanos for minutes, so its builders never came free and the T2 bot labs never got a con)
+    WAVE_SWAP       = false,  -- CORE (user 2026-10-16): on a stance change the labs the plan no longer needs are swapped in two waves: half at
+                              -- once (no RECLAIM_DELAY, no job cap), the other half SWAP_WAVE_GAP after the first wave's new labs stand, so the
+                              -- kept half keeps producing (from the previous stance's units: see IsReplacing); nanos near a clearing/building
+                              -- slot are never parked (they assist its builder); the plan ignores the "standing lab is free" bias
+    SWAP_WAVE_GAP   = 900,    -- frames between wave 1 finishing and wave 2 starting
+    SLOT_BAD_FRAMES = 450,    -- a slot whose lab the placer gave up on (its ground was blocked: units standing there) rests this long
+    SWAP_WINDOW     = 5400,   -- the plan ignores standing labs, and a dropped lab goes at once, only this long after the comp's unit set changed
+    SWAP_TIMEOUT    = 3600,   -- wave 1 that has not finished after this many frames lets wave 2 go anyway
+    BLOCK_CONS      = false,  -- CORE: every block keeps a resident T1 vehicle con and T2 bot con (BLOCK_CON_UNITS) that only place/reclaim its own
+                              -- slot labs (other jobs fall back to the shared pool while one is missing)
+    BLOCK_CON_UNITS = { ROLES.Get("con_t1_veh"), ROLES.Get("con_t2_bot") },
+    IDLE_LAB_T2     = false,  -- CORE: a slot lab with nothing queued or building for IDLE_LAB_FRAMES is replaced by a T2 bot lab (always usable:
+                              -- decoy commanders for the sink), at most one per block per IDLE_LAB_GAP
+    IDLE_LAB_FRAMES = 900,
+    IDLE_LAB_GAP    = 1800,
+    IDLE_LAB_UNIT   = ROLES.Get("lab_t2_bot"),
+    IDLE_LAB_MIN_BANK = 0.25, -- ... and only while the metal bank is at least this share of storage (or both banks float): a T2 lab costs metal
+    REBUILD_NANOS   = false,  -- DRAGON_ECO (user 2026-10-14): a nano an enemy destroyed is built again at its spot (a lab is always rebuilt by the
+                              -- planner; without this a lost nano stays lost)
+    REBUILD_DELAY   = 900,    -- frames after the loss before the nano is re-queued ...
+    REBUILD_SAFE_R  = 1200,   -- ... and only while no threat (env.Safe) is this close to its spot
     GATE_COST       = 1000,   -- labs this expensive wait for army value (below)
     GATE_MARGIN     = 1.0,    -- ground army value must reach margin x lab cost (env.ArmyValue); floating overrides
     LOG_EVERY       = 1800,
@@ -73,7 +107,7 @@ M.CFG = {
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
     SLACK_INCOME    = 500,    -- ... once metal income reaches this (and the mex grids are ready)
     NANOS_PER_BLOCK = 16,
-    STORE_UNIT      = "corestor",   -- the storages in the NanoBlock side gaps (held until the energy income needs them)
+    STORE_UNIT      = ROLES.Get("storage"),   -- the storages in the NanoBlock side gaps (held until the energy income needs them)
     STORE_SECONDS   = 5,      -- energy storage kept = this many seconds of energy income, so the bank fraction is a signal
     STORE_INCOME    = 300,    -- ... once metal income reaches this (and the mex grids are ready)
     STORE_BATCH     = 2,      -- held storages released per tick
@@ -84,7 +118,7 @@ M.CFG = {
     SLACK_MIN_BANK  = 0.30,   -- slack nanos are only started while the metal bank is at least this share of storage (res.metal /
                               -- res.metalStorage): spare metal pays for them, labs and units keep what they need
     QUEUE_DEPTH     = 3,      -- units kept queued in each lab (lab_controller)
-    T1_LABS         = { corlab = true, corvp = true, corap = true },   -- labs the lab controller also runs the normal picks on
+    T1_LABS         = { [ROLES.Get("lab_t1_bot")] = true, [ROLES.Get("lab_t1_veh")] = true, [ROLES.Get("lab_t1_air")] = true },   -- labs the lab controller also runs the normal picks on
 }
 
 -- The macro loads blueprints by this table (as it does for spine.lua).
@@ -94,6 +128,12 @@ local S = nil
 local CMD_STOP = 0
 
 local function Alive(uid) return uid ~= nil and Spring.GetUnitDefID(uid) ~= nil end
+-- A lab only an AIR con can place: the AIR_LABS option forces it, else the build tree says so (no ground con has it in its options).
+local function AirOnly(name)
+    if (M.CFG.AIR_LABS or {})[name] then return true end
+    local d = UnitDefNames[name or ""]
+    return d ~= nil and d.isFactory == true and BT.NeedsAir(d.id)
+end
 local function Cfg() return M.CFG end
 local function Log(fmtStr, ...)
     local f = S and S.frame or 0
@@ -137,8 +177,7 @@ local function LabTable(units)
     for _, name in ipairs(Cfg().LAB_CANDIDATES) do
         local ld = UnitDefNames[name]
         if ld and ld.buildOptions then
-            local opt = {}
-            for _, o in ipairs(ld.buildOptions) do opt[o] = true end
+            local opt = BT.Options(ld.id)
             local list = {}
             for _, u in ipairs(units) do if opt[u.defID] then list[#list + 1] = u end end
             if #list > 0 then out[name] = { name = name, defID = ld.id, cost = ld.metalCost or 0, units = list } end
@@ -149,7 +188,7 @@ end
 
 -- Greedy cover: the lab that covers the most uncovered comp share per metal (a standing lab costs nothing) is taken
 -- first.  `standing` = { [labName] = count }; `allowed(name)` gates expensive labs.  Returns { [labName] = share covered }.
-function M.Cover(units, standing, allowed)
+function M.Cover(units, standing, allowed, noBias)
     local K = Cfg()
     local tab = LabTable(units)
     local covered, plan, total = {}, {}, 0
@@ -165,7 +204,7 @@ function M.Cover(units, standing, allowed)
                     if not covered[u.defID] and u.share >= K.MIN_UNIT_SHARE then s = s + u.share end
                 end
                 if s > 0 then
-                    local cost = (standing and (standing[name] or 0) > 0) and 1 or math.max(1, L.cost)
+                    local cost = (not noBias and standing and (standing[name] or 0) > 0) and 1 or math.max(1, L.cost)
                     local score = s / cost
                     if not best or score > bestScore or (score == bestScore and name < best) then
                         best, bestScore, bestShare = name, score, s
@@ -226,6 +265,13 @@ function M.SetUnits(units)
     local sum = 0
     for _, u in ipairs(units or {}) do if u.defID and (u.share or 0) > 0 then sum = sum + u.share end end
     if sum <= 0 then return end
+    -- WAVE_SWAP: a change of the unit SET (a stance switch) opens the swap window; share wobble inside a stance does not
+    local ids = {}
+    for _, u in ipairs(units) do if u.defID and (u.share or 0) > 0 then ids[#ids + 1] = u.defID end end
+    table.sort(ids)
+    local sig = table.concat(ids, ",")
+    if S.unitSig and sig ~= S.unitSig then S.stanceChangeAt = S.frame end
+    S.unitSig = sig
     local nd = UnitDefNames.cornanotc
     local bp = nd and nd.buildSpeed or 200
     local rate = 0
@@ -237,6 +283,21 @@ function M.SetUnits(units)
         end
     end
     S.nanoRate = rate > 0 and rate or S.nanoRate
+end
+
+-- The most metal/s the FULL planned spine can spend on its comp: every block it may open (MAX_BLOCKS, at most the stack's 2 x STACK_HALF + 1)
+-- x NANOS_PER_BLOCK nanos x what one nano puts into the comp (bp x metalCost / buildTime, share-weighted: S.nanoRate).  Mammoths with 100k BP:
+-- 100000 x 3500 / 103400 = ~3.4k m/s.  The metal sink starts when income nears it (metal_sink.lua, 85%), so the spine keeps growing until
+-- it is nearly as big as it will ever be.  Returns capacity, planned nanos, standing nanos, standing capacity; nil until a comp is set.
+function M.SpendCapacity()
+    if not S or not S.units or #S.units == 0 then return nil end
+    local K = Cfg()
+    local standing = 0
+    for uid in pairs(S.nanos) do
+        if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then standing = standing + 1 end
+    end
+    local planned = math.min(K.MAX_BLOCKS, 2 * K.STACK_HALF + 1) * K.NANOS_PER_BLOCK
+    return planned * S.nanoRate, planned, standing, standing * S.nanoRate
 end
 
 function M.SetShare(s) if S then S.share = math.max(0, math.min(1, s or 0)) end end
@@ -280,13 +341,48 @@ local function BuilderCan(st, defID)
     return false
 end
 
-local function TakeOwnCon(defID)
+-- Is this con one of a block's residents (block.cons[role] == uid)?
+local function IsResident(uid)
+    for _, b in ipairs(S.blocks) do
+        if b.cons then for _, id in pairs(b.cons) do if id == uid then return true end end end
+    end
+    return false
+end
+
+local function TakeOwnCon(defID, x, z)
+    local best, bestD
     for uid, state in pairs(S.cons) do
         local bd = Spring.GetUnitDefID(uid)
         if not bd then S.cons[uid] = nil
         elseif state == true and (not defID or S.env.BP_PLACER.CanBuild(bd, defID)) then
-            S.cons[uid] = "busy"
-            return uid
+            if not x then
+                S.cons[uid] = "busy"
+                return uid
+            end
+            local ux, _, uz = Spring.GetUnitPosition(uid)         -- the free con nearest the job
+            local d = ux and (ux - x) ^ 2 + (uz - z) ^ 2 or 1e18
+            if not bestD or d < bestD or (d == bestD and uid < best) then best, bestD = uid, d end
+        end
+    end
+    if best then S.cons[best] = "busy"; return best end
+    if Cfg().BLOCK_CONS then          -- no free con: an idle resident of a block with no swap going on does the job (and goes back after)
+        local swapping = {}
+        for _, slot in ipairs(S.slots) do
+            if slot.state == "clear" or slot.state == "build" or slot.wantLab then swapping[slot.block] = true end
+        end
+        for _, b in ipairs(S.blocks) do
+            if b.cons and not swapping[b] and not (S.swap and S.swap.stage) then
+                for _, role in ipairs(Cfg().BLOCK_CON_UNITS) do
+                    local uid = b.cons[role]
+                    if uid and S.cons[uid] == "res" and Alive(uid) then
+                        local bd = Spring.GetUnitDefID(uid)
+                        if not defID or S.env.BP_PLACER.CanBuild(bd, defID) then
+                            S.cons[uid] = "resbusy"
+                            return uid
+                        end
+                    end
+                end
+            end
         end
     end
     return nil
@@ -301,9 +397,117 @@ local function ReleaseBuilders(ses)
         if Alive(uid) then
             local d = UnitDefs[Spring.GetUnitDefID(uid)]
             if d and d.canFly then env.ReturnCon(uid)
-            elseif S.cons[uid] then S.cons[uid] = true; Spring.GiveOrderToUnit(uid, CMD_STOP, {}, {}) end
+            elseif S.cons[uid] then
+                S.cons[uid] = (S.cons[uid] == "resbusy") and "res" or true
+                Spring.GiveOrderToUnit(uid, CMD_STOP, {}, {})
+            end
         end
     end
+end
+
+-- LAB_TAKES_BLOCK_CON: a builder of a nano block's session that can build defID moves to a lab job
+local function TakeBlockCon(defID)
+    for _, other in ipairs(S.sessions) do
+        if other.kind == "block" and not other.done then
+            for _, b in ipairs(other.state.builders) do
+                local bd = Spring.GetUnitDefID(b)
+                if bd and S.cons[b] and S.env.BP_PLACER.CanBuild(bd, defID) then
+                    S.env.BP_PLACER.RemoveBuilder(other.state, b)
+                    S.cons[b] = "busy"
+                    Log("con %d moves from block #%d to a %s job", b, other.block and other.block.index or 0,
+                        (UnitDefs[defID] or {}).name or "?")
+                    return b
+                end
+            end
+        end
+    end
+    return nil
+end
+-- POOL API (C2; con_broker's CB.AddPool / CB.TakeAny / CB.GiveBack wrap these).  Another system (the metal sink, the line decoy labs) borrows
+-- one of the spine's ground cons that can place req.defID: a free one (the nearest to req.near), else an idle block resident, and with
+-- req.allowBlock a builder off a nano block's job.  The con is "busy" for the spine, and its borrower is remembered: only that borrower can
+-- give it back, and a resident goes back to being a resident (it used to come back as a plain pool con, and the block lost it for good).
+function M.PoolTake(owner, req)
+    if not S then return nil end
+    req = req or {}
+    local x, z = req.near and req.near[1], req.near and req.near[2]
+    local uid = TakeOwnCon(req.defID, x, z)
+    if not uid and req.allowBlock and req.defID then uid = TakeBlockCon(req.defID) end
+    if uid then
+        S.borrowed = S.borrowed or {}
+        S.borrowed[uid] = { owner = owner }
+    end
+    return uid
+end
+function M.PoolGive(uid, owner)
+    if not S or not S.cons[uid] then return false end
+    local b = S.borrowed and S.borrowed[uid]
+    if b and owner and b.owner ~= owner then return false end       -- not the one that took it
+    if S.borrowed then S.borrowed[uid] = nil end
+    if Alive(uid) then
+        S.cons[uid] = IsResident(uid) and "res" or true
+        Spring.GiveOrderToUnit(uid, CMD_STOP, {}, {})
+    else
+        S.cons[uid] = nil
+    end
+    return true
+end
+function M.PoolCount()
+    local total, idle = 0, 0
+    if S then
+        for uid, st in pairs(S.cons) do
+            if Alive(uid) then
+                total = total + 1
+                if st == true or st == "res" then idle = idle + 1 end
+            end
+        end
+    end
+    return { total = total, idle = idle }
+end
+
+-- (the older entry points: the DRAGON_ECO macro and the tests call these; a borrow here may also take a builder off a block job)
+function M.BorrowCon(defID)
+    return M.PoolTake("borrow", { defID = defID, allowBlock = true })
+end
+function M.GiveBackCon(uid)
+    M.PoolGive(uid, nil)
+end
+
+
+-- BLOCK_CONS: the block's resident con (one of BLOCK_CON_UNITS) that can build defID (nil: any) moves to a job of its slots.
+local function TakeResident(block, defID)
+    if not (block and block.cons and Cfg().BLOCK_CONS) then return nil end
+    for _, role in ipairs(Cfg().BLOCK_CON_UNITS) do
+        local uid = block.cons[role]
+        if uid and Alive(uid) and S.cons[uid] == "res" then
+            local bd = Spring.GetUnitDefID(uid)
+            if not defID or S.env.BP_PLACER.CanBuild(bd, defID) then
+                S.cons[uid] = "resbusy"
+                return uid
+            end
+        end
+    end
+    return nil
+end
+
+-- A resident con a block still lacks and this lab can make: returns defID, block, role (nil if none).  An order is remembered
+-- (b.conOrdered) for CON_ORDER_TTL so one lab does not order it twice.
+local function ResidentWanted(ld)
+    local K = Cfg()
+    if not K.BLOCK_CONS then return nil end
+    local opt = BT.Options(ld.id)
+    for _, b in ipairs(S.blocks) do
+        b.cons, b.conOrdered = b.cons or {}, b.conOrdered or {}
+        for _, role in ipairs(K.BLOCK_CON_UNITS) do
+            local rd = UnitDefNames[role]
+            local uid = b.cons[role]
+            if uid and not Alive(uid) then b.cons[role], uid = nil, nil end
+            local t = b.conOrdered[role]
+            if t and S.frame - t > K.CON_ORDER_TTL then b.conOrdered[role], t = nil, nil end
+            if rd and not uid and not t and opt[rd.id] then return rd.id, b, role end
+        end
+    end
+    return nil
 end
 
 local function ServiceBuilders(ses)
@@ -317,12 +521,25 @@ local function ServiceBuilders(ses)
         if BuilderCan(st, defID) then
             S.conWanted[defID] = nil
         else
-            local uid = TakeOwnCon(defID) or (not env.GroundOnly and env.TakeCon(defID, false)) or nil
-            if uid then env.BP_PLACER.AddBuilder(st, uid) else S.conWanted[defID] = true end
+            local air = AirOnly((UnitDefs[defID] or {}).name)
+            local sx, sz = ses.slot and ses.slot.wx, ses.slot and ses.slot.wz
+            local uid = (ses.slot and not air and TakeResident(ses.slot.block, defID)) or (not air and TakeOwnCon(defID, sx, sz))
+                        or ((not env.GroundOnly or air) and env.TakeCon(defID, false))
+                        or (ses.kind ~= "block" and not air and Cfg().LAB_TAKES_BLOCK_CON and TakeBlockCon(defID)) or nil
+            if uid then env.BP_PLACER.AddBuilder(st, uid)
+            else
+                S.conWanted[defID] = true
+                -- an air lab waits for a T1 air con: the line's air lab makes one (once per CON_ORDER_TTL)
+                if air and env.QueueAirCon and S.frame - (S.airConAskF or -1e9) >= Cfg().CON_ORDER_TTL / 2 then
+                    S.airConAskF = S.frame
+                    env.QueueAirCon()
+                    Log("an air con is ordered for the %s job", (UnitDefs[defID] or {}).name or "?")
+                end
+            end
         end
     end
     if reclaim and #st.builders == 0 then
-        local uid = TakeOwnCon(nil) or (not env.GroundOnly and env.TakeCon(nil, true)) or nil
+        local uid = (ses.slot and TakeResident(ses.slot.block, nil)) or TakeOwnCon(nil) or (not env.GroundOnly and env.TakeCon(nil, true)) or nil
         if uid then env.BP_PLACER.AddBuilder(st, uid) end
     end
     if ses.kind == "block" then
@@ -532,7 +749,7 @@ end
 
 local function IsWide(name)
     local d = UnitDefNames[name]
-    return d ~= nil and math.max(d.xsize or 0, d.zsize or d.ysize or 0) * 8 > Cfg().WIDE_ELMOS
+    return d ~= nil and (math.max(d.xsize or 0, d.zsize or d.ysize or 0) * 8 > Cfg().WIDE_ELMOS or (Cfg().WIDE_LABS or {})[name] == true)
 end
 
 -- The other slot of a slot's block (a block has two).
@@ -544,7 +761,7 @@ end
 -- A free slot; for a wide lab, a block whose slots are BOTH free.
 local function FreeSlot(wide)
     for _, s in ipairs(S.slots) do
-        if s.state == "free" then
+        if s.state == "free" and not (s.badUntil and S.frame < s.badUntil) then
             if not wide then return s end
             local p = Partner(s)
             if p and p.state == "free" then return s end
@@ -573,11 +790,56 @@ local function StartBuild(slot, name)
     Log("slot %d: building %s", slot.id, name)
 end
 
+-- CLEAR_NEEDS_CON: is one of our cons that can build `labName` (or, nil, any lab the plan builds the comp with) within CLEAR_CON_R?
+local function ConInRange(x, z, labName)
+    local K = Cfg()
+    if not K.CLEAR_NEEDS_CON then return true end
+    local targets = {}
+    if labName then
+        local d = UnitDefNames[labName]
+        if d then targets[1] = d.id end
+    else
+        for name, share in pairs(S.plan or {}) do
+            local d = UnitDefNames[name]
+            if d and share > 0 then targets[#targets + 1] = d.id end
+        end
+    end
+    local r2 = K.CLEAR_CON_R * K.CLEAR_CON_R
+    for uid in pairs(S.cons) do
+        local bd = Spring.GetUnitDefID(uid)
+        if bd then
+            local ux, _, uz = Spring.GetUnitPosition(uid)
+            if ux and (ux - x) ^ 2 + (uz - z) ^ 2 <= r2 then
+                for _, t in ipairs(targets) do
+                    if S.env.BP_PLACER.CanBuild(bd, t) then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- world position of a slot's lab (its unit), else the block's anchor
+local function SlotPos(slot)
+    if slot.uid then
+        local x, _, z = Spring.GetUnitPosition(slot.uid)
+        if x then return x, z end
+    end
+    return slot.block.ax, slot.block.az
+end
+
 local function StartClear(slot)
     local cx, cz = slot.x, slot.z
     if slot.wide then cx, cz = Cfg().WIDE_X, 0 end
-    local ses = NewSession("clear", { { n = slot.labName, x = cx, z = cz, f = 1, a = "reclaim" } },
+    -- The placer finds a reclaim target only among its OWN queue entries that carry a unit (blueprint_placer FindReclaimTarget): a reclaim
+    -- item alone read "nothing standing there" and finished at once, so the slot was freed with the lab still on it (CORE_STD games 4-8:
+    -- the old plants stood all game and the new plant could not be placed over them).  The lab goes into the queue as a built entry first.
+    local ses = NewSession("clear", { { n = slot.labName, x = cx, z = cz, f = 1 }, { n = slot.labName, x = cx, z = cz, f = 1, a = "reclaim" } },
                            slot.block.ax, slot.block.az, { slot = slot })
+    do
+        local first = ses.state.queue[1]
+        if first and slot.uid then first.status, first.built, first.frameID = "built", true, slot.uid end
+    end
     local was = slot.labName
     slot.state, slot.ses = "clear", ses
     if slot.uid then
@@ -588,21 +850,58 @@ local function StartClear(slot)
     Log("slot %d: clearing %s", slot.id, tostring(was))
 end
 
+-- RECLAIM_UNNEEDED: labs the plan has dropped (need 0) are cleared once one that builds the comp (plan share > 0) stands.  Slot labs
+-- go through StartClear; an adopted lab (the host's own, not in a slot) gets a reclaim session at its own position.
+local function ReclaimUnneeded(need, plan, have)
+    local K = Cfg()
+    local ready = false
+    for name, share in pairs(plan) do if share > 0 and (have[name] or 0) > 0 then ready = true end end
+    if not ready then return end
+    local maxJobs = S.freeRun and K.MAX_JOBS_FLOAT or K.MAX_JOBS
+    for _, slot in ipairs(S.slots) do
+        if JobCount() >= maxJobs then return end
+        if slot.state == "lab" and (need[slot.labName] or 0) == 0 and slot.surplusSince
+           and S.frame - slot.surplusSince >= K.RECLAIM_DELAY and ConInRange(SlotPos(slot)) then
+            StartClear(slot)
+        end
+    end
+    local ids = {}
+    for uid, L in pairs(S.labs) do if L.adopted and not L.leaving then ids[#ids + 1] = uid end end
+    table.sort(ids)
+    for _, uid in ipairs(ids) do
+        local L = S.labs[uid]
+        if (need[L.name] or 0) == 0 and Alive(uid) then
+            L.surplusSince = L.surplusSince or S.frame
+            if S.frame - L.surplusSince >= K.RECLAIM_DELAY and JobCount() < maxJobs then
+                local x, _, z = Spring.GetUnitPosition(uid)
+                if x and ConInRange(x, z) then
+                    local cses = NewSession("clear", { { n = L.name, x = 0, z = 0, f = 1 }, { n = L.name, x = 0, z = 0, f = 1, a = "reclaim" } }, x, z,
+                                            { adoptedUid = uid })
+                    local first = cses.state.queue[1]
+                    if first then first.status, first.built, first.frameID = "built", true, uid end
+                    L.leaving = true
+                    Spring.GiveOrderToUnit(uid, CMD_STOP, {}, {})
+                    Log("adopted %s %d: clearing (no longer in the plan)", L.name, uid)
+                end
+            end
+        else
+            L.surplusSince = nil
+        end
+    end
+end
+
 -- Can anything we have make a con that can place this lab?  A con already standing, or a standing lab that builds one.
 local function HasConSource(labName)
     local target = UnitDefNames[labName]
     if not target then return true end
+    if AirOnly(labName) then return S.env.QueueAirCon ~= nil or S.env.TakeCon ~= nil end    -- an air con can be pulled / ordered
     for uid, state in pairs(S.cons) do
         local bd = Spring.GetUnitDefID(uid)
         if bd and S.env.BP_PLACER.CanBuild(bd, target.id) then return true end
     end
-    for uid in pairs(S.labs) do
+    for uid in pairs(S.labs) do        -- a standing lab that makes a ground con able to place it
         local ld = UnitDefs[Spring.GetUnitDefID(uid) or -1]
-        for _, o in ipairs(ld and ld.buildOptions or {}) do
-            local od = UnitDefs[o]
-            if od and od.isBuilder and not od.isFactory and (od.speed or 0) > 0 and not od.canFly
-               and S.env.BP_PLACER.CanBuild(o, target.id) then return true end
-        end
+        if ld and BT.ConMadeBy(ld, { canPlace = target.id }) then return true end
     end
     return false
 end
@@ -618,23 +917,182 @@ function M.Enablers(plan, hasSource)
     for _, name in ipairs(names) do
         local d = UnitDefNames[name]
         if d and (d.metalCost or 0) >= K.GATE_COST and not hasSource(name) then
-            local best
-            for _, cand in ipairs(K.LAB_CANDIDATES) do
-                local cd = UnitDefNames[cand]
-                if cd and cd.buildOptions and not plan[cand] and (cd.metalCost or 0) < (d.metalCost or 0) then
-                    for _, o in ipairs(cd.buildOptions) do
-                        local od = UnitDefs[o]
-                        if od and od.isBuilder and not od.isFactory and (od.speed or 0) > 0 and not od.canFly
-                           and S.env.BP_PLACER.CanBuild(o, d.id) then
-                            if not best or (cd.metalCost or 0) < (UnitDefNames[best].metalCost or 0) then best = cand end
-                            break
-                        end
-                    end
-                end
-            end
+            local allow = {}                          -- the candidate labs not in the plan yet
+            for _, cand in ipairs(K.LAB_CANDIDATES) do if not plan[cand] then allow[cand] = true end end
+            local e = BT.EnablerLab(d, allow)
+            local best = e and e.name
             if best then plan[best] = 0 end
         end
     end
+    end
+end
+
+-- ── WAVE_SWAP / IDLE_LAB_T2 (CORE) ──────────────────────────────────────────
+
+-- Is a lab of the previous stance that waits to be swapped out: it keeps producing the previous stance's units (lab_rules asks).
+function M.IsReplacing(labID)
+    if not S or not Cfg().WAVE_SWAP then return false end
+    local L = S.labs[labID]
+    local slot = L and L.slot
+    return slot ~= nil and slot.state == "lab" and slot.surplusSince ~= nil and not L.leaving
+end
+
+local function LabBusy(uid)
+    if S.env.LabBusy then return S.env.LabBusy(uid) end
+    local cmds = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, -1) or Spring.GetUnitCommands(uid, -1)
+    if type(cmds) == "table" and #cmds > 0 then return true end
+    return Spring.GetUnitIsBuilding(uid) ~= nil
+end
+
+-- Clear the slots in `list` (most-wanted-first order is the caller's).  No RECLAIM_DELAY, no job cap, no con-in-range test.
+local function ClearWave(list)
+    for _, slot in ipairs(list) do StartClear(slot) end
+end
+
+-- WAVE_SWAP: replace the surplus labs where a lab the plan needs is missing and no free slot takes it.  Wave 1 = half (spread over
+-- the blocks, round robin), wave 2 = the rest SWAP_WAVE_GAP after wave 1's new labs stand.
+local function SwapWaves(need, have, building)
+    local K = Cfg()
+    local missing, wideWanted = 0, false
+    for name, n in pairs(need) do
+        local m = n - (have[name] or 0) - (building[name] or 0)
+        local d0 = UnitDefNames[name]
+        if m > 0 and not (d0 and (d0.metalCost or 0) >= K.GATE_COST and not HasConSource(name)) then
+            missing = missing + m * (IsWide(name) and 2 or 1)        -- a wide lab (the gantry) takes both slots of a block
+            if IsWide(name) then wideWanted = true end
+        end
+    end
+    local free, clearing, victims = 0, 0, {}
+    local forced = S.swapFresh or S.swap ~= nil
+    for _, slot in ipairs(S.slots) do
+        if slot.state == "free" then free = free + 1
+        elseif slot.state == "clear" then clearing = clearing + 1
+        elseif slot.state == "lab" and slot.surplusSince and not slot.keep and not slot.wide
+               and ((forced and S.plan[slot.labName] == nil) or S.frame - slot.surplusSince >= K.RECLAIM_DELAY) then
+            -- a lab the plan dropped (a stance change) goes at once; one only beyond its count (the need wobbles with income) waits
+            victims[#victims + 1] = slot
+        end
+    end
+    local want = missing - free - clearing
+    -- a lab the stance dropped goes whether or not another lab is missing (its BP would idle; the freed slot is refilled by the planner,
+    -- else the idle-lab rule / spare blocks use it): reclaim all of them, in the two waves
+    if forced then
+        local obsolete = 0
+        for _, v in ipairs(victims) do if S.plan[v.labName] == nil then obsolete = obsolete + 1 end end
+        want = math.max(want, obsolete)
+    end
+    local sw = S.swap
+    if sw and sw.stage == 1 then
+        local done = true
+        for _, e in ipairs(sw.slots) do
+            local sl = e.slot
+            local ok = (sl.state == "lab" and sl.uid ~= e.old) or (sl.state == "free" and missing == 0)
+            if not ok then done = false end
+        end
+        if done or S.frame - sw.since >= K.SWAP_TIMEOUT then
+            sw.stage, sw.gapUntil = 2, S.frame + K.SWAP_WAVE_GAP
+            Log("swap: wave 1 done, wave 2 at +%ds", K.SWAP_WAVE_GAP / 30)
+        end
+    elseif sw and sw.stage == 2 then
+        if S.frame >= sw.gapUntil then
+            S.swap = nil
+            if want > 0 and #victims > 0 then
+                local n = math.min(want, #victims)
+                table.sort(victims, function(a, b) return a.surplusSince < b.surplusSince end)
+                local list = {}
+                for i = 1, n do list[i] = victims[i] end
+                Log("swap: wave 2, %d labs", #list)
+                ClearWave(list)
+            end
+        end
+    elseif not sw and want > 0 and #victims > 0 and clearing == 0 then
+        local n = math.min(want, #victims)
+        -- round robin over the blocks so each block keeps half its labs producing
+        local byBlock, order = {}, {}
+        table.sort(victims, function(a, b) return a.id < b.id end)
+        for _, v in ipairs(victims) do
+            local b = v.block.index
+            if not byBlock[b] then byBlock[b] = {}; order[#order + 1] = b end
+            table.insert(byBlock[b], v)
+        end
+        local picked, k = {}, 1
+        if wideWanted then
+            -- a wide lab needs BOTH slots of a block: take whole blocks (those with the most victims first)
+            table.sort(order, function(a, b)
+                if #byBlock[a] ~= #byBlock[b] then return #byBlock[a] > #byBlock[b] end
+                return a < b
+            end)
+            for _, b in ipairs(order) do
+                if #picked >= n then break end
+                for _, v in ipairs(byBlock[b]) do picked[#picked + 1] = v end
+            end
+        else
+            while #picked < n do
+                local any = false
+                for _, b in ipairs(order) do
+                    local v = byBlock[b][k]
+                    if v and #picked < n then picked[#picked + 1] = v; any = true end
+                end
+                if not any then break end
+                k = k + 1
+            end
+        end
+        n = #picked
+        local half = n == 1 and 1 or math.ceil(n / 2)
+        if wideWanted and n > 2 then                 -- keep the halves on whole blocks
+            half = 2 * math.ceil(n / 4)
+            if half >= n then half = n - (n % 2 == 0 and 2 or 1) end
+            if half < 1 then half = n end
+        end
+        local wave = {}
+        S.swap = { stage = 1, since = S.frame, slots = {} }
+        for i = 1, half do
+            wave[i] = picked[i]
+            S.swap.slots[i] = { slot = picked[i], old = picked[i].uid }
+        end
+        Log("swap: wave 1, %d of %d labs", #wave, n)
+        ClearWave(wave)
+    end
+end
+
+-- IDLE_LAB_T2: a slot lab with nothing queued or building for IDLE_LAB_FRAMES is replaced by a T2 bot lab.
+local function IdleLabs()
+    local K = Cfg()
+    for _, slot in ipairs(S.slots) do
+        if slot.state == "lab" and slot.uid and Alive(slot.uid) then
+            local L = S.labs[slot.uid]
+            if L and not L.leaving then
+                if LabBusy(slot.uid) then
+                    L.emptySince = nil
+                else
+                    L.emptySince = L.emptySince or S.frame
+                    local b = slot.block
+                    if slot.labName ~= K.IDLE_LAB_UNIT and S.frame - L.emptySince >= K.IDLE_LAB_FRAMES
+                       and S.frame - (b.idleSwapAt or -1e9) >= K.IDLE_LAB_GAP and not slot.wide
+                       and (S.floating or (S.bankFrac or 0) >= K.IDLE_LAB_MIN_BANK) and UnitDefNames[K.IDLE_LAB_UNIT]
+                       and LabAllowed(K.IDLE_LAB_UNIT) and HasConSource(K.IDLE_LAB_UNIT) then
+                        b.idleSwapAt = S.frame
+                        slot.wantLab = K.IDLE_LAB_UNIT
+                        Log("idle lab slot %d (%s) empty %ds -> %s", slot.id, slot.labName, (S.frame - L.emptySince) / 30, K.IDLE_LAB_UNIT)
+                        StartClear(slot)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- A freed slot that was promised a lab (IDLE_LAB_T2) gets it before the planner's missing loop.
+local function FillWanted()
+    local K = Cfg()
+    for _, slot in ipairs(S.slots) do
+        if slot.wantLab and slot.state == "free" then
+            if JobCount() < math.max(K.MAX_JOBS, #S.slots) and HasConSource(slot.wantLab) then
+                StartBuild(slot, slot.wantLab)
+                slot.keep = true
+            end
+            slot.wantLab = nil
+        end
     end
 end
 
@@ -645,7 +1103,9 @@ local function PlanLabs()
     local standing = {}
     for n, c in pairs(have) do standing[n] = c end
     for n, c in pairs(building) do standing[n] = (standing[n] or 0) + c end
-    local plan, tab = M.Cover(S.units, standing, LabAllowed)
+    local fresh = K.WAVE_SWAP and S.stanceChangeAt ~= nil and S.frame - S.stanceChangeAt <= K.SWAP_WINDOW
+    S.swapFresh = fresh
+    local plan, tab = M.Cover(S.units, standing, LabAllowed, fresh)
     if next(plan) then
         M.Enablers(plan, HasConSource)
         for name in pairs(plan) do
@@ -675,10 +1135,17 @@ local function PlanLabs()
     for _, slot in ipairs(S.slots) do
         if slot.state == "lab" then
             seen[slot.labName] = (seen[slot.labName] or 0) + 1
-            local surplus = seen[slot.labName] > (need[slot.labName] or 0)
+            local surplus = seen[slot.labName] > (need[slot.labName] or 0) and not slot.keep
             if surplus then slot.surplusSince = slot.surplusSince or S.frame else slot.surplusSince = nil end
         end
     end
+
+    if K.RECLAIM_UNNEEDED then ReclaimUnneeded(need, plan, have) end
+    if K.IDLE_LAB_T2 then IdleLabs() end
+    if K.WAVE_SWAP then SwapWaves(need, have, building) end
+    FillWanted()
+    local maxJobs = S.freeRun and K.MAX_JOBS_FLOAT or K.MAX_JOBS
+    if K.WAVE_SWAP then maxJobs = math.max(maxJobs, #S.slots) end
 
     -- missing labs go into free slots; if there is none, a surplus lab that has stood unneeded long enough goes
     for _, name in ipairs(order) do
@@ -686,15 +1153,25 @@ local function PlanLabs()
         -- a lab nothing can place yet waits for its enabler (the T1 lab that makes the con): never park a slot on it
         local d0 = UnitDefNames[name]
         if missing > 0 and d0 and (d0.metalCost or 0) >= K.GATE_COST and not HasConSource(name) then missing = 0 end
-        while missing > 0 and JobCount() < (S.freeRun and K.MAX_JOBS_FLOAT or K.MAX_JOBS) do
+        if missing > 0 and S.frame - (S.wantLogF or -1e9) >= 1800 then
+            S.wantLogF = S.frame
+            local fr = 0
+            for _, sl in ipairs(S.slots) do if sl.state == "free" then fr = fr + 1 end end
+            Log("wants %d more %s: free slots %d, jobs %d/%d, wide %s, con source %s", missing, name, fr, JobCount(), maxJobs, tostring(IsWide(name)),
+                tostring(HasConSource(name)))
+        end
+        while missing > 0 and JobCount() < maxJobs do
             local slot = FreeSlot(IsWide(name))
             if not slot then
                 local victim
                 for _, s in ipairs(S.slots) do
                     if s.state == "lab" and s.surplusSince and S.frame - s.surplusSince >= K.RECLAIM_DELAY
-                       and (not victim or s.surplusSince < victim.surplusSince) then victim = s end
+                       and (not victim or s.surplusSince < victim.surplusSince) then
+                        local sx, sz = SlotPos(s)
+                        if ConInRange(sx, sz, name) then victim = s end     -- CLEAR_NEEDS_CON: a con for `name` must be near
+                    end
                 end
-                if victim then StartClear(victim) end
+                if victim and not K.WAVE_SWAP then StartClear(victim) end
                 break
             end
             StartBuild(slot, name)
@@ -748,6 +1225,21 @@ local function UpdateNanos()
     local nd = NanoDef()
     local reachBase = nd and nd.buildDistance or 128
     local moves = 0
+    -- WAVE_SWAP: nanos near a slot that is being cleared or built are never parked; they assist the builder of that job
+    local swapSites = {}
+    if K.WAVE_SWAP then
+        for _, slot in ipairs(S.slots) do
+            if slot.state == "clear" or slot.state == "build" then
+                local bl = slot.ses and slot.ses.state and slot.ses.state.builders and slot.ses.state.builders[1]
+                swapSites[#swapSites + 1] = { x = slot.wx, z = slot.wz, builder = bl and Alive(bl) and bl or nil }
+            end
+        end
+    end
+    local function SwapSite(x, z)
+        local r = reachBase + 64
+        for _, w in ipairs(swapSites) do if Dist2(x, z, w.x, w.z) <= r * r then return w end end
+        return nil
+    end
     -- count what is assigned already
     for i, uid in ipairs(list) do
         local n = S.nanos[uid]
@@ -762,6 +1254,19 @@ local function UpdateNanos()
             local a = NANO.Assignment(uid)
             if a and a.prio < NANO.PRIO.SPINE then
                 -- a hand-off or reclaim owns it right now
+            elseif SwapSite(x, z) then
+                local w = SwapSite(x, z)
+                if w.builder then
+                    if n.assist ~= w.builder then
+                        for _, l in ipairs(labs) do if l.uid == n.guard then l.n = l.n - 1 end end
+                        NANO.Release(uid)
+                        if NANO.Guard(NANO.PRIO.SPINE, uid, w.builder) then n.assist, n.guard, n.parked = w.builder, nil, nil; moves = moves + 1 end
+                    end
+                elseif n.parked or n.assist then
+                    NANO.Release(uid)               -- no builder yet: the engine's own assist behaviour, not parked
+                    n.parked, n.assist = nil, nil
+                    moves = moves + 1
+                end
             elseif i <= activeWant then
                 -- best lab in reach: lowest nanos per absorb weight
                 local best, bs
@@ -776,18 +1281,18 @@ local function UpdateNanos()
                     NANO.Release(uid)
                     if NANO.Guard(NANO.PRIO.SPINE, uid, best.uid) then
                         for _, l in ipairs(labs) do if l.uid == n.guard then l.n = l.n - 1 end end
-                        n.guard, n.parked = best.uid, nil
+                        n.guard, n.parked, n.assist = best.uid, nil, nil
                         best.n = best.n + 1
                         moves = moves + 1
                     end
                 elseif not best and not n.parked and K.PARK_NANOS then
                     NANO.Release(uid)
-                    if NANO.Park(NANO.PRIO.SPINE, uid) then n.parked, n.guard = true, nil; moves = moves + 1 end
+                    if NANO.Park(NANO.PRIO.SPINE, uid) then n.parked, n.guard, n.assist = true, nil, nil; moves = moves + 1 end
                 end
             elseif K.PARK_NANOS and not n.parked then
                 for _, l in ipairs(labs) do if l.uid == n.guard then l.n = l.n - 1 end end
                 NANO.Release(uid)
-                if NANO.Park(NANO.PRIO.SPINE, uid) then n.parked, n.guard = true, nil; moves = moves + 1 end
+                if NANO.Park(NANO.PRIO.SPINE, uid) then n.parked, n.guard, n.assist = true, nil, nil; moves = moves + 1 end
             end
         end
     end
@@ -797,6 +1302,29 @@ local function UpdateNanos()
 end
 
 -- ── Start / Update ───────────────────────────────────────────────────────────
+
+-- REBUILD_NANOS: re-open the queue item of a lost nano once REBUILD_DELAY has passed and nothing threatens the spot.
+local function UpdateRebuild()
+    if not S.rebuild or #S.rebuild == 0 then return end
+    local K, keep = Cfg(), {}
+    for _, r in ipairs(S.rebuild) do
+        local it, b = r.item, r.block
+        if not (b and b.ses) or it.status ~= "pending" and it.status ~= "built" then
+            -- the item moved on (rebuilt, skipped, or the block is gone)
+        elseif S.frame - r.since < K.REBUILD_DELAY or (S.env.Safe and not S.env.Safe(it.wx, it.wz, K.REBUILD_SAFE_R)) then
+            keep[#keep + 1] = r
+        elseif it.status == "built" then
+            it.status, it.built, it.frameID, it.claimedBy, it.retries, it.deferUntil = "pending", false, nil, nil, 0, nil
+            b.ses.done, b.ses.state.done = false, false
+            local present = false
+            for _, ses in ipairs(S.sessions) do if ses == b.ses then present = true; break end end
+            if not present then S.sessions[#S.sessions + 1] = b.ses end
+            S.rebuilt = (S.rebuilt or 0) + 1
+            Log("block %d: nano at (%d, %d) lost, built again (%d so far)", b.index, it.wx, it.wz, S.rebuilt)
+        end
+    end
+    S.rebuild = keep
+end
 
 function M.Start(frame, opts)
     if not S or S.started then return end
@@ -851,15 +1379,30 @@ function M.Update(frame, res)
             local slot = ses.slot
             if ses.kind == "clear" and slot then
                 if slot.uid then S.labs[slot.uid] = nil end
-                slot.state, slot.uid, slot.labName, slot.ses, slot.surplusSince = "free", nil, nil, nil, nil
+                slot.state, slot.uid, slot.labName, slot.ses, slot.surplusSince, slot.keep = "free", nil, nil, nil, nil, nil
                 if slot.wide then
                     slot.wide = nil
                     local p = Partner(slot)
                     if p and p.owner == slot then p.state, p.owner = "free", nil end
                 end
                 Log("slot %d: free", slot.id)
+            elseif ses.kind == "clear" and ses.adoptedUid then
+                S.labs[ses.adoptedUid] = nil
+                Log("adopted lab %d: cleared", ses.adoptedUid)
             elseif ses.kind == "lab" and slot and slot.state == "build" then
-                slot.state = slot.uid and "lab" or slot.state
+                if slot.uid then
+                    slot.state = "lab"
+                else
+                    -- the placer finished the session without a lab standing (it skipped the item after its retries: ground blocked,
+                    -- no builder could reach it).  The slot stayed "build" for the rest of the game (CORE_STD game 6: three slots, 5+ min).
+                    local it = ses.state.queue[1] or {}
+                    Log("slot %d: %s not built (placer item %s after %ds); the slot rests %ds", slot.id, tostring(slot.labName), tostring(it.status),
+                        (frame - ses.since) / 30, Cfg().SLOT_BAD_FRAMES / 30)
+                    slot.state, slot.labName, slot.ses, slot.wide = "free", nil, nil, nil
+                    slot.badUntil = frame + Cfg().SLOT_BAD_FRAMES
+                    local p = Partner(slot)
+                    if p and p.owner == slot then p.state, p.owner = "free", nil end
+                end
             end
         else
             keep[#keep + 1] = ses
@@ -871,6 +1414,43 @@ function M.Update(frame, res)
     -- its core), a slot with no lab is idle build power
     for _, ses in ipairs(S.sessions) do if ses.kind ~= "block" then ServiceBuilders(ses) end end
     for _, ses in ipairs(S.sessions) do if ses.kind == "block" then ServiceBuilders(ses) end end
+    -- a clear session's builders keep reclaiming the lab: the placer gives the order once and, when something else moved the con (a step-out,
+    -- another job, the engine dropping it), nothing gave it again (simulated swaps: five labs "clearing" for 5+ minutes)
+    for _, ses in ipairs(S.sessions) do
+        if ses.kind == "clear" and not ses.done then
+            local target = (ses.slot and ses.slot.uid) or ses.adoptedUid
+            if target and Alive(target) then
+                for _, b in ipairs(ses.state.builders) do
+                    if Alive(b) and frame - (ses.reclaimF or -1e9) >= 90 then
+                        local cmds = Spring.GetUnitCommands(b, 1)
+                        local c1 = type(cmds) == "table" and cmds[1] or nil
+                        if not (c1 and c1.id == 90) then Spring.GiveOrderToUnit(b, 90, { target }, {}) end
+                    end
+                end
+                if frame - (ses.reclaimF or -1e9) >= 90 then ses.reclaimF = frame end
+            end
+        end
+    end
+    -- WATCHDOG: a lab / clear job that has run 90 s with its builder far from the site (something else pulled it away) loses that builder;
+    -- ServiceBuilders then gives it the nearest free con (stress runs: clears of 250-580 s with the con 400 elmos off)
+    for _, ses in ipairs(S.sessions) do
+        if (ses.kind == "lab" or ses.kind == "clear") and not ses.done and ses.slot and frame - ses.since >= 2700 then
+            local list = {}
+            for i, b in ipairs(ses.state.builders) do list[i] = b end
+            for _, b in ipairs(list) do
+                local bx, _, bz = Spring.GetUnitPosition(b)
+                local d = Alive(b) and (S.geo and (S.frame) and bx) and math.sqrt((bx - ses.slot.wx) ^ 2 + (bz - ses.slot.wz) ^ 2) or 0
+                local bd = Spring.GetUnitDefID(b)
+                if d > 250 and bd and not UnitDefs[bd].canFly and frame - (ses.dogF or -1e9) >= 900 then
+                    ses.dogF = frame
+                    S.env.BP_PLACER.RemoveBuilder(ses.state, b)
+                    S.cons[b] = (S.cons[b] == "resbusy") and "res" or true
+                    Spring.GiveOrderToUnit(b, CMD_STOP, {}, {})
+                    Log("watchdog: con %d is %d elmos from slot %d's %s job after %ds; it is replaced", b, d, ses.slot.id, ses.kind, (frame - ses.since) / 30)
+                end
+            end
+        end
+    end
     local pending = {}
     for _, ses in ipairs(S.sessions) do for d in pairs((PendingDefs(ses.state))) do pending[d] = true end end
     for d in pairs(S.conWanted) do if not pending[d] then S.conWanted[d] = nil end end
@@ -880,17 +1460,40 @@ function M.Update(frame, res)
         if slot.state == "clear" and slot.uid and Alive(slot.uid) then Spring.GiveOrderToUnit(slot.uid, CMD_STOP, {}, {}) end
     end
 
+    UpdateRebuild()
     ThrottleNanos()
     ThrottleStorage(res)
     PlanLabs()
     UpdateNanos()
 
+    -- a lab job that has run a minute: who builds it and what the placer says (diagnosing builds that never finish)
+    if frame - (S.lastJobLog or -1e9) >= 900 then
+        S.lastJobLog = frame
+        for _, ses in ipairs(S.sessions) do
+            if ses.kind ~= "block" and not ses.done and frame - ses.since >= 1800 then
+                local it = ses.state.queue[1] or {}
+                local bs = {}
+                for _, b in ipairs(ses.state.builders) do
+                    local bx, _, bz = Spring.GetUnitPosition(b)
+                    local bd = Spring.GetUnitDefID(b)
+                    bs[#bs + 1] = string.format("%d(%s %s @%d,%d)", b, bd and UnitDefs[bd].name or "dead", tostring(S.cons[b]), bx or -1, bz or -1)
+                end
+                Log("job %s slot %s %s running %ds: item %s uid %s builders %d [%s] conWanted %s", ses.kind, ses.slot and ses.slot.id or "-",
+                    tostring(it.n), (frame - ses.since) / 30, tostring(it.status), tostring(it.frameID or it.uid), #ses.state.builders,
+                    table.concat(bs, " "), tostring(next(S.conWanted) ~= nil))
+            end
+        end
+    end
     if frame - S.lastLog >= Cfg().LOG_EVERY then
         S.lastLog = frame
         local labs = {}
         for _, slot in ipairs(S.slots) do
             labs[#labs + 1] = string.format("%d:%s%s", slot.id, slot.state, slot.labName and ("/" .. slot.labName) or "")
         end
+        local pl = {}
+        for name, n in pairs(S.need or {}) do pl[#pl + 1] = string.format("%s=%d", name, n) end
+        table.sort(pl)
+        Log("plan %s", table.concat(pl, " "))
         Log("blocks %d (spare %d), nanos allowed %d need %d build %d (active %d parked %d), income %.0f share %.2f, estor allowed %d need %d target %.0f; slots %s",
             #S.blocks, S.spare or 0, S.nanoAllowed, S.nanoNeed, S.nanoBuildNeed or S.nanoNeed, S.active or 0, S.parked or 0,
             S.income, S.share, S.storeAllowed or 0, S.storeNeed or 0, S.storeTarget or 0, table.concat(labs, " "))
@@ -955,7 +1558,13 @@ function M.OnUnitFinished(uid, defID, x, z)
         end
     elseif d.isBuilder and (d.speed == nil or d.speed == 0) and not d.canFly then
         local b = BlockAt(x, z)
-        if b then S.nanos[uid] = { block = b.index } end
+        if b then
+            local item
+            for _, it in ipairs(b.ses.state.queue) do
+                if it.cls == "nano" and it.status == "built" and math.abs(x - it.wx) <= 24 and math.abs(z - it.wz) <= 24 then item = it; break end
+            end
+            S.nanos[uid] = { block = b.index, item = item }
+        end
     end
 end
 
@@ -963,6 +1572,18 @@ function M.OnUnitFromFactory(uid, defID, factID)
     if not S or not S.labs[factID] then return end
     local d = UnitDefs[defID]
     if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not d.canFly then
+        if Cfg().BLOCK_CONS then
+            for _, b in ipairs(S.blocks) do
+                local t = b.conOrdered and b.conOrdered[d.name]
+                if t and not (b.cons[d.name] and Alive(b.cons[d.name])) then
+                    b.cons[d.name], b.conOrdered[d.name] = uid, nil
+                    S.cons[uid] = "res"
+                    Spring.GiveOrderToUnit(uid, 10, { b.ax, 0, b.az }, {})     -- CMD.MOVE to its block
+                    Log("block %d: resident %s", b.index, d.name)
+                    return
+                end
+            end
+        end
         S.cons[uid] = true
         S.conOut = S.conOut + 1
         S.conPending[defID] = nil
@@ -973,11 +1594,11 @@ end
 
 -- A lab the host built itself (LINE_BOT's vehicle plant on the line): not in a slot, but it counts as standing, its
 -- nanos come from the nearest block, it makes `cons` ground cons first, and its units follow the stance.
-function M.AdoptLab(uid, defID, cons)
+function M.AdoptLab(uid, defID, cons, conName)
     if not S then return false end
     local d = UnitDefs[defID or Spring.GetUnitDefID(uid) or -1]
     if not d then return false end
-    local L = { slot = nil, name = d.name, conMade = 0, conWant = cons, absorb = 1, adopted = true }
+    local L = { slot = nil, name = d.name, conMade = 0, conWant = cons, conName = conName, absorb = 1, adopted = true }
     local opt = {}
     for _, o in ipairs(d.buildOptions or {}) do opt[o] = true end
     local sm, ss = 0, 0
@@ -989,7 +1610,37 @@ function M.AdoptLab(uid, defID, cons)
 end
 
 -- (spine.lua's air cons offered to a cell: this spine uses the host's pool through env.TakeCon.)
-function M.OfferCon(uid) return false end
+-- AIR LABS: lab sessions that wait for an air con (the T2 air plant), so the host's con broker can hand the spine one (the "spine" job's want)
+function M.AirConWant()
+    if not S then return 0 end
+    local n = 0
+    for _, ses in ipairs(S.sessions) do
+        if ses.kind == "lab" and not ses.done and #ses.state.builders == 0 then
+            local it = ses.state.queue[1]
+            if it and AirOnly(it.n) and it.status ~= "built" then n = n + 1 end
+        end
+    end
+    return n
+end
+-- ...and an air con the broker offers: it goes to the first air-lab session that has none and that it can place.
+function M.OfferCon(uid)
+    if not S or not Alive(uid) then return false end
+    local bd = Spring.GetUnitDefID(uid)
+    local d = bd and UnitDefs[bd]
+    if not (d and d.canFly) then return false end
+    for _, ses in ipairs(S.sessions) do
+        if ses.kind == "lab" and not ses.done and #ses.state.builders == 0 then
+            local it = ses.state.queue[1]
+            if it and AirOnly(it.n) and it.status ~= "built" and S.env.BP_PLACER.CanBuild(bd, it.defID) then
+                S.env.BP_PLACER.AddBuilder(ses.state, uid)
+                S.conWanted[it.defID] = nil
+                Log("air con %d takes the %s job", uid, it.n)
+                return true
+            end
+        end
+    end
+    return false
+end
 
 -- A ground con from the host's build order joins the idle cons.
 function M.AdoptCon(uid)
@@ -999,8 +1650,14 @@ function M.AdoptCon(uid)
     return true
 end
 
-function M.OnUnitDestroyed(uid)
+function M.OnUnitDestroyed(uid, attackerID)
     if not S then return end
+    -- REBUILD_NANOS: a nano the enemy killed (an attacker; our own reclaims have none) is queued to be built again
+    local N = S.nanos[uid]
+    if N and N.item and attackerID and Cfg().REBUILD_NANOS and not N.item.sacrificed then
+        S.rebuild = S.rebuild or {}
+        S.rebuild[#S.rebuild + 1] = { item = N.item, block = S.blocks[N.block], since = S.frame }
+    end
     for _, ses in ipairs(S.sessions) do
         if not ses.done then S.env.BP_PLACER.OnUnitDestroyed(ses.state, uid) end
     end
@@ -1009,7 +1666,7 @@ function M.OnUnitDestroyed(uid)
         local slot = L.slot
         if slot.state == "lab" or slot.state == "clear" then
             if slot.state == "lab" then slot.state, slot.labName = "free", nil end
-            slot.uid, slot.surplusSince = nil, nil
+            slot.uid, slot.surplusSince, slot.keep, slot.wantLab = nil, nil, nil, nil
             if slot.wide and slot.state == "free" then
                 slot.wide = nil
                 local p = Partner(slot)
@@ -1018,6 +1675,7 @@ function M.OnUnitDestroyed(uid)
         end
     end
     S.labs[uid], S.nanos[uid], S.cons[uid] = nil, nil, nil
+    if S.borrowed then S.borrowed[uid] = nil end
 end
 
 -- ── Lab hook ─────────────────────────────────────────────────────────────────
@@ -1026,7 +1684,7 @@ function M.IsLab(labID) return S ~= nil and S.labs[labID] ~= nil end
 -- A T1 lab (also runs the lab controller's normal picks: scouts, defenders, rez bots) or the host's adopted plant.
 function M.IsT1Lab(labID)
     local L = S and S.labs[labID]
-    return L ~= nil and (L.adopted == true or Cfg().T1_LABS[L.name] == true)
+    return L ~= nil and Cfg().T1_LABS[L.name] == true      -- (the host's adopted plant is a corvp; an adopted T2 lab is not a T1 lab)
 end
 function M.IsLeaving(labID) local L = S and S.labs[labID]; return L ~= nil and L.leaving == true end
 
@@ -1042,42 +1700,48 @@ function M.NextOrder(labID, labDefID)
     for _, ses in ipairs(S.sessions) do if not ses.done then work = true; break end end
     if work then
         local alive = 0
-        for uid in pairs(S.cons) do if Alive(uid) then alive = alive + 1 else S.cons[uid] = nil end end
+        for uid, st in pairs(S.cons) do
+            if not Alive(uid) then S.cons[uid] = nil elseif st ~= "res" and st ~= "resbusy" then alive = alive + 1 end
+        end
         local target = math.min(Cfg().CONS_MAX, Cfg().CONS_MIN + math.floor(S.income / Cfg().CONS_PER_INCOME))
         if alive + math.max(0, S.conOrders - S.conOut) < target then
             -- the con that can place the most wanted job; else any ground con this lab makes
             local best
-            for _, optID in ipairs(ld.buildOptions) do
-                local od = UnitDefs[optID]
-                if od and od.isBuilder and not od.isFactory and (od.speed or 0) > 0 and not od.canFly then
-                    local score = 0
-                    for wanted in pairs(S.conWanted) do if S.env.BP_PLACER.CanBuild(optID, wanted) then score = score + 1 end end
-                    if not best or score > best.score then best = { id = optID, score = score } end
-                end
+            for _, od in ipairs(BT.ConsMadeBy(ld)) do
+                local score = 0
+                for wanted in pairs(S.conWanted) do if BT.CanBuild(od.id, wanted) then score = score + 1 end end
+                if not best or score > best.score then best = { id = od.id, score = score } end
             end
             if best then S.conOrders = S.conOrders + 1; return best.id end
         end
     end
     if L.conWant and L.conMade < L.conWant then          -- the cons the host asked this lab for first
-        for _, optID in ipairs(ld.buildOptions) do
-            local od = UnitDefs[optID]
-            if od and od.isBuilder and not od.isFactory and (od.speed or 0) > 0 and not od.canFly then
-                L.conMade = L.conMade + 1
-                return optID
-            end
+        local od = BT.ConMadeBy(ld, { name = L.conName })
+        if od then
+            L.conMade = L.conMade + 1
+            return od.id
         end
     end
     for wanted in pairs(S.conWanted) do
-        for _, optID in ipairs(ld.buildOptions) do
-            local od = UnitDefs[optID]
-            if od and od.isBuilder and not od.isFactory and (od.speed or 0) > 0 and not od.canFly
-               and S.env.BP_PLACER.CanBuild(optID, wanted) and not S.conPending[optID] then
-                S.conPending[optID] = S.frame
-                return optID
+        for _, od in ipairs(BT.ConsMadeBy(ld)) do
+            if BT.CanBuild(od.id, wanted) and not S.conPending[od.id] then
+                S.conPending[od.id] = S.frame
+                return od.id
             end
         end
     end
+    -- BLOCK_CONS: the blocks' resident cons are the lowest priority (they only make a swap quick); a job above waited for none of them
+    local rid, rb, rrole = ResidentWanted(ld)
+    if rid then rb.conOrdered[rrole] = S.frame; return rid end
     return nil
+end
+
+-- The spine's facing and block anchors (DRAGON_ECO places its Dragon lab in front of them): geo = { dx, dz, px, pz, ... }, blocks = { {x, z}, ... }
+function M.Front()
+    if not S or not S.geo then return nil end
+    local out = {}
+    for _, b in ipairs(S.blocks) do out[#out + 1] = { x = b.ax, z = b.az } end
+    return S.geo, out
 end
 
 function M.Status()
@@ -1086,7 +1750,8 @@ function M.Status()
     for _, slot in ipairs(S.slots) do labs[#labs + 1] = { id = slot.id, state = slot.state, lab = slot.labName } end
     return { blocks = #S.blocks, slots = labs, nanoAllowed = S.nanoAllowed, nanoNeed = S.nanoNeed,
              spare = S.spare, buildNeed = S.nanoBuildNeed,
-             active = S.active, parked = S.parked, share = S.share, need = S.need, plan = S.plan }
+             active = S.active, parked = S.parked, share = S.share, need = S.need, plan = S.plan,
+             capacity = M.SpendCapacity() }
 end
 
 return M

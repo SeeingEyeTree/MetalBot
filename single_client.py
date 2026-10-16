@@ -50,11 +50,55 @@ do
     local T = __T__
     local RS, RV, RWG = Spring, VFS, WG
     local G = (getfenv and getfenv(0)) or _G
+
+    -- --profile: P is this team's shim cost record. Every engine function reached through the shim goes through a timed
+    -- proxy (P.eng: engine ms per function, P.innerMs/innerN: total), and every shimmed Spring function is timed as a
+    -- whole at the end of this block (P.api: gross ms, engine ms inside it, calls, engine calls inside it). The shim's
+    -- own Lua cost is gross - engine; the timer overhead (P.rec inside a measured interval, P.unrec outside it) is
+    -- calibrated once and subtracted when [SHIMMS] rows are written.
+    local P
+    if __PROF__ then
+        RWG.__mbShimProf = RWG.__mbShimProf or {}
+        P = RWG.__mbShimProf[T]
+        if not P then
+            local GT, DT = RS.GetTimer, RS.DiffTimers
+            P = { eng = {}, api = {}, innerMs = 0, innerN = 0, visN = 0, rec = 0, unrec = 0, lastRow = 0, rowT = GT(),
+                  GT = GT, DT = DT }
+            local real = RS
+            local function fin(e, t, ...)
+                local dt = DT(GT(), t, true)
+                e[1], e[2] = e[1] + dt, e[2] + 1
+                P.innerMs, P.innerN = P.innerMs + dt, P.innerN + 1
+                return ...
+            end
+            P.fin = fin
+            P.proxy = setmetatable({}, { __index = function(tb, k)
+                local f = real[k]
+                if type(f) ~= "function" or k == "GetTimer" or k == "DiffTimers" then return f end
+                local e = P.eng[k]
+                if not e then e = { 0, 0 }; P.eng[k] = e end
+                local w = function(...) local t = GT(); return fin(e, t, f(...)) end
+                rawset(tb, k, w)
+                return w
+            end })
+            -- calibrate: an empty call through the proxy path, N times
+            local dummy, e, N = function() end, { 0, 0 }, 5000
+            local t0 = GT()
+            for _ = 1, N do local t = GT(); fin(e, t, dummy()) end
+            local tot = DT(GT(), t0, true) / N
+            P.rec = e[1] / N
+            P.unrec = math.max(0, tot - P.rec)
+            P.innerMs, P.innerN = 0, 0
+        end
+        RS = P.proxy
+    end
+
     local floor, unpack = math.floor, unpack or table.unpack
     local spAlly, spTeam, spLos = RS.GetUnitAllyTeam, RS.GetUnitTeam, RS.GetUnitLosState
 
     -- 3 = own allyteam or in LOS, 2 = radar blip of a known type, 1 = untyped radar blip, 0 = unseen
     local function vis(u)
+        if P then P.visN = P.visN + 1 end
         local a = spAlly(u)
         if a == nil then return 0 end
         if a == T then return 3 end
@@ -193,8 +237,28 @@ do
     V.Include = function(f, env, mode) return RV.Include(f, env or incEnv, mode) end
     incEnv.VFS = V
 
+    if P then
+        -- time every shimmed function as a whole (gross), and the engine time inside it (see the P block above)
+        local GT, DT = P.GT, P.DT
+        local function fin2(a, t, i0, n0, ...)
+            local dt = DT(GT(), t, true)
+            a[1], a[2], a[3], a[4] = a[1] + dt, a[2] + P.innerMs - i0, a[3] + 1, a[4] + P.innerN - n0
+            return ...
+        end
+        for k, f in pairs(S) do
+            if type(f) == "function" then
+                local a = P.api[k]
+                if not a then a = { 0, 0, 0, 0 }; P.api[k] = a end
+                S[k] = function(...)
+                    local t, i0, n0 = GT(), P.innerMs, P.innerN
+                    return fin2(a, t, i0, n0, f(...))
+                end
+            end
+        end
+    end
+
     Spring, VFS, WG = S, V, tw
-    __MB_SHIM = { T = T, vis = vis }
+    __MB_SHIM = { T = T, vis = vis, prof = __PROF__, P = P }
 end
 
 """
@@ -221,6 +285,77 @@ do
         if type(f) == "function" then
             widget[name] = function(self, u, d, team, ...)
                 if team == T or vis(u) == 3 then return f(self, u, d, team, ...) end
+            end
+        end
+    end
+    -- --profile: this widget's Lua time per callin, one [LUAMS] row per game-minute (the harness profiler cannot see these widgets in single mode)
+    if sh.prof then
+        local ms, calls, wname, lastRow = 0, 0, (widget.whInfo and widget.whInfo.name) or (widget.GetInfo and widget:GetInfo().name) or "?", 0
+        local GT, DT = Spring.GetTimer, Spring.DiffTimers
+        local per = {}
+        for _, name in ipairs({ "GameFrame", "Update", "UnitCreated", "UnitFinished", "UnitFromFactory", "UnitIdle", "UnitCommand", "UnitCmdDone",
+                                "UnitDestroyed", "UnitDamaged", "UnitEnteredLos", "UnitLeftLos", "UnitEnteredRadar", "UnitLeftRadar",
+                                "FeatureCreated", "FeatureDestroyed", "RecvLuaMsg", "UnitGiven", "UnitTaken" }) do
+            local f = widget[name]
+            if type(f) == "function" then
+                widget[name] = function(...)
+                    local t = GT()
+                    local a, b, c, d = f(...)
+                    local dt = DT(GT(), t, true)
+                    ms, calls = ms + dt, calls + 1
+                    per[name] = (per[name] or 0) + dt
+                    if name == "GameFrame" then
+                        local n = select(2, ...)
+                        if n and n - lastRow >= 1800 then
+                            lastRow = n
+                            local top = {}
+                            for k, v in pairs(per) do top[#top + 1] = { k, v } end
+                            table.sort(top, function(x, y) return x[2] > y[2] end)
+                            local parts = {}
+                            for i = 1, math.min(3, #top) do parts[#parts + 1] = string.format("%s=%.0f", top[i][1], top[i][2]) end
+                            Spring.Echo(string.format("[LUAMS] frame=%d team=%d widget=%s ms=%.0f calls=%d | %s", n, T, (wname:gsub("%s", "_")), ms, calls,
+                                table.concat(parts, " ")))
+                            ms, calls, per = 0, 0, {}
+                        end
+                        -- one [SHIMMS] row per team per game-minute (whichever of the team's widgets gets here first)
+                        local P = sh.P
+                        if P and n and n - P.lastRow >= 1800 then
+                            P.lastRow = n
+                            local rec, unrec = P.rec, P.unrec
+                            local gross, inner, nin, ncalls = 0, 0, 0, 0
+                            local own = {}
+                            for k, a in pairs(P.api) do
+                                gross, inner, nin, ncalls = gross + a[1], inner + a[2], nin + a[4], ncalls + a[3]
+                                local o = a[1] - a[2] - a[4] * unrec - a[3] * rec
+                                if a[3] > 0 then own[#own + 1] = { k, o, a[3] } end
+                                a[1], a[2], a[3], a[4] = 0, 0, 0, 0
+                            end
+                            local shimOwn = gross - inner - nin * unrec - ncalls * rec
+                            local shimEng = inner - nin * rec
+                            local engAll, engN, engs = P.innerMs - P.innerN * rec, P.innerN, {}
+                            for k, e in pairs(P.eng) do
+                                if e[2] > 0 then engs[#engs + 1] = { k, e[1] - e[2] * rec, e[2] } end
+                                e[1], e[2] = 0, 0
+                            end
+                            local function top(list, fmt)
+                                table.sort(list, function(x, y) return x[2] > y[2] end)
+                                local parts = {}
+                                for i = 1, math.min(4, #list) do
+                                    parts[#parts + 1] = string.format(fmt, list[i][1], list[i][2], list[i][3])
+                                end
+                                return table.concat(parts, " ")
+                            end
+                            local wall = DT(GT(), P.rowT, true)
+                            P.rowT = GT()
+                            Spring.Echo(string.format("[SHIMMS] frame=%d team=%d wall_ms=%.0f shim_own_ms=%.0f shim_engine_ms=%.0f " ..
+                                "other_engine_ms=%.0f shim_calls=%d vis_calls=%d engine_calls=%d | own: %s | engine: %s", n, T, wall,
+                                shimOwn, shimEng, engAll - shimEng, ncalls, P.visN, engN,
+                                top(own, "%s=%.0f/%d"), top(engs, "%s=%.0f/%d")))
+                            P.innerMs, P.innerN, P.visN = 0, 0, 0
+                        end
+                    end
+                    return a, b, c, d
+                end
             end
         end
     end
@@ -354,10 +489,15 @@ def info_name(content: str, fallback: str) -> str:
     return m.group(2) if m else fallback
 
 
+PROFILE = False      # --profile: the shim times every callin of every wrapped widget ([LUAMS] rows) and its own cost
+                     # ([SHIMMS] rows: shim_own_ms = the shim's Lua, shim_engine_ms = engine calls made inside shimmed
+                     # functions (LOS lookups), other_engine_ms = every other engine call; timer overhead calibrated out)
+
+
 def wrap(content: str, team: int, suffix: str, bot: bool = True) -> str:
     """A widget's code wrapped for team `team`. Bot files also get patch_team, exactly as in a normal match."""
     body = bt.patch_team(content, team, suffix) if bot else rename(content, suffix)
-    return SHIM_HEAD.replace("__T__", str(team)) + body + SHIM_TAIL
+    return SHIM_HEAD.replace("__T__", str(team)).replace("__PROF__", "true" if PROFILE else "false") + body + SHIM_TAIL
 
 
 # BAR's own widgets that automate a player's units (enabled by default, give orders, do nothing for a spectator).
@@ -490,6 +630,8 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
         .replace("__TARGET__", f"{target:g}"), "Single Control")
     put("headless_latency_probe.lua", bt.LATENCY_PROBE_WIDGET, "Latency Probe")
     put("single_gc.lua", GC_WIDGET, "Single GC")
+    global PROFILE
+    PROFILE = bool(profile)
     if profile:
         put("headless_profiler.lua", bt.PROFILER_WIDGET, "Harness Profiler")
 

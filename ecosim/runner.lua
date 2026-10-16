@@ -14,6 +14,35 @@ return function(args)
     if args.sink then P.SINK.on = true end
     P.SEED = args.seed or 1
     math.randomseed(args.seed or 1)
+    if os.getenv and os.getenv("ECOSIM_ORDER_DUMP") then
+        -- order dumps are diffed between two runs: make `pairs` visit keys in a fixed order (LuaJIT randomises string-hash
+        -- order per process, which otherwise changes tie-breaks between runs).  Slower; only for refactor checks.
+        local rawpairs, rank = pairs, { number = 1, string = 2, boolean = 3 }
+        local function less(a, b)
+            local ta, tb = type(a), type(b)
+            if ta ~= tb then return (rank[ta] or 9) < (rank[tb] or 9) end
+            if ta == "number" or ta == "string" then return a < b end
+            return false
+        end
+        pairs = function(t)
+            local mt = getmetatable(t)
+            if mt and mt.__pairs then return rawpairs(t) end
+            local keys, n, sortable = {}, 0, true
+            for k in rawpairs(t) do
+                n = n + 1; keys[n] = k
+                if type(k) ~= "number" and type(k) ~= "string" then sortable = false end
+            end
+            if not sortable then return rawpairs(t) end
+            table.sort(keys, less)
+            local i = 0
+            return function()
+                i = i + 1
+                local k = keys[i]
+                if k == nil then return nil end
+                return k, t[k]
+            end, t, nil
+        end
+    end
 
     local W = dofile(root .. "ecosim/world.lua")
     local D = dofile(root .. "ecosim/unitdefs.lua")
@@ -248,7 +277,7 @@ return function(args)
         timeline = timeline, snaps = snaps, events = W.events, log = log, errors = errors, missing = missing,
         overrides_not_applied = notApplied, blocked_by = W.teams[W.myTeam].blockedBy or {},
         prof = { wall = os.clock() - wall0, callin = prof.callin, step = prof.step, orders = prof.orders,
-                 minute_wall = minuteWall, orders_given = W.ordersGiven or 0 },
+                 minute_wall = minuteWall, orders_given = W.ordersGiven or 0, scans = Spring and Spring.__scans },
     }
     return result
 end

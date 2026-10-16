@@ -181,6 +181,27 @@ h({ frame = F6, armyValue = 0, enemyGround = 4000, metal = { fill = 0 }, energy 
 local s1 = h({ frame = F6 + 30, armyValue = 9e9, enemyGround = 4000, metal = { fill = 0 }, energy = { fill = 0 } })
 check(s1 > 0.9 and s1 < 1, "match: share falls gradually, not at once")
 
+-- income_switch (DRAGON_ECO): one-way, after the smoothed income holds the threshold for hold_s
+do
+    local sw = SH.income_switch{ to = "mammoth_hold", income = 1100, hold_s = 20 }
+    local function At(f, inc) return sw({ frame = f, minute = f / 1800, metal = { income = inc } }) end
+    check(At(0, 1500) == nil, "income_switch: not on the first tick above the threshold")
+    check(At(300, 1500) == nil, "income_switch: not before hold_s")
+    local dip = true
+    for f0 = 330, 480, 30 do if At(f0, 200) ~= nil then dip = false end end   -- a 6-tick dip takes the smoothed income under
+    check(dip, "income_switch: no switch during a dip")
+    local f, got = 510, nil
+    while not got and f < 6000 do got = At(f, 1500); f = f + 30 end
+    check(got == "mammoth_hold" and f > 510 + 600, "income_switch: a dip restarts the hold; switches once held for 20 s (frame " .. f .. ")")
+    check(At(f + 30, 0) == "mammoth_hold", "income_switch: one-way (stays after income falls)")
+    local spike = SH.income_switch{ to = "x", income = 1100, hold_s = 20 }
+    local fired = false
+    for i = 0, 40 do
+        if spike({ frame = i * 30, metal = { income = (i % 10 == 0) and 5000 or 300 } }) then fired = true end
+    end
+    check(not fired, "income_switch: short spikes do not switch (the income is smoothed)")
+end
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

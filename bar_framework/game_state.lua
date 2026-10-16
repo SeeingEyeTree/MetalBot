@@ -21,10 +21,15 @@
 --     enemyHasAntiNuke, enemyRadar   booleans from facts
 --     ecoTargets, blobs              the best 5 eco structures and the enemy ground blobs (only when o.EI is given)
 --     spine,                         spine.Status() when the caller passes o.Spine
+--     airAlarm, raid, airLosses,     WG.MetalBot fields passed through (nil until published): bombers heading for the base,
+--     hunt, scoutWant,               the labs' raid record, own air units shot down, game-won bomber hunt, and the scout /
+--     ringRadarWant, callScouts      ring-radar / called-Hawk counts the labs keep;  home / foe = {x, z}, foeDist
 --   }
 -- Missing sources leave their fields nil/0; nothing here errors on a stub.
 
 local M = {}
+
+local CH = VFS.Include("LuaUI/Widgets/bar_framework/wg_channels.lua")
 
 local function Res(team, kind)
     local cur, stor, pull, inc, exp = Spring.GetTeamResources(team, kind)
@@ -46,7 +51,7 @@ function M.Collect(frame, o)
     s.capFrac = (s.cap and s.cap > 0) and s.units / s.cap or 0
     -- o.MB: the caller's own WG.MetalBot.  In --server single the widgets' WG is a per-team shim that a VFS.Include'd
     -- module does not see, so the global WG.MetalBot read here is empty there.
-    local mb = o.MB or (WG and WG.MetalBot) or {}
+    local mb = o.MB or CH.MetalBot(WG)
     s.armyCount = o.armyCount or mb.armyCount or 0
     s.armyValue = o.armyValue or mb.armyValue
     s.armyByDef = o.armyByDef
@@ -74,6 +79,12 @@ function M.Collect(frame, o)
     s.armyGround, s.armyAir = mb.armyGround, mb.armyAir
     if s.armyGround and s.enemyGround > 0 then s.armyRatio = s.armyGround / s.enemyGround end
     s.trade = mb.trade
+    -- the rest of WG.MetalBot a hook may want (all nil until the unit controller publishes them)
+    s.airAlarm, s.raid, s.airLosses, s.hunt = mb.airAlarm, mb.raid, mb.airLosses, mb.hunt
+    s.scoutWant, s.ringRadarWant, s.callScouts = mb.scoutWant, mb.ringRadarWant, mb.callScouts
+    s.home = mb.homeX and { x = mb.homeX, z = mb.homeZ } or nil
+    s.foe = mb.foeX and { x = mb.foeX, z = mb.foeZ } or nil
+    s.foeDist = mb.foeDist
     s.airKills, s.airLost = mb.airKills, mb.airLost
     if s.armyAir then
         s.airSuperior = s.armyAir > 0 and s.armyAir >= 1.5 * s.enemyAir and (s.airKills or 0) >= (s.airLost or 0)

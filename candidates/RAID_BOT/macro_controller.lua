@@ -25,6 +25,7 @@ local spGetMyTeamID     = Spring.GetMyTeamID
 local CMD_GUARD = (CMD and CMD.GUARD) or 25
 local CMD_STOP  = 0
 
+local CH = VFS.Include("LuaUI/Widgets/bar_framework/wg_channels.lua")   -- typed WG access (bar_framework/wg_channels.lua)
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- BC.Preset: named option groups for framework modules (bar_framework/presets/)
 
 local CFG = {
@@ -498,7 +499,7 @@ function widget:Initialize()
             }
             if STRAT:Stance() then
                 STRAT:InstallSlotSpine(SPINE)
-                if WG then WG.Strategy = STRAT end
+                CH.Publish(WG, "Strategy", STRAT)
             else
                 STRAT = nil
                 Spring.Echo("[STANCE] stance " .. tostring(CFG.STANCE) .. " did not load; the spine has no army")
@@ -510,11 +511,11 @@ function widget:Initialize()
     -- Labs the lab controller must leave alone: the air lab while it owes air cons, and the starter bot lab
     -- (it only makes the 3 cons, then is reclaimed).
     if WG then
-        WG.TileLabHold = function(labID)
+        CH.Publish(WG, "TileLabHold", function(labID)
             if labID == nil then return false end
             if trans and labID == trans.airLabID and trans.airConsOrdered > 0 then return true end
             return labID == TS.botLabID
-        end
+        end)
     end
     for _, u in ipairs(BUILD_ORDER.layout) do
         local ud = UnitDefNames[u.n]

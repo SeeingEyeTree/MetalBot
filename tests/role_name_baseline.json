@@ -1,0 +1,69 @@
+{
+ "defense_crew.lua": [
+  "corfmd"
+ ],
+ "eco_planner.lua": [
+  "cormex",
+  "cornanotc",
+  "corwin"
+ ],
+ "lab_recycler.lua": [
+  "corap"
+ ],
+ "lab_rules.lua": [
+  "corgator",
+  "corlevlr",
+  "cormist",
+  "cormort",
+  "corraid",
+  "corsumo"
+ ],
+ "line_crew.lua": [
+  "corestor",
+  "cormex",
+  "cornanotc",
+  "corwin"
+ ],
+ "line_transition.lua": [
+  "cornanotc",
+  "corrad"
+ ],
+ "line_transition/energy.lua": [
+  "corfus",
+  "cormoho",
+  "corwin"
+ ],
+ "line_transition/grid_core.lua": [
+  "corfmd",
+  "corsilo"
+ ],
+ "line_transition/grid_retrofit.lua": [
+  "cormex",
+  "corwin"
+ ],
+ "line_transition/second_lab.lua": [
+  "cornanotc"
+ ],
+ "line_transition/silo.lua": [
+  "corsilo"
+ ],
+ "line_transition/t2bot_lab.lua": [
+  "cornanotc"
+ ],
+ "macro_runtime.lua": [
+  "corcom"
+ ],
+ "spine.lua": [
+  "coralab",
+  "coravp",
+  "corck",
+  "corcv",
+  "cordemon",
+  "corestor",
+  "correap",
+  "corsumo"
+ ],
+ "strategy.lua": [
+  "army_share"
+ ]
+}

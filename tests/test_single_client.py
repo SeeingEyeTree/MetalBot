@@ -44,6 +44,8 @@ Spring = {
   GetTeamUnits = function(t) return list(function(u) return units[u].team == t end) end,
   GetTeamResources = function(t) return 100, 1000, 0, 5, 0 end,
   IsPosInLos = function(x, y, z, a) return a end,
+  GetTimer = function() return os.clock() end,
+  DiffTimers = function(a, b, ms) return (a - b) * 1000 end,
   GiveOrderToUnit = function(u, cmd) orders[#orders + 1] = u; return true end,
   GiveOrderToUnitArray = function(l) for _, u in ipairs(l) do orders[#orders + 1] = u end; return true end,
 }
@@ -136,5 +138,48 @@ def main():
     print("test_single_client: all passed")
 
 
+PROF_WIDGET = r"""
+function widget:GetInfo() return { name = "Prof", enabled = true } end
+function widget:GameFrame(n) end
+"""
+
+
+def test_profile():
+    """--profile: the same answers as without it, and a [SHIMMS] row that splits shim Lua from engine time."""
+    sc.PROFILE = True
+    try:
+        lua = lupa.LuaRuntime(unpack_returned_tuples=True)
+        lua.execute(ENGINE)
+        make = lua.eval("""function(src)
+            local w = setmetatable({}, { __index = _G })
+            w.widget = w
+            local chunk = assert(loadstring(src))
+            setfenv(chunk, w)
+            chunk()
+            return w
+        end""")
+        w0 = make(sc.wrap(PROF_WIDGET, 0, "T0", bot=False))
+    finally:
+        sc.PROFILE = False
+    run = lua.eval("function(w, src) local f = assert(loadstring(src)); setfenv(f, w); return f() end")
+    assert sorted(run(w0, "return Spring.GetAllUnits()").values()) == [1, 2, 4], "profiling must not change results"
+    assert run(w0, "return Spring.GetUnitDefID(3)") is None
+    run(w0, "for i = 1, 300 do Spring.GetAllUnits(); Spring.GetUnitDefID(2); Spring.GetUnitPosition(1) end")
+    run(w0, "widget:GameFrame(1800)")
+    rows = [s for s in lua.globals().echoes.values() if "[SHIMMS]" in s]
+    assert len(rows) == 1, rows
+    row = rows[0]
+    assert row.startswith("<T0> [SHIMMS] frame=1800 team=0 "), row
+    fields = dict(kv.split("=") for kv in row.split(" | ")[0].split()[3:])
+    assert int(fields["shim_calls"]) >= 900 and int(fields["vis_calls"]) >= 900, row
+    assert int(fields["engine_calls"]) > int(fields["shim_calls"]), row
+    # (os.clock is too coarse here to rank the cheap calls, so only check the sections are present)
+    assert "GetAllUnits=" in row.split(" | ")[1] and "GetAllUnits=" in row.split(" | ")[2], row
+    run(w0, "widget:GameFrame(1801)")
+    assert len([s for s in lua.globals().echoes.values() if "[SHIMMS]" in s]) == 1, "one row per game-minute"
+
+
 if __name__ == "__main__":
     main()
+    test_profile()
+    print("test_profile: passed")

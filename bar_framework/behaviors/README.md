@@ -42,12 +42,19 @@ separate cohort, so one file serves Lashers (step 400) and Pounders (step 150).
 
 | `range_kite` | per unit: keep the nearest armed mobile enemy at the edge of OUR range (step back when it is inside 85%, to 95%); not against an enemy that outranges us, not while `ctx.Defending(uid)` (raid response / home guard: move in front). RAID_BOT's Demons and Banishers | `EnemiesNear`; optional `Range`, `Defending`, `Clamp`, `Speed` |
 | `intercept` | raid response: responders MOVE to a point AHEAD of the raiders on their path to the asset it threatens (re-aimed every tick, spread across the path); can't catch them -> block between raiders and asset; raiders stopped -> FIGHT | `ClusterOf(uid)`, `Assets()`; optional `Order`, `Speed`, `Clamp` |
+| `shadow` | per unit: a fast unit tails the nearest armed enemy at ~92% of its own sight radius (backs off when closer, closes in when farther), chases the last seen spot, else rides 700 elmos ahead of the friendly army; hurt -> back to the army; `max` = how many of the cohort shadow. `stances/shadow_test.lua` (`/give corgator 20`) | `EnemiesNear`; optional `Sight`, `Friends`, `Axis`, `Clamp` |
 
 STANCE_BOT's raid response (user 2026-10-12): `unit_controller.DispatchResponses` assigns fast responders to `intercept`
 (slow ones keep FIGHT), publishes `mb.raid` / `mb.airLosses`; `lab_controller` then queues only Shurikens (fighters if the raid is
 air or our air units are dying to fighters) in the T1 air lab and swaps slow picks for fast ones until 2x the raid's value is ordered;
 `click_army` `SET_TARGET = true` keeps attack groups MOVEing past the target and gives each unit SET_TARGET on the best building in
 its weapon range. Tests: `tests/test_intercept.lua`, `tests/test_set_target.lua`.
+
+### Dragon behaviours (DRAGON_ECO; assigned through the stance's `extras`, run by the unit controller's host)
+| Behaviour | What it does | ctx it needs |
+|---|---|---|
+| `dragon_raid` | first in the stack. Once `wave` (50) Dragons are not in a wave they launch together; the wave's target is the enemy commander, else build power, else anti-air, else the closest eco (else the nearest structure, else the base), re-picked every `retarget` frames and at once when the target dies; MOVE until within `arrive`, then ATTACK the unit in view (FIGHT its place otherwise); a wave under `min_left` goes back to waiting | `EnemyBase`, `EnemyRecords`, `EnemyCommander` |
+| `dragon_defend` | the Dragons waiting for a wave FIGHT intruder groups inside the perimeter (the nearest, `mult` x their value), then gather at the Dragon lab | `Intruders`, `Gather` |
 
 ### Army behaviours (a stack run by `click_army.lua` in DIRECT mode)
 

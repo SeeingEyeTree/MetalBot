@@ -71,6 +71,8 @@ Def("cornecro", { speed = 78, isBuilder = true, canResurrect = true, buildSpeed 
 Def("corak",    { speed = 81, weapons = GUN, metalCost = 43 })
 Def("corgator", { speed = 85, weapons = GUN, metalCost = 120 })
 Def("corraid",  { speed = 72, weapons = GUN, metalCost = 235 })
+Def("correap",  { speed = 69, weapons = GUN, metalCost = 690, energyCost = 10000, customParams = { techlevel = "2" } })   -- Tiger
+Def("corgol",   { speed = 39, weapons = GUN, metalCost = 1650, energyCost = 28000, customParams = { techlevel = "2" } })  -- Tzar
 Def("corsumo",  { speed = 23, weapons = GUN, metalCost = 2200, energyCost = 28000 })   -- Mammoth (slow)
 local LONGGUN = { { weaponDef = 7, onlyTargets = {} } }
 Def("cormist",  { speed = 52, weapons = LONGGUN, metalCost = 155, energyCost = 2400 })  -- Lasher (slow, long range)
@@ -112,6 +114,8 @@ Def("corvp",    { isFactory = true, isBuilder = true, buildSpeed = 100, xsize = 
                   metalCost = 600 })
 Def("corap",    { isFactory = true, isBuilder = true, buildSpeed = 100, xsize = 12, zsize = 12,
                   metalCost = 650 })
+Def("coravp",   { isFactory = true, isBuilder = true, buildSpeed = 200, xsize = 12, zsize = 12,
+                  metalCost = 2300, customParams = { techlevel = "2" } })
 Def("coralab",  { isFactory = true, isBuilder = true, buildSpeed = 200, xsize = 12, zsize = 12,
                   metalCost = 2000, customParams = { techlevel = "2" } })
 Def("coraap",   { isFactory = true, isBuilder = true, buildSpeed = 200, xsize = 14, zsize = 14,
@@ -375,6 +379,7 @@ Spring = setmetatable({
 end })
 
 WG = {}
+WG_CHANNELS_STRICT = true   -- bar_framework/wg_channels.lua: a malformed WG publish is an error in tests
 
 -- VFS.Include maps "LuaUI/Widgets/<path>" to the repo and runs the file fresh each
 -- time, as the engine does.

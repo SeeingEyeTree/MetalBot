@@ -399,6 +399,9 @@ def print_summary(res):
     p = res.get("prof", {})
     print(f"wall {res.get('wall_secs', 0):.1f}s (bot callins {p.get('callin', 0):.1f}s, physics {p.get('step', 0):.1f}s)"
           f"  orders {p.get('orders_given')}  Lua errors {s['errors']}  missing API: {', '.join(res.get('missing') or []) or '-'}")
+    sc = p.get("scans")
+    if sc:
+        print("unit-list scans            " + "  ".join("%s %d calls / %.1fM entries" % (k, v[0], v[1] / 1e6) for k, v in sorted(sc.items())))
     for e in (res.get("errors") or [])[:3]:
         print("  ERROR", e.get("frame"), e.get("widget"), e.get("callin"), str(e.get("err"))[:400])
 

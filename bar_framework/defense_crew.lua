@@ -20,7 +20,9 @@ M.BUILD_ANTINUKE    = true    -- false: no loose anti-nukes (they are grid capst
                               -- anti-nukes that stand are still stockpiled and helped
 M.PERIOD            = 60      -- frames between build passes
 M.ALARM_TTL         = 900     -- an air alarm counts for this long after its last sighting
-M.AA_NAMES          = { "corflak", "corrl" }   -- flak first (T2 builders), the T1 Defender otherwise
+local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")   -- unit roles per faction (C4)
+local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
+M.AA_NAMES          = { ROLES.Get("aa_heavy"), ROLES.Get("aa_light") }   -- flak first (T2 builders), the T1 Defender otherwise
 M.AA_BASE           = 2       -- once the enemy has any air at all
 M.AA_PER_AIR_VALUE  = 400     -- ...plus one per this much remembered enemy air value
 M.AA_BASE_MAX       = 8
@@ -30,11 +32,11 @@ M.AA_MAX            = 14
 M.AA_RING_MIN       = 110     -- AA sits this far from a factory / the commander...
 M.AA_RING_MAX       = 420     -- ...and at most this far
 M.ANTINUKE_NAME     = "corfmd"
-M.MOBILE_ANTINUKE   = "cormabm"   -- Savior, built by the lab controller from a T2 vehicle plant (spine bots)
+M.MOBILE_ANTINUKE   = ROLES.Get("savior")   -- Savior, built by the lab controller from a T2 vehicle plant (spine bots)
 M.ANTINUKE_INCOME   = 350     -- metal/s before the first anti-nuke (about the T2 economy)
 M.ANTINUKE_SECOND   = 1200    -- ...the second
 M.ANTINUKE_STOCK    = 3       -- missiles kept stockpiled/queued
-M.SILO_NAME         = "corsilo"
+M.SILO_NAME         = ROLES.Get("silo")
 M.SILO_INCOME       = 700     -- metal/s before the first silo
 M.SILO_SECOND       = 1800
 M.SILO_STOCK        = 2
@@ -114,7 +116,7 @@ end
 -- The nearest of our idle-or-busy constructors that can build defID.
 local function PickBuilder(defID, x, z)
     local best, bestD, bestDef
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+    for _, uid in ipairs(UQ.snapshot(myTeamID).ids) do
         local bd = Spring.GetUnitDefID(uid)
         local d = bd and UnitDefs[bd]
         if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
@@ -218,7 +220,7 @@ end
 -- Factories first (what a bomber run is after), then the commander, then home.
 local function Anchors(mb, bearing)
     local out = {}
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+    for _, uid in ipairs(UQ.snapshot(myTeamID).ids) do
         local d = UnitDefs[Spring.GetUnitDefID(uid) or 0]
         if d and (d.isFactory or (d.customParams and d.customParams.iscommander)) then
             local x, _, z = Spring.GetUnitPosition(uid)
@@ -269,7 +271,7 @@ local function Assist(names, maxDist)
         if not IsDone(target) then
             local tx, _, tz = Spring.GetUnitPosition(target)
             local helpers = 0
-            for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+            for _, uid in ipairs(UQ.snapshot(myTeamID).ids) do
                 if helpers >= M.ASSIST_MAX then break end
                 local d = UnitDefs[Spring.GetUnitDefID(uid) or 0]
                 if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and (d.buildSpeed or 0) >= 50
@@ -301,6 +303,9 @@ M.COVER_UNFINISHED = true     -- structures under construction are part of the c
 M.COVER_PERIOD_SILO = 150     -- re-plan period while an enemy silo has been seen
 M.COVER_LOG_PERIOD = 900      -- frames between per-Savior stockpile/goal log rows
 M.COVER_FALLBACK_R ={ cormabm = 1200, corfmd = 2000 }
+M.COVER_FIXED_ONLY = false    -- DRAGON_ECO (no T2 vehicle plant, so no Saviors): every cover point gets a static corfmd, planned with its radius
+M.COVER_REPLACE_MEX = false   -- the corfmd's site is a mex near the point first (the mex, and whatever else stands in the footprint, is reclaimed)
+M.COVER_MEX_R      = 420      -- ...a mex within this of the point
 local cover = { goal = {}, blocked = {}, fails = {}, last = -1e9, points = {} }
 local CMD_MOVE = (CMD and CMD.MOVE) or 10
 
@@ -356,7 +361,7 @@ end
 
 local function CoverItems()
     local items = {}
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+    for _, uid in ipairs(UQ.snapshot(myTeamID).ids) do
         local d = UnitDefs[Spring.GetUnitDefID(uid) or 0]
         -- unfinished structures count too (M.COVER_UNFINISHED): a Savior has to walk to a new expansion, so it
         -- starts before the grid is done instead of after the next re-plan
@@ -382,9 +387,46 @@ M.COVER_JOB_TTL    = 5400
 local CMD_RECLAIM = (CMD and CMD.RECLAIM) or 90
 local CMD_GUARD   = (CMD and CMD.GUARD) or 25
 
+-- Our own structures in a footprint of half-width `half` at (x, z), to reclaim before building there; nil if a factory or the
+-- commander is in the way.
+local function FootprintBlockers(x, z, half)
+    local blockers = {}
+    for _, uid in ipairs(Spring.GetUnitsInCylinder(x, z, half + 24, myTeamID) or {}) do
+        local bd = UnitDefs[Spring.GetUnitDefID(uid) or 0]
+        if bd and (bd.speed or 0) == 0 then
+            if bd.isFactory then return nil end
+            blockers[#blockers + 1] = uid
+        elseif bd and bd.customParams and bd.customParams.iscommander then
+            return nil
+        end
+    end
+    return blockers
+end
+
+-- COVER_REPLACE_MEX: the nearest of our mexes (T1 or T2) within COVER_MEX_R of the point, centred on the mex.
+local function MexSite(px, pz, half)
+    local best, bestD
+    for _, uid in ipairs(Spring.GetUnitsInCylinder(px, pz, M.COVER_MEX_R, myTeamID) or {}) do
+        local bd = UnitDefs[Spring.GetUnitDefID(uid) or 0]
+        if bd and (bd.extractsMetal or 0) > 0 and (bd.speed or 0) == 0 then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            local dd = x and (x - px) ^ 2 + (z - pz) ^ 2
+            if dd and (not bestD or dd < bestD) then
+                local blockers = FootprintBlockers(x, z, half)
+                if blockers then best, bestD = { x = x, z = z, blockers = blockers }, dd end
+            end
+        end
+    end
+    return best
+end
+
 local function CoverSite(defID, px, pz)
     local d = UnitDefs[defID]
     local half = d and math.max(d.xsize or 8, d.zsize or d.ysize or 8) * 4 or 32
+    if M.COVER_REPLACE_MEX then
+        local m = MexSite(px, pz, half)
+        if m then return m.x, Spring.GetGroundHeight(m.x, m.z) or 0, m.z, m.blockers end
+    end
     local reclaimSite
     for r = 0, 420, 60 do
         for k = 0, (r == 0 and 0 or 15) do
@@ -411,6 +453,8 @@ local function CoverSite(defID, px, pz)
     if reclaimSite then return reclaimSite.x, reclaimSite.y, reclaimSite.z, reclaimSite.blockers end
 end
 
+M._CoverSite = CoverSite   -- tests only
+
 -- Constructors that can build defID, best first: idle air cons, idle ground cons, then busy ones.
 -- (the cover job's cons are seized from the pool and given back when the job ends)
 local function ClearCoverJob()
@@ -423,7 +467,7 @@ end
 
 local function CoverBuilders(defID, x, z)
     local list = {}
-    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+    for _, uid in ipairs(UQ.snapshot(myTeamID).ids) do
         local bd = Spring.GetUnitDefID(uid)
         local d = bd and UnitDefs[bd]
         if d and d.isBuilder and not d.isFactory and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
@@ -515,7 +559,7 @@ local function CoverUpdate(frame, income, silosSeen)
     if not G then return end
     G.AntiNuke = G.AntiNuke or {}
     if income < M.ANTINUKE_INCOME and not silosSeen then G.AntiNuke.saviorWant = 0; return end
-    local R = CoverRadius(M.MOBILE_ANTINUKE) * M.COVER_FRAC
+    local R = CoverRadius(M.COVER_FIXED_ONLY and M.ANTINUKE_NAME or M.MOBILE_ANTINUKE) * M.COVER_FRAC
     local points = M.CoverPoints(CoverItems(), R, M.COVER_MAX)
     cover.points = points
     -- standing corfmd cover the points near them
@@ -542,7 +586,7 @@ local function CoverUpdate(frame, income, silosSeen)
     for _, p in ipairs(points) do
         if not Served(p) then
             local key = KeyOf(p)
-            if cover.blocked[key] then
+            if cover.blocked[key] or M.COVER_FIXED_ONLY then
                 -- unreachable on foot: an anti-nuke is built there by a T2 con
                 CoverBuild(frame, p, #fixed)
                 Assist({ M.ANTINUKE_NAME }, 1e9)

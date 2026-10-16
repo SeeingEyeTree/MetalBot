@@ -728,7 +728,9 @@ function LC.OnUnitDestroyed(crew, unitID)
                 elseif o.state == "estor" then crew.nEstor = crew.nEstor - 1
                 elseif o.state == "wind" then crew.nWind = crew.nWind - 1
                 else crew.nNano = crew.nNano - 1 end
-                o.state, o.unitID = "free", nil          -- rebuilt by its lane's builder
+                -- rebuilt by its lane's builder -- unless the slot was given to something else (line_decoy.lua turns the line into T2 bot labs and
+                -- reclaims the winds / mexes on purpose: the crew rebuilding them fought the reclaim and the site never cleared)
+                o.state, o.unitID = o.noRebuild and "reserved" or "free", nil
             end
         end
     end

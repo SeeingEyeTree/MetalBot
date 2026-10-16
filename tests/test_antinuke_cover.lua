@@ -35,5 +35,26 @@ for _, it in ipairs(items) do
 end
 check(all, "every structure is inside some point's radius")
 check(#DC.CoverPoints({}, 1000, 8) == 0, "no structures, no points")
+
+-- COVER_REPLACE_MEX (DRAGON_ECO): the corfmd goes on the nearest mex, which is reclaimed first; a factory in the way rules a mex out
+S.W.units, S.W.orders, S.W.log, S.W.errors = {}, {}, {}, {}
+DC.Init{ teamID = 0, WG = WG }
+local fmd = UnitDefNames.corfmd.id
+local mexNear = S.Spawn("cormex", 0, 3200, 3000, { silent = true })
+local mexFar  = S.Spawn("cormex", 0, 3350, 3000, { silent = true })
+local x, _, z, blockers = DC._CoverSite(fmd, 3000, 3000)
+DC.COVER_REPLACE_MEX = true
+local mx, _, mz, mblock = DC._CoverSite(fmd, 3000, 3000)
+check(mx == 3200 and mz == 3000, "replace-mex: the corfmd is centred on the nearest mex (" .. tostring(mx) .. ", " .. tostring(mz) .. ")")
+local hasMex = false
+for _, b in ipairs(mblock or {}) do if b == mexNear then hasMex = true end end
+check(hasMex, "replace-mex: that mex is reclaimed first")
+S.Spawn("corlab", 0, 3200, 3040, { silent = true })
+mx, _, mz = DC._CoverSite(fmd, 3000, 3000)
+check(not (mx == 3200 and mz == 3000), "replace-mex: a mex next to a factory is not used")
+local far = DC._CoverSite(fmd, 9000, 9000)
+DC.COVER_REPLACE_MEX = false
+check(far ~= 3200 and far ~= 3350, "replace-mex: a mex out of reach is never used")
+check(#S.W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

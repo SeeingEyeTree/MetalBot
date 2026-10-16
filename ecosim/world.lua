@@ -520,9 +520,18 @@ local function PStr(p)
 end
 W.PStr = PStr
 
+-- ECOSIM_ORDER_DUMP=<file>: append every accepted order (frame, unit, cmd, params) -- diff two dumps to prove a refactor
+-- changed nothing (CLAUDE.md "Checking a refactor").
+local orderDump = os.getenv and os.getenv("ECOSIM_ORDER_DUMP")
+local orderDumpFile
 function W.GiveOrder(id, cmd, params, opts)
     local u = W.units[id]
     if not u or u.team ~= W.myTeam then return false end
+    if orderDump then
+        orderDumpFile = orderDumpFile or io.open(orderDump, "w")
+        local o = NormOpts(opts)
+        orderDumpFile:write(string.format("%d %d %s %s%s\n", W.frame, id, tostring(cmd), PStr(type(params) == "table" and params or { params }), o.shift and " shift" or ""))
+    end
     if W.trace and W.trace[id] then
         local o = NormOpts(opts)
         Log(string.format("[TRACE] %d give cmd %d {%s}%s", id, cmd, PStr(type(params) == "table" and params or { params }), o.shift and " shift" or ""))

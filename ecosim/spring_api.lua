@@ -43,6 +43,7 @@ function A.Install(W, P, defsById, defsByName, weaponDefs, root, simCfg)
         for i = 1, #l do out[i] = l[i] end
         return out
     end
+    S.DestroyUnit = function(id) local u = W.units[id]; if u then W.Kill(u, "stress") end end     -- stress_stances.py: kill a unit mid-game
     S.GetTeamUnitsByDefs = function(team, defs)
         local want = {}
         if type(defs) == "table" then for _, d in ipairs(defs) do want[d] = true end else want[defs] = true end
@@ -310,6 +311,20 @@ function A.Install(W, P, defsById, defsByName, weaponDefs, root, simCfg)
         DirList = function() return {} end,
         RAW_FIRST = "r", ZIP_FIRST = "z", RAW = "r", ZIP = "z",
     }
+    -- scan counters (C5): how often the bot walks the unit lists, and the total entries returned -- the number the shared snapshot brings down
+    local scans = { GetTeamUnits = { 0, 0 }, GetAllUnits = { 0, 0 }, GetUnitsInCylinder = { 0, 0 } }
+    S.__scans = scans
+    for name, c in pairs(scans) do
+        local f = S[name]
+        if f then
+            S[name] = function(...)
+                local r = f(...)
+                c[1] = c[1] + 1
+                c[2] = c[2] + (type(r) == "table" and #r or 0)
+                return r
+            end
+        end
+    end
     return S
 end
 

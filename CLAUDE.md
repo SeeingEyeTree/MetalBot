@@ -79,6 +79,20 @@ are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic
   RAID_BOT only; `tests/test_unit_clock.lua`). Its lab controller runs on the lab broker (below).
 
 **How a bot is put together (2026-10-14).** A controller is a thin list of framework modules plus configuration; the rules live in the framework.
+- **A strategy = army share + unit comp (user, 2026-10-14).** A new bot is made by copying a working bot (STANCE_ECO2 / RAID_BOT /
+  DRAGON_ECO) and changing only its strategy: the stances (`stances/*.lua`: what the spine's labs build and in what ratio, which
+  also decides which labs stand in the spine), the strategy hooks (`army_share`, `switch`, `weights`), and config/presets.  Everything
+  else is **background every strategy keeps**: economy (line, grids, retrofits, energy, grid/line recovery), spine nano parking
+  (the share hook sizes it), scouting (scouts, radar plane, ring radars, depth scouts), raid response (Shuriken floor, Shuriken/Wasp
+  answers, home-guard air), AA, the air-lab hold (`WG.TileLabHold`), anti-nuke cover, commander safety, and `mb.armyValue` /
+  `WG.MetalBot` publishing.  **Do not rewrite the lab or unit controller for a new strategy, and never drop a background system
+  because the strategy does not mention it.**  New behaviour goes in as an opt-in framework option or a stance `plan` field
+  (default off), next to what is there.  DRAGON_ECO's first version broke this (a from-scratch lab controller and a unit-controller
+  mode that switched planners off).  It lost scouting, raid response and nano parking, and the army overspent until they were put
+  back (`knowledge/dragon_eco_2026-10-14.md`).
+- **Check a new strategy in eco_sim first** (`python eco_sim.py run --bot <folder> --seeds 1-4 --no-vacuum`; compare with
+  `eco_sim.py compare` against the bot it was copied from).  An early income gap there usually means the army share is wrong
+  (`[SHARE]` rows: `own=` must count the whole army).
 - **Config:** a module's defaults live in its `CFG` table; a bot overrides them with `cfg = BC.Preset("<module>", "GROUP", ..., { own = tweaks })`
   (`bar_framework/bot_config.lua`; the groups are `bar_framework/presets/<module>.lua`, each commented). `BC.Apply` logs one row per module,
   `[CFG] line_transition (RAID_BOT): 30 changed -- ...`, and warns about an option that is not in the module's defaults (a typo), so a game log
@@ -90,10 +104,19 @@ are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic
   `tests/test_lab_broker.lua`.
 - **Raid response:** `bar_framework/raid_response.lua` (intruder groups, who answers, the stun / Wasp split, the raid record the labs read). RAID_BOT
   and STANCE_BOT both use it; they differ only by its cfg (`BC.Preset("raid_response", "RAID")`, or none).
+- **Shared services (2026-10-16, C1-C5): ask these instead of re-deriving.** `bar_framework/build_tree.lua` (who can build what: labs for a unit, which cons place a
+  lab, air-only labs, enabler chains), `roles.lua` (unit roles per faction: `Roles.Get("decoy")`; `tests/check_role_names.py` blocks new unit-name literals),
+  `eco_ledger.lua` (spine saturation, energy target, unit cap, decoy demand; consumers register on `WG.EcoLedger`), `con_broker` pools (`CB.TakeAny` / `CB.GiveBack`:
+  the spine's ground cons are the pool `spine-ground`; borrow through the broker, never through `slot_spine` tables), and the per-frame unit snapshot in `unit_query.lua`
+  (`UQ.snapshot(team)`: one `GetTeamUnits` walk per frame, shared). A new feature that needs one of these answers adds to the service, not a new copy.
 - **Cross-widget state:** `WG.*` channels and the `WG.MetalBot` fields are documented in `bar_framework/WG_CHANNELS.md`; read them through
   `game_state.lua` where you can.
 - **Tests:** `python tests/run_tests.py` runs every suite in parallel (see `tests/LUA_TESTING.md`); run it before and after a refactor.
-- **Checking a refactor:** run the same stub scenario through the old and the new controller with `Spring.GiveOrderToUnit` wrapped to print every
+- **Checking a refactor (2026-10-16): `python order_check.py save` / `check`** runs four eco_sim games (STANCE_ECO2, RAID_BOT, DRAGON_ECO, a vacuum one;
+  ~1 min in parallel) with `ECOSIM_ORDER_DUMP` and diffs every order of every game against a saved baseline (the sim uses a fixed `pairs` order in
+  that mode, so identical code gives identical streams).  `tests/check_lua_unbound.py <dir>` finds a name a split-out module uses without binding.
+  `line_transition.lua` was split into `bar_framework/line_transition/*.lua` this way (316k orders identical).
+- **Checking a refactor (older method):** run the same stub scenario through the old and the new controller with `Spring.GiveOrderToUnit` wrapped to print every
   order, and diff the order streams (`tests/test_raid_bot.lua` is a good scenario; seed `math.randomseed`; sort the lines if the scenario's `pairs`
   order is not stable). The lab broker, config and raid-response changes were verified this way (0 differences in 34k+ orders).
 
@@ -125,6 +148,12 @@ vacuum games.  Calibrated against real `[SNAP]` dumps (`metalbot_state_dump.lua`
 for tuned configs.  Docs, calibration and the tuning log: `knowledge/eco_sim.md`.  `candidates/STANCE_ECO` (no silo capstones, T2 lab
 capstones on 15 grids, 10 fusion jobs) reached 5.7k m/s at 20:00 in a real vacuum game and `candidates/STANCE_ECO2` (capstones on
 10 grids, 14 fusion jobs) **6.6-8.2k, mean 7.6k over 4 games** (sim 8.0k; STANCE_BOT 4.2-5.6k).
+**`candidates/DRAGON_ECO`** (2026-10-14) = STANCE_ECO2's eco + a defend-then-Dragons army (Pounders -> Mammoths at
+1.1k m/s, perimeter ring, Dragon lab + decoy commanders, waves of 50); first 2 games vs v16 lost to commander snipes, rounds 3-4 won
+on phi; **2026-10-15 moved onto the normal pipeline**: the perimeter army is the stance plan `army = "perimeter"` (not a constant), the
+Dragons carry the stance's `extras` behaviours `dragon_defend` (wait + help defend) / `dragon_raid` (waves of 50: commander, then build
+power, AA, closest eco), the Dragon labs are the metal sink, `bar_framework/metal_sink.lua` (2026-10-16: any sink unit, spots 4 nanos apart, starts at 85% of the spine's spend capacity), and `slot_spine` `REBUILD_NANOS` rebuilds lost nanos.  See
+`knowledge/dragon_eco_2026-10-14.md`.
 
 ## Running a test
 

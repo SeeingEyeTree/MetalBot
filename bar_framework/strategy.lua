@@ -62,6 +62,7 @@ function Strategy:Plan() return self.current and self.current.plan or nil end
 function Strategy:Set(name, state)
     local st = self.stances[name]
     if not st or st == self.current then return false end
+    self.prev, self.prevLedger = self.current, self.ledger      -- kept for PickPrev (labs waiting to be swapped keep building these)
     self.current = st
     self.ledger = self.loader.NewLedger()
     if state and state.armyByDef then
@@ -115,13 +116,23 @@ function Strategy:Pick(canBuild, skip, positiveOnly)
     return self.loader.Pick(self.current, self.ledger, canBuild, skip, positiveOnly, self.weights)
 end
 
+-- A unit of the PREVIOUS stance the lab can build (slot_spine WAVE_SWAP: a lab that is about to be replaced keeps producing, so unit
+-- production never dips during a swap).  Nil without a previous stance.
+function Strategy:PickPrev(canBuild)
+    if not (self.prev and self.prevLedger) then return nil end
+    local defID = self.loader.Pick(self.prev, self.prevLedger, canBuild, nil, nil, nil)
+    if defID and self.prev.byDef[defID] then self.loader.Note(self.prevLedger, defID, 1) end
+    return defID
+end
+
 function Strategy:Note(defID, n)
     if self.current and self.current.byDef[defID] then self.loader.Note(self.ledger, defID, n) end
 end
 
 -- The behaviours the current stance names for this unit type: names, overrides (or nil).
 function Strategy:BehaviorsFor(defID)
-    local u = self.current and self.current.byDef[defID]
+    local cur = self.current
+    local u = cur and (cur.byDef[defID] or (cur.extraByDef and cur.extraByDef[defID]))
     if not (u and u.behaviors and #u.behaviors > 0) then return nil end
     return u.behaviors, u.cfg
 end

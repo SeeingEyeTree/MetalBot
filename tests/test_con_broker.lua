@@ -314,5 +314,43 @@ check(depth == 1, "an Assign called from a start is ignored")
 
 check(CB.Status(cb):find("T1%+T2") ~= nil, "Status prints the holdings")
 
+-- ── pools (C2): ground cons another system keeps, asked for through the broker ─────────────────────────────
+cb = New()
+local ground, takeLog, giveLog = { 501, 502 }, {}, {}
+CB.AddPool(cb, "g", { take = function(owner, req) local id = table.remove(ground, 1); takeLog[#takeLog + 1] = owner; return id end,
+                      give = function(uid, owner) ground[#ground + 1] = uid; giveLog[#giveLog + 1] = owner end,
+                      count = function() return { total = 5, idle = #ground } end })
+check(not pcall(CB.AddPool, cb, "g", { take = function() end, give = function() end }), "a pool name is registered once")
+local u1, from = CB.TakeAny(cb, "sinklab", { kind = "ground" })
+check(u1 == 501 and from == "g", "TakeAny takes from the pool")
+check(CB.Status(cb):find("lent: sinklab 1", 1, true) ~= nil, "Status lists who holds a pooled con")
+check(not CB.GiveBack(cb, u1, "linedecoy") and #giveLog == 0, "only the borrower can give a con back")
+check(CB.GiveBack(cb, u1, "sinklab") and giveLog[1] == "sinklab" and ground[#ground] == 501, "the borrower gives it back to the pool")
+check(not CB.GiveBack(cb, u1, "sinklab"), "...once")
+local u2 = CB.TakeAny(cb, "linedecoy", { kind = "ground" })
+CB.Forget(cb, u2)
+check(CB.GiveBack(cb, u2, "linedecoy") == false, "a con that died (Forget) is no longer lent")
+check(CB.TakeAny(cb, "x", { kind = "ground" }) ~= nil and CB.TakeAny(cb, "x", { kind = "ground" }) == nil, "an empty pool gives nil")
+-- air cons: kind = "any" falls back to the broker's own
+local airId = Con(cb, 0, 1)
+ground = {}
+check(CB.TakeAny(cb, "x", { kind = "ground" }) == nil, "kind ground never takes an air con")
+check(CB.TakeAny(cb, "x", { kind = "any" }) == airId, "kind any falls back to the broker's air cons")
+
+-- a spine-owned con is not for defense_crew: the "spine" job is not preemptable
+cb = New()
+CB.AddJob(cb, { name = "spine", prio = 100, tier = "any", want = function() return 0 end, start = function() return false end })
+local gid = S.Spawn("corck", 0, 0, 0, { silent = true })
+CB.Add(cb, gid)
+check(CB.Usable(cb, gid), "an unowned ground con is usable by defense_crew")
+CB.Claim(cb, gid, "spine")
+check(not CB.Usable(cb, gid) and not CB.Seize(cb, gid, "defense"), "a con claimed as the spine's is not usable or seizable")
+
+-- a job can be removed and registered again (metal_sink.Init twice)
+cb = New()
+Job(cb, "sinklab", 95, "any", function() return 0 end)
+CB.RemoveJob(cb, "sinklab")
+check(pcall(Job, cb, "sinklab", 95, "any", function() return 0 end), "after RemoveJob the name can be registered again")
+
 print(string.format("con_broker: %d checks, %d failures", checks, failures))
 if failures > 0 then os.exit(1) end
