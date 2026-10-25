@@ -179,6 +179,17 @@ end
 
 -- ── what a lab makes ──────────────────────────────────────────────────────────────────────────────
 
+-- A builder that can place a factory or a mex.  Minelayers (Trapper, cormlv: mines only), rez bots and spies are "builders" too, but not cons:
+-- the slot spine took the cheapest one (the Trapper, 65 m) as the vehicle plant's con (2026-10-25 game).
+function M.PlacesEconomy(d)
+    d = Def(d)
+    for _, opt in ipairs(d and d.buildOptions or {}) do
+        local od = UnitDefs[opt]
+        if od and (od.isFactory or (od.extractsMetal or 0) > 0) then return true end
+    end
+    return false
+end
+
 -- The constructors a lab can make, cheapest first (ground cons; o.air = true: air cons).
 function M.ConsMadeBy(lab, o)
     local d = Def(lab)
@@ -187,7 +198,7 @@ function M.ConsMadeBy(lab, o)
     local air = o and o.air
     for _, opt in ipairs(d.buildOptions) do
         local od = UnitDefs[opt]
-        if od and ((air and M.IsAirCon(od)) or (not air and M.IsGroundCon(od, o))) then out[#out + 1] = od end
+        if od and ((air and M.IsAirCon(od)) or (not air and M.IsGroundCon(od, o) and M.PlacesEconomy(od))) then out[#out + 1] = od end
     end
     table.sort(out, function(a, b)
         if (a.metalCost or 0) ~= (b.metalCost or 0) then return (a.metalCost or 0) < (b.metalCost or 0) end

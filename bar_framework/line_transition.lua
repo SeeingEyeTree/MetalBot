@@ -113,6 +113,10 @@ LT.CFG = {
     ANTINUKE_GRIDS = nil,   -- grids crowned with an anti-nuke (corfmd) the same way, e.g. { [4] = true, [9] = true }; nil = none
     SILO_GRIDS = { [6] = true, [12] = true },   -- grids crowned with a nuke silo (built by a T2 con once the grid is up)
     CAPSTONE_MAX = nil,           -- grids numbered above this skip their T2 lab capstone
+    AIR_CON_LABS = true,          -- user 2026-10-25: a T1 air con deficit turns an open grid's capstone into a T1 air lab (grid_core.UpdateAirConRecovery)
+    AIR_CON_LABS_MAX = 2,         -- ... at most this many of them
+    AIR_CON_DEFICIT = 2,          -- ... when jobs + reserve want this many more T1 air cons than stand ready ...
+    AIR_CON_DEFICIT_S = 60,       -- ... for this long
     ENERGY_BUILDING = nil,        -- what a wind block becomes under energy push / consolidation (default corfus; corafus = 3000 E in the same 96x96)
     EARLY_CAPSTONES = nil, EARLY_CAPSTONE_NANOS = 4,   -- the first N grids build their T2 lab once this many nanos stand
     RETROFIT_FLOAT_CONS = false, RETROFIT_FLOAT_FRAC = 0.2, RETROFIT_FLOAT_BATCH = 2,   -- idle T2 labs make cons while metal floats and grids wait
@@ -229,6 +233,14 @@ LT.CFG = {
     DECOY_LINE_GAP    = 1800,          -- frames between labs
     DECOY_LINE_HELPERS = 3,            -- spine cons that repair the frame
     DECOY_LINE_LAB    = ROLES.Get("lab_t2_bot"),
+    REZ_LAB           = false,         -- CORE (user 2026-10-25): a T1 bot lab on the line for rez bots (line_transition/rez_lab.lua), site reserved at the
+                                       -- start like the T2 bot lab's, built early; the spine / sink / decoy labs never take it
+    REZ_LAB_INCOME    = 40,            -- metal income (m/s) at which it is queued ...
+    REZ_LAB_FRAME     = 2 * 60 * 30,   -- ... and not before this
+    REZ_LAB_UNIT      = ROLES.Get("lab_t1_bot"),
+    REZ_LAB_URGENT    = true,          -- the lane builder drops its slot and goes to the lab at once (else the job waits behind the slots: 171 s in eco_sim)
+    REZ_LAB_NANOS     = 0,             -- nano slots beside it that help build it (0: a nano first delayed the lab by ~2 min in eco_sim)
+    REZ_LAB_LANES     = { 4, 2, 1 },   -- outer lanes tried for the site, in order (after the T2 bot lab has taken its own)
     T2BOT_LANES       = { 3, 4 },      -- outer lanes tried for the site, in order (3 first: the lab faces out of the line there; 4 faced into it)
     LAB2_NANO_HELP    = false,         -- every nano in reach reclaims what stands on the site, then builds the lab frame
 }
@@ -257,7 +269,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "line_decoy", "radar_posts", "spine_cons" }) do
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
 local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine" }   -- registration order
@@ -274,6 +286,7 @@ local UpdateConsolidation, UpdateNanoCrew, UpdateIdleCons, UpdateLineRecovery = 
 local SpineTakeCon, SpineReturnCon = X.SpineTakeCon, X.SpineReturnCon
 local PickLab2Site, UpdateSecondLab = X.PickLab2Site, X.UpdateSecondLab
 local UpdateT2BotLab, T2BotJobStarted, T2BotJobDone = X.UpdateT2BotLab, X.T2BotJobStarted, X.T2BotJobDone
+local UpdateRezLab, RezLabJobStarted, RezLabJobDone = X.UpdateRezLab, X.RezLabJobStarted, X.RezLabJobDone
 local UpdateLineDecoy, LineDecoyFinished = X.UpdateLineDecoy, X.LineDecoyFinished
 
 function LT.New(o)
@@ -584,6 +597,7 @@ local function UpdateGrids(T, frame, res)
     UpdateLineRecovery(T, frame)
     UpdateSecondLab(T, frame, res)
     UpdateT2BotLab(T, frame, res)
+    UpdateRezLab(T, frame, res)
     UpdateLineDecoy(T, frame, res)
     UpdateEligibility(T, frame)
     UpdateNanoCrew(T, frame)
@@ -613,14 +627,16 @@ local function UpdateGrids(T, frame, res)
     UpdateSpendPressure(T, res)
     -- hand the cons out, ask the labs for what is short (T1: the reserve; T2: the jobs' `produce`)
     CB.Update(T.CB, frame, res, true)
+    X.UpdateAirConRecovery(T, frame, res)
     -- an order older than AIR_CON_TIMEOUT is forgotten only if the air lab no longer has it queued: a deep queue (30 cons ordered at
     -- once) takes longer than the timeout to work off, and forgetting orders that are still queued made the labs order the same cons again
     if #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT then
         local queued = 0
-        local lab = T.airLabID
-        if lab and T.airConDefID and Spring.GetFactoryCommands then
-            for _, c in ipairs(Spring.GetFactoryCommands(lab, -1) or {}) do
-                if c.id == -T.airConDefID then queued = queued + 1 end
+        if T.airConDefID and Spring.GetFactoryCommands then
+            for _, lab in ipairs(X.AirConLabs(T)) do      -- every T1 air lab that makes cons (AIR_CON_LABS)
+                for _, c in ipairs(Spring.GetFactoryCommands(lab, -1) or {}) do
+                    if c.id == -T.airConDefID then queued = queued + 1 end
+                end
             end
         end
         while #T.orders > 0 and frame - T.orders[1] > T.CFG.AIR_CON_TIMEOUT and T.airConsOrdered > queued do
@@ -851,6 +867,7 @@ end
 -- by its con alone while the nanos worked on other jobs).
 function LT.OnJobStarted(T, j)
     if j.tag == "t2bot" then T2BotJobStarted(T, j); return end
+    if j.tag == "rezlab" then RezLabJobStarted(T, j); return end
     if j.tag ~= "lab" and j.tag ~= "vp" then return end
     local NANO = T.BP.NANO
     if not (NANO and j.unitID) then return end
@@ -866,6 +883,7 @@ end
 -- Called by line_crew when a job ends.
 function LT.OnJobDone(T, j, state)
     if j.tag == "t2bot" or j.tag == "t2bnano" then T2BotJobDone(T, j, state); return end
+    if j.tag == "rezlab" or j.tag == "rzlnano" then RezLabJobDone(T, j, state); return end
     if j.tag == "lab" then
         if state ~= "done" then
             T.labTries = T.labTries + 1

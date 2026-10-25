@@ -9,6 +9,7 @@ do not see the widgets' `WG` automatically: `game_state.Collect{ MB = WG.MetalBo
 |---|---|---|---|
 | `WG.MetalBot` | `unit_controller` (`PublishState`, once a second), `raid_response.Publish` | `lab_controller`, `macro_controller`, `line_transition`, `defense_crew`, `enemy_intel`, `game_state`, `unit_controller` | the unit controller's read-out of the game for everyone else (below) |
 | `WG.Strategy` | `macro_controller` | `lab_controller`, `macro_controller`, `unit_controller`, `raid_response` | the `strategy.lua` object: current stance, `Pick` / `Note` / `Plan()`, `Assign(host, uid, defID)` |
+| `WG.StanceChoices` / `WG.StanceRequest` / `WG.ArmyShareRequest` | `macro_controller` (`MANUAL_STANCES` -> `StanceChoices`); `stance_panel.lua` (the other two) | the macro's switch / `army_share` hooks, `stance_panel.lua` | CORE_HUMAN (2026-10-25): the stances a person may pick, the one picked, and a manual army share 0..1 (nil = the bot's own rule). Only present when `MANUAL_STANCES` is set |
 | `WG.Spine` | `line_transition` (when the spine is built) | `lab_controller`, `line_transition`, `spine` | the vehicle-lab spine: `IsLab`, `IsT1Lab`, `IsLeaving`, `NextOrder`, `Share`, `Held`, `CFG.QUEUE_DEPTH` |
 | `WG.TileLabHold` | `macro_controller` | `lab_controller`, `macro_controller` | `function(labID) -> true` while the macro still owes that air lab constructors (the lab controller then adds nothing ahead of them) |
 | `WG.BombPlan` | `phase_plan` view | `bomb_run`, `lab_recycler`, `phase_plan` | the bomber game plan (`plan.recycle` ...) |
@@ -20,6 +21,7 @@ do not see the widgets' `WG` automatically: `game_state.Collect{ MB = WG.MetalBo
 | `WG.DecoyLabs` | `line_transition` (`line_decoy.lua`) | `lab_controller` (via `CH.DecoyLabs`) | `{ [labID] = {id, x, z, ready, decoys, decoyMax, line = true} }`: the T2 bot labs the line was turned into; decoy commanders assist these first (up to `decoyMax` = 8 each), then the sink labs |
 | `WG.LabBroker` | `lab_controller` (RAID_BOT, DRAGON_ECO, STANCE_*) | `con_broker` (`OrderCon`), `line_transition` | `{ LB = lab_broker module, lb = the instance }`: the macro's constructor orders to labs go through the same queue owner |
 | `WG.ConBroker` | `line_transition` | tests, other widgets | the `con_broker` instance: who owns which constructor |
+| `WG.ScoutNet` | CORE `unit_controller` (`scout_net.lua`) | anything that wants a look at the map | the scouting API: `RequestScout(x, z, opts)` / `RequestSector(key, opts)` (answered by the nearest free scout; `opts.kind` = `"scout"`, `"hawk"` or `"any"`, `untilMode` = `"seen"` / `"arrive"` / `"expire"`, `ttl`, `key` to refresh one request), `SacrificeScout(x, z)` (a scout runs straight at the spot and is expected to die), `Repeat(target, every)`, `CancelRequest(id)`, `Picture(frame)` (the enemy groups with value and last sighting, total value, commander, when the base was last seen), `LastSeenNear(x, z, r)`, `Want()`, `Stats()` |
 | `WG.StatsTracker` | `metalbot_stats_tracker` | the tracker itself, bots (`DecodeSpeed`) | tracker API |
 
 ## Typed access (2026-10-16)
@@ -54,3 +56,4 @@ Published by `unit_controller.PublishState` unless noted. All are plain values o
 | `airKills`, `airLost` | air value killed / lost over the last 2 min | `lab_controller` (air superiority) |
 | `hunt` | the game is won, bombers hunt the last commander | `lab_controller` |
 | `airAlarm` | bombers heading for the base: `{ frame, n }` | `lab_controller` |
+| `airRaid` | enemy bombers in our half (unit_runtime AIRDEF): `{ frame, n, value, x, z, tx, tz, seenMax, rush, since, defenders }`; `rush` = a large raid | `lab_rules` (AA floor, air-rush flush), `macro_runtime` (AIR_RUSH_SHARE) |

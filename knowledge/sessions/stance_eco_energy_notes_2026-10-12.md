@@ -64,7 +64,7 @@ low. Typical rows (STANCE_BOT, 20-min vacuum, army self-destructing):
    run, so the bot stops adding buildings (winds are the cheapest energy) at 16 min. Worth testing a higher fraction in a vacuum.
 6. **Spend-side alternatives while energy-bound:** build energy-cheap units (the stance mix is cordemon 50% / correap 12% / ...),
    or reclaim/idle less. The Dragon-on-float rule needs both banks >= 60% so it does not fire when energy is short.
-7. Compare with the old LINE_CLICK_v13d/v14 mirror notes (`knowledge/overnight_2026-10-08.md`): the ENERGY PUSH was added there
+7. Compare with the old LINE_CLICK_v13d/v14 mirror notes (`knowledge/sessions/overnight_2026-10-08.md`): the ENERGY PUSH was added there
    for the same symptom (metal at its cap, energy at 93% of income).
 
 ## Other things found this session (all in the working tree)

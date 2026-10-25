@@ -8,7 +8,7 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 
 **`candidates/LINE_CLICK_v16/` is the main bot** (user, 2026-10-12: v16 is the best version; future work builds off it).
 It is LINE_CLICK + the v12-v16 changes: forward-core/flanking army, grid expansion fixes, energy push, resource-pressure grids,
-energy cells, capstone silos + anti-nuke, rez bots, depth scouts. Its design notes are in `knowledge/v16_2026-10-09.md`
+energy cells, capstone silos + anti-nuke, rez bots, depth scouts. Its design notes are in `knowledge/bots/v16_2026-10-09.md`
 (economy bench: `knowledge/eco_scaling_2026-10-09.md`). **Every flag v16 turned on is now the framework default**, so the
 controllers pass no overrides; `candidates/LINE_CLICK` (the older main bot, a regression opponent), `LINE_HUMAN`, `ECO_BENCH`
 and `ARMY_BENCH` pin their old behaviour explicitly (a "pre-v16 ... pinned" comment next to the override).
@@ -16,7 +16,7 @@ and `ARMY_BENCH` pin their old behaviour explicitly (a "pre-v16 ... pinned" comm
 and are untested/in progress; `candidates/RUSH_SPAM` is a deliberately dumb eco-spam opponent. Open ideas: `experiment_ideas.md`.
 **Retired 2026-10-12 (moved, not deleted -- see `archive/README.md`):** LINE_BOT, TILE_BOT, SPINE_BOT, MECH_BOT, DRAGON_BOT and every
 older LINE_CLICK_vN / TILE_V2 candidate now live under `archive/bots/` and `archive/candidates/`. Earlier history (v12, v13d, v14):
-`knowledge/overnight_2026-10-08.md`. Remaining top-level bots: `OK_BOT` (reference), `INACTIVE_BOT` (pure-eco opponent),
+`knowledge/sessions/overnight_2026-10-08.md`. Remaining top-level bots: `OK_BOT` (reference), `INACTIVE_BOT` (pure-eco opponent),
 `RAIDER_BOT` / `GROUND_RAIDER_BOT` (exploiter fixtures for `find_bot_weakness`).
 **Git:** work after v12 is on branch `bot-testing-v2` (`main` stops at v12).
 
@@ -64,8 +64,8 @@ controller, the person queues and commands the army). Deploy with `.\deploy.ps1 
 
 **Stances, strategy framework, STANCE_BOT, RAID_BOT (2026-10-11 .. 14).** The session-by-session notes that used to sit here (stance editor,
 behaviour host, slot spine, the STANCE_BOT eco sessions and vacuum test, the game-vs-people mode, RAID_BOT's game-review fixes, the unit clock)
-are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic notes are `knowledge/session_2026-10-12_stance_framework.md`,
-`knowledge/session_2026-10-12_energy_eco.md`, `knowledge/session_2026-10-13_raid_bot.md`, `knowledge/variance_notes_2026-10-12.md`. Short version:
+are in `knowledge/sessions/claude_md_history_2026-10-14.md`, word for word; the per-topic notes are `knowledge/bots/session_2026-10-12_stance_framework.md`,
+`knowledge/sessions/session_2026-10-12_energy_eco.md`, `knowledge/bots/session_2026-10-13_raid_bot.md`, `knowledge/sessions/variance_notes_2026-10-12.md`. Short version:
 - **Stances** (`stances/*.lua`, edited in `stance_editor.html`) are unit comps plus a `plan`; `bar_framework/strategy.lua`
   holds the current one and runs three hooks (`army_share`, `weights`, `switch`; ready-made ones in `strategy_hooks.lua`). Units carry behaviours
   (`behavior_host.lua`, `behaviors/`: `kite`, `range_kite`, `stun_target`, `intercept`).
@@ -89,7 +89,7 @@ are in `knowledge/claude_md_history_2026-10-14.md`, word for word; the per-topic
   because the strategy does not mention it.**  New behaviour goes in as an opt-in framework option or a stance `plan` field
   (default off), next to what is there.  DRAGON_ECO's first version broke this (a from-scratch lab controller and a unit-controller
   mode that switched planners off).  It lost scouting, raid response and nano parking, and the army overspent until they were put
-  back (`knowledge/dragon_eco_2026-10-14.md`).
+  back (`knowledge/bots/dragon_eco_2026-10-14.md`).
 - **Check a new strategy in eco_sim first** (`python eco_sim.py run --bot <folder> --seeds 1-4 --no-vacuum`; compare with
   `eco_sim.py compare` against the bot it was copied from).  An early income gap there usually means the army share is wrong
   (`[SHARE]` rows: `own=` must count the whole army).
@@ -153,7 +153,33 @@ capstones on 15 grids, 10 fusion jobs) reached 5.7k m/s at 20:00 in a real vacuu
 on phi; **2026-10-15 moved onto the normal pipeline**: the perimeter army is the stance plan `army = "perimeter"` (not a constant), the
 Dragons carry the stance's `extras` behaviours `dragon_defend` (wait + help defend) / `dragon_raid` (waves of 50: commander, then build
 power, AA, closest eco), the Dragon labs are the metal sink, `bar_framework/metal_sink.lua` (2026-10-16: any sink unit, spots 4 nanos apart, starts at 85% of the spine's spend capacity), and `slot_spine` `REBUILD_NANOS` rebuilds lost nanos.  See
-`knowledge/dragon_eco_2026-10-14.md`.
+`knowledge/bots/dragon_eco_2026-10-14.md`.
+
+**HAMMER_ANVIL + unit_runtime (2026-10-25).** CORE's unit controller is now `bar_framework/unit_runtime.lua` (`UNIT.Install`). CORE's
+`unit_controller.lua` is a stub, so **a new CORE variant is three short config files, not a copy.** `candidates/HAMMER_ANVIL` = CORE with
+the stances `anvil_open` (10% share, the ground only holds) -> `anvil_burst` (a one-off T1 bomber burst, `BURST_SWITCH` /
+`strategy_hooks.burst_switch`, stance `plan.share`) -> `anvil_hold`, plus smaller build-power-first Dragon waves. Notes:
+`knowledge/bots/hammer_anvil_2026-10-25.md`. Framework changes from it (every bot on unit_runtime / lab_rules / line_transition):
+plan army `"defend"` (maneuver blobs + push when ahead; `"hold"`'s parked ring is gone), plan `bomb_run`; **air defence**
+(`mb.airRaid`: an AA floor once a bomber is seen; a large raid clears every lab's queue for AA via lab_broker mode `"flush"`,
+`AIR_RUSH_SHARE` 1.0, all ground AA + fighters to the raid); **T1 air con recovery** (`AIR_CON_LABS`: a deficit turns a grid capstone
+into a T1 air lab; cons spread over all T1 air labs). Known bug left: `endgame.Strike` parks bombers so click_army's bomber runs never fly.
+
+**CORE_HUMAN, ledgers, test tracker (2026-10-25).**
+- **`candidates/CORE_HUMAN/`** = CORE's macro and lab rules with an EMPTY unit controller: a person micros the army, `human_control_logger.lua` records it.
+  `stance_panel.lua` (right-edge buttons, `/stance <name|next|prev>`, `/share <0-100|auto>`) picks the stance and the army share (macro_runtime
+  `MANUAL_STANCES`, `WG.StanceRequest`, `WG.ArmyShareRequest`). Deploy: `.\deploy.ps1 -Bot candidates\CORE_HUMAN`. The logger now attributes orders with
+  `widget:CommandNotify` (UI only): `[HCL] cmd/queue` rows are the person's, the rest is `lua_orders` (older logs mix in the macro's orders: filter to army units).
+  Notes + a read of a game + Dragon/sink math: `knowledge/bots/core_human_2026-10-25.md`.
+- **CORE (and CORE_HUMAN) changes:** `REZ_LAB` (a reserved, urgent T1 bot lab on the line, `line_transition/rez_lab.lua`) + rez floor (`REZ_START_FRAME` 3:00, `REZ_BASE` 8,
+  `REZ_MAX` 20); `SINK_MAX` 40 / `SINK_PARALLEL` 5 (10 sink labs absorbed ~4.3k m/s and the bank floated to 600k at 9.4k income); the minelayer (Trapper, `cormlv`)
+  is no longer picked as a con (`BT.PlacesEconomy`); `SHURI_LIFT_ALWAYS` (CORE_HUMAN) keeps the Shuriken floor without a raid signal.
+- **Ledgers:** `ledger_logger.lua` writes `[LED] spend / fight / value / scout` rows, `python ledger_report.py [log]` reports them and ranks the GAPS. A unit's worth
+  (`bar_framework/value_weights.lua`): army = cost, eco = cost + 60 s of income, build power = 3 x cost + 60 s of throughput, commander 25k. `knowledge/ledgers.md`.
+  `find_weakness.py` on CORE (runs_tide, 10/16): metal float first, then early warning, undefended eco, AA cover; the 10/25 games agree on float.
+- **Test tracker:** `python tests/run_tests.py` logs every run (`tests/test_tracker.json`, `test_history.jsonl`, git-ignored); a suite with 20 passes in a row is
+  skipped; `--touched` also runs stable suites covering a changed file, `--all` runs everything, `--status` shows streaks. Coverage = the repo paths a suite's source names
+  plus `tests/covers.json`. `tests/LUA_TESTING.md`.
 
 ## Running a test
 
@@ -401,6 +427,8 @@ MetalBot/
   find_weakness.py     — ranks likely weaknesses from a result's tracker_timeline
   bot_score.py         — state value phi per team per checkpoint (config: score_config.json)
   score_eval.py        — does phi predict winners? noise in mirrors; weight fitting
+  ledger_logger.lua    — widget: [LED] spend / fight / scouting-lead ledgers; ledger_report.py reads them (knowledge/ledgers.md)
+  stance_panel.lua     — widget: stance + army-share buttons for CORE_HUMAN (MANUAL_STANCES)
   replay_analysis.py   — economy/combat telemetry from a .sdfz replay (needs a clean game-end)
   build_order_sim.py   — beam-search opening optimizer; modes incl. max_rate, `spend` (most metal spent
                           with an army floor by a deadline) and config-driven
@@ -418,5 +446,6 @@ MetalBot/
   archive/             — retired bots, candidates, framework modules, tests, root files (archive/README.md); not deployed
   blueprints/          — blueprint .lua files + the build_order_sim.py results they came from
   raid_configs/        — build_order_sim.py `raid` mode configs
+  knowledge/            — game info + how bots are built (README.md indexes it; bots/ design notes, plans/ open work, sessions/ dated logs)
   knowledge/raid_runs/ — saved exploiter-bot match results and analysis
 ```

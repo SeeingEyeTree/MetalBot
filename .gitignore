@@ -15,3 +15,7 @@ runs_stance/
 ecosim/runs/
 
 ecosim/_dump/
+
+# test tracker (per machine)
+tests/test_tracker.json
+tests/test_history.jsonl

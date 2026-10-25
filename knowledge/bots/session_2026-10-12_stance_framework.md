@@ -34,7 +34,7 @@ existing slow_front / click_army / scout_lanes / line_bomb suites.
 3. Slot geometry unverified in the real game: slots 144 apart, wide lab at x=72, nano reach ~280. Check lab footprints and that labs exit cleanly.
 4. Energy storage: v16's spine cells build `corestor` buffers (ThrottleStorage); the slot spine has none (energy floated late, but may matter).
 5. Move the rest of the micro onto the host: Shuriken stun (`stun_target`), commander evade, rez crew, Pounder screen, scouts, bomb_run/air_wing. Air guards (Shuriken, Wasp, fighters) still use the old lab-controller rules, not the stance.
-6. Frontier crew for LRPC/defence creep: `knowledge/frontier_crew_todo.md`.
+6. Frontier crew for LRPC/defence creep: `knowledge/plans/frontier_crew_todo.md`.
 7. experiment_ideas.md mapping: bombing runs (switch hook + AA facts + port bomb_run) are closest; T3 mix is a stance edit; skuttles/spies need a radar-avoiding approach behaviour; nukes need a target picker on `state.facts`/`ei`; energy grid needs an `energy_pressure` fact; LRPC/creep need the frontier crew.
 8. Thin bot folders: a bot as config (stance + hooks + overrides) over shared widgets, so an experiment is not a 2000-line copy. Slot spine/strategy are ready for it; the three widgets are not yet shared.
 9. `.gitattributes` for line endings was skipped (would renormalise every file with this much uncommitted work).

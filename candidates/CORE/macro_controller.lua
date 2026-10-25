@@ -19,12 +19,16 @@ local MACRO = VFS.Include("LuaUI/Widgets/bar_framework/macro_runtime.lua")
 
 MACRO.Install(widget, WG, {
     NAME        = "CORE",
-    STANCE      = "raid_open",     -- opening game plan
+    SINK        = true,            -- metal sink on (metal_sink.lua): extra labs make Dragons once the spine cannot spend the income
+    SINK_UNIT   = "corcrwh",       -- the sink unit: a Dragon (the framework default, named here so it is visible)
+    STANCE     = "raid_open",     -- opening game plan
     HOLD_STANCE = "hold",          -- after bad trades while behind (strategy_hooks.game_plan)
     LATE_STANCE = "raid_late",     -- once the unit cap is filling (strategy_hooks.cap_switch)
     -- fast stance transitions (2026-10-16, slot_spine.lua): labs swapped in two waves, a resident T1 vehicle + T2 bot con per block,
     -- no nano parking near a swap, an idle lab becomes a T2 bot lab
-    LT_CFG      = { T2BOT_LAB = true, DECOY_LINE = true },        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
+    SINK_MAX    = 40,              -- 2026-10-25: 10 labs absorb ~4.3k m/s (10 x ~430) and the bank floated to 600k at 9.4k income; one lab with 32 decoys takes ~430 m/s
+    SINK_PARALLEL = 5,             -- labs being placed at once (24+ are needed at 9-10k m/s)
+    LT_CFG      = { T2BOT_LAB = true, DECOY_LINE = true, REZ_LAB = true },   -- REZ_LAB: a T1 bot lab on the line for the rez floor (line_transition/rez_lab.lua)        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
     SPINE_CFG   = { FLOAT_MULT = 2.5, LAB_CANDIDATES = { "corlab", "corvp", "corap", "coralab", "coravp", "coraap", "corgant" }, FRONT = 600, BLOCK_PITCH = 320, WAVE_SWAP = true, BLOCK_CONS = true, IDLE_LAB_T2 = true },
     -- everything else: the defaults in macro_runtime.lua (RAID_BOT's values)
 })

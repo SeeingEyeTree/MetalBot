@@ -394,6 +394,66 @@ function M.Blobs(frame, radius, maxAge)
     return out
 end
 
+-- Groups of the enemy's mobile units (air included; scouts and the commander left out) seen within maxAge:
+-- { {x, z, value, armedValue, n, air, range, hitsAir, tech, lastSeen, uids}, ... } most valuable first.
+-- Seeds are the most valuable units not already inside a seed's radius; every unit joins the nearest seed
+-- in reach and each centre is then the value-weighted mean of its members, so the result does not depend on
+-- unit-id order the way Blobs does.  air = most of the group's value flies.  range = longest weapon in it.
+function M.Groups(frame, radius, maxAge)
+    radius, maxAge = radius or 450, maxAge or 1800
+    local pts = {}
+    for _, rec in pairs(seen) do
+        local c = rec.c
+        if c.mobile and not c.scout and not c.commander and (c.armed or c.builder)
+           and frame - rec.frame <= maxAge then
+            pts[#pts + 1] = { x = rec.x, z = rec.z, v = c.value, c = c, uid = rec.uid, f = rec.frame }
+        end
+    end
+    table.sort(pts, function(a, b) if a.v ~= b.v then return a.v > b.v end return a.uid < b.uid end)
+    local seeds = {}
+    for _, p in ipairs(pts) do
+        local near = false
+        for _, s in ipairs(seeds) do
+            if (p.x - s.x) ^ 2 + (p.z - s.z) ^ 2 <= radius * radius then near = true; break end
+        end
+        if not near then seeds[#seeds + 1] = { x = p.x, z = p.z } end
+    end
+    local out = {}
+    for i, s in ipairs(seeds) do
+        out[i] = { sx = 0, sz = 0, value = 0, armedValue = 0, n = 0, airValue = 0, range = 0, hitsAir = false,
+                   tech = 1, lastSeen = -1e9, uids = {} }
+    end
+    for _, p in ipairs(pts) do
+        local best, bestD = nil, radius * radius
+        for i, s in ipairs(seeds) do
+            local d = (p.x - s.x) ^ 2 + (p.z - s.z) ^ 2
+            if d <= bestD then best, bestD = i, d end
+        end
+        local g = best and out[best]
+        if g then
+            local c = p.c
+            g.sx, g.sz, g.value, g.n = g.sx + p.x * p.v, g.sz + p.z * p.v, g.value + p.v, g.n + 1
+            if c.armed then g.armedValue = g.armedValue + p.v end
+            if c.air then g.airValue = g.airValue + p.v end
+            g.range = math.max(g.range, c.range or 0)
+            g.hitsAir = g.hitsAir or (c.armed and c.hitsAir) or false
+            g.tech = math.max(g.tech, c.tech or 1)
+            g.lastSeen = math.max(g.lastSeen, p.f)
+            g.uids[#g.uids + 1] = p.uid
+        end
+    end
+    local res = {}
+    for _, g in ipairs(out) do
+        if g.value > 0 then
+            res[#res + 1] = { x = g.sx / g.value, z = g.sz / g.value, value = g.value, armedValue = g.armedValue,
+                              n = g.n, air = g.airValue * 2 > g.value, range = g.range, hitsAir = g.hitsAir,
+                              tech = g.tech, lastSeen = g.lastSeen, uids = g.uids }
+        end
+    end
+    table.sort(res, function(a, b) if a.value ~= b.value then return a.value > b.value end return a.x < b.x end)
+    return res
+end
+
 -- Plain numbers for hooks: what the enemy has that we have to plan around.
 function M.Facts(frame)
     local f = { antiNuke = 0, aaStatic = 0, aaMobile = 0, aaDedicated = 0, radars = 0, jammers = 0,

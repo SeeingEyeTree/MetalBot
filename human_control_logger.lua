@@ -281,9 +281,30 @@ local function OptsShift(o)
     return (o and floor(o / 32) % 2 == 1) and 1 or 0
 end
 
+-- Who gave an order?  UnitCommand's fromLua is false for orders other widgets give (they travel the player command path), so the bot's
+-- macro orders were logged as the person's.  widget:CommandNotify fires only for commands from the UI (never for Spring.GiveOrder*), so a
+-- UI command is remembered by (cmd, first 3 params) and a UnitCommand that matches one within HUMAN_WINDOW frames is the person's.
+-- Lab queue clicks (cmd < 0, no params) use the short LAB_WINDOW: the bot queues the same units.
+local HUMAN_WINDOW, LAB_WINDOW = 90, 8
+local humanKeys = {}      -- [key] = frame of the last UI command with that key
+local function ParamKey(cmdID, p)
+    p = p or {}
+    return cmdID .. "|" .. (p[1] and fmt("%d", p[1]) or "") .. "_" .. (p[2] and fmt("%d", p[2]) or "") .. "_" .. (p[3] and fmt("%d", p[3]) or "")
+end
+
+function widget:CommandNotify(cmdID, cmdParams, cmdOpts)
+    humanKeys[ParamKey(cmdID, cmdParams)] = game.frame
+    return false      -- never block the command
+end
+
+local function IsHumanOrder(cmdID, p)
+    local f = humanKeys[ParamKey(cmdID, p)]
+    return f ~= nil and game.frame - f <= (cmdID < 0 and LAB_WINDOW or HUMAN_WINDOW)
+end
+
 function widget:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOpts, cmdTag, playerID, fromSynced, fromLua)
     if unitTeam ~= myTeam then return end
-    if fromLua then luaOrders = luaOrders + 1; return end
+    if fromLua or not IsHumanOrder(cmdID, cmdParams) then luaOrders = luaOrders + 1; return end   -- the bot's (or another widget's) order
     local d = UnitDefs[unitDefID]
     if cmdID < 0 and d and d.isFactory then
         -- a lab queue entry, not a unit order

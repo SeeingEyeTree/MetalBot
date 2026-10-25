@@ -3,7 +3,7 @@
 --   cfg = BC.Preset("line_transition", "RETROFIT", "GRID_HELP", { CON_HOLD = fn })
 --
 -- Each group is one idea; a bot lists the ideas it wants.  The comment on a group says what it does and where it came from
--- (knowledge/session_2026-10-12_energy_eco.md has the numbers).  Anything left out keeps line_transition's default.
+-- (knowledge/sessions/session_2026-10-12_energy_eco.md has the numbers).  Anything left out keeps line_transition's default.
 
 return {
     -- air cons wait at the back of the line instead of the front
@@ -14,7 +14,7 @@ return {
                  RETROFIT_FLOAT_BATCH = 6 },
 
     -- every finished advanced air lab orders its T2 cons at once (the pre-2026-10-14 rule; the on-demand rule left STANCE_BOT / RAID_BOT
-    -- with about half the cons and ~25% less metal income by 14:00 in the vacuum test, see knowledge/vacuum_regression_2026-10-14.md)
+    -- with about half the cons and ~25% less metal income by 14:00 in the vacuum test, see knowledge/sessions/vacuum_regression_2026-10-14.md)
     T2_UP_FRONT = { T2_CONS_UP_FRONT = true },
 
     -- keep ~2 T2 cons per finished grid (extra retrofit builders) while the metal bank is healthy; demand-only ordering stalled at ~36 T2 cons

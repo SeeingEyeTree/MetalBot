@@ -27,6 +27,9 @@
 --                           built, so a half-built unit is never thrown away), then no more inserts until a unit starts in that lab
 --                           (UnitStarted) or `pendingTimeout` frames pass;
 --                  "topup"  the queue holds fewer than `depth` orders: fill it up to depth (a lab that must always have work queued)
+--                  "flush"  (2026-10-25, the air-raid AA rush) a busy queue is CLEARED -- the unit in progress too -- once per
+--                           `flushKey(lab)` (a raid's id: a new key flushes again), then filled to `depth` with the want's picks;
+--                           after that it behaves like "topup".  A nil flushKey never clears.
 --   depth          how many orders a tail order places: a number, or function(lab) -> n (default 1).  The broker calls pick again
 --                  for each further slot, so a want that wants one unit returns nil from the second call, a want that wants a
 --                  full queue of the same unit returns it every time, and the stance's picks differ every call.
@@ -64,6 +67,22 @@ local function DefaultOrder(labID, defID)
     Spring.GiveOrderToUnit(labID, -defID, {}, {})
 end
 
+-- Empty a factory queue, the unit in progress included: a build order with right (dequeue) + ctrl (x20) + shift (x5) takes
+-- 100 of that unit off the queue; once per unit type in it.
+local function DefaultClear(labID)
+    local cmds
+    if Spring.GetFactoryCommands then cmds = Spring.GetFactoryCommands(labID, -1)
+    else cmds = Spring.GetUnitCommands(labID, -1) end
+    local seen = {}
+    for _, c in ipairs(type(cmds) == "table" and cmds or {}) do
+        local id = c.id
+        if id and id < 0 and not seen[id] then
+            seen[id] = true
+            Spring.GiveOrderToUnit(labID, id, {}, { "right", "ctrl", "shift" })
+        end
+    end
+end
+
 -- Position 1 (after the unit being built) when the lab is working, 0 when idle: position 0 cancels the build in progress.
 -- Pattern copied from BAR's own unit_factory_quota.lua.
 local function DefaultInsert(labID, defID)
@@ -83,6 +102,7 @@ function LB.New(o)
     return { wants = {}, byName = {}, cfg = cfg, depth = o.depth or 3, last = {}, pending = {}, stats = {}, orders = 0,
              echo = o.echo or function(s) Spring.Echo(s) end, clock = o.clock or tostring,
              queueLen = o.queueLen or DefaultQueueLen, order = o.order or DefaultOrder, insert = o.insert or DefaultInsert,
+             clear = o.clear or DefaultClear, flushed = {},
              onOrder = o.onOrder, name = o.unitName or function(d) return (UnitDefs and UnitDefs[d] and UnitDefs[d].name) or tostring(d) end,
              lastLog = -1e9, lastLogOrders = 0, dirty = true }
 end
@@ -92,7 +112,8 @@ end
 function LB.AddWant(lb, spec)
     assert(spec.name and spec.pick, "lab_broker want needs name and pick")
     assert(not lb.byName[spec.name], "lab_broker want registered twice: " .. spec.name)
-    assert(spec.mode == nil or spec.mode == "empty" or spec.mode == "ahead" or spec.mode == "topup" or spec.mode == "tail", "lab_broker: bad mode for " .. spec.name)
+    assert(spec.mode == nil or spec.mode == "empty" or spec.mode == "ahead" or spec.mode == "topup" or spec.mode == "tail"
+           or spec.mode == "flush", "lab_broker: bad mode for " .. spec.name)
     spec.mode = spec.mode or "empty"
     spec.prio = spec.prio or 0
     spec.seq = #lb.wants + 1
@@ -150,11 +171,22 @@ function LB.Service(lb, lab, frame)
     local list = len == 0 and lb.all or lb.busy
     for _, w in ipairs(list) do
         local grace = w.grace or lb.cfg.ORDER_GRACE
+        local fkey = (w.mode == "flush" and len > 0 and w.flushKey) and w.flushKey(lab) or nil
+        local flush = fkey ~= nil and lb.flushed[id] ~= fkey
         if not (last and frame - last < grace) and (not w.applies or w.applies(lab))
-           and (w.mode ~= "topup" or len < DepthOf(lb, w, lab)) then
-            local defID, why = w.pick(lab, frame, len + 1)
+           and ((w.mode ~= "topup" and w.mode ~= "flush") or flush or len < DepthOf(lb, w, lab)) then
+            local defID, why = w.pick(lab, frame, flush and 1 or len + 1)
+            if defID and flush then
+                -- clear the queue (the unit in progress too), then fill it from slot 1
+                lb.clear(id)
+                lb.flushed[id] = fkey
+                lb.pending[id] = nil
+                len = 0
+                lab.queueLen, lab.empty = 0, true
+            end
             if defID then
                 local label = why or w.why or w.name
+                if flush then label = label .. " (queue cleared)" end
                 if len > 0 and w.mode == "ahead" then
                     -- a busy queue: one insert, then wait for it to start
                     local p = lb.pending[id]
@@ -213,7 +245,7 @@ function LB.UnitStarted(lb, builderID)
 end
 
 function LB.Forget(lb, labID)
-    lb.last[labID], lb.pending[labID] = nil, nil
+    lb.last[labID], lb.pending[labID], lb.flushed[labID] = nil, nil, nil
 end
 
 function LB.Status(lb)

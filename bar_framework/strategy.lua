@@ -89,6 +89,9 @@ function Strategy:Tick(frame, state)
         if ok then share = tonumber(v) else self:Fail("army_share", v, frame) end
     end
     if not share and self.current and self.current.suggestedShare then share = self.current.suggestedShare / 100 end
+    -- plan.share (optional, HAMMER_ANVIL 2026-10-25): a floor under the hook's share while this stance is current (a burst stance)
+    local plan = self.current and self.current.plan
+    if plan and tonumber(plan.share) then share = math.max(share or 0, tonumber(plan.share)) end
     self.share = Clamp01(share or M.DEFAULT_SHARE)
     if h.weights then
         local ok, w = pcall(h.weights, state, self)

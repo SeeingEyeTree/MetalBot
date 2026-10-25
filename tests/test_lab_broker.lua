@@ -41,6 +41,34 @@ do
     check(#log == 2, "one order per lab per service")
 end
 
+-- ── flush: a busy queue is cleared once per key, then filled to depth; after that it tops up; a new key clears again ──
+do
+    local lb = NewBroker{ clear = function(id) log[#log + 1] = { id = id, how = "clear" }; queues[id] = 0 end }
+    local key, on = "raid1", true
+    LB.AddWant(lb, { name = "army", prio = 10, mode = "topup", depth = 3, pick = function() return 1 end })
+    LB.AddWant(lb, { name = "aa", prio = 150, mode = "flush", depth = 3, grace = 0,
+                     flushKey = function() return key end, pick = function() if on then return 7 end end })
+    queues[1] = 5
+    LB.Service(lb, Lab(1), 0)
+    check(log[1].how == "clear" and #log == 4 and log[2].d == 7 and log[4].d == 7 and queues[1] == 3,
+          "flush: the busy queue is cleared, then filled to depth with the want's unit")
+    LB.Service(lb, Lab(1), 1)
+    check(#log == 4, "flush: same key, full queue: nothing more")
+    queues[1] = 1
+    LB.Service(lb, Lab(1), 2)
+    check(#log == 6 and log[5].how == "tail" and log[6].d == 7, "flush: same key, short queue: topped up, not cleared")
+    key = "raid2"
+    LB.Service(lb, Lab(1), 3)
+    check(log[7].how == "clear", "flush: a new key clears again")
+    on = false
+    queues[1] = 4
+    local before = #log
+    LB.Service(lb, Lab(1), 4)
+    check(#log == before, "flush: no pick, no clear")
+    LB.Forget(lb, 1)
+    check(lb.flushed[1] == nil, "Forget drops the flush record")
+end
+
 -- ── grace: a lab just ordered is left alone; a want's own grace overrides ──
 do
     local lb = NewBroker()

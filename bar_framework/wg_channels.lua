@@ -28,7 +28,7 @@ M.SCHEMA = {
         foeDist = "number", threats = "table", raid = "table", airLosses = "number", intel = "table",
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
         armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number",
-        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", blobs = "table",
+        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", blobs = "table",
     } },
     Strategy    = { kind = "table", open = true },                  -- strategy.lua object: Name / Plan / Assign / Pick / Note
     Spine       = { kind = "table", open = true },                  -- spine / slot_spine API
@@ -44,6 +44,10 @@ M.SCHEMA = {
     LabBroker   = { kind = "table", fields = { LB = "any", lb = "any" } },
     ConBroker   = { kind = "table", open = true },                  -- con_broker instance (who owns which constructor)
     StatsTracker = { kind = "table", open = true },
+    StanceChoices = { kind = "table" },                             -- { "raid_open", ... } the stances a person may pick (macro_runtime MANUAL_STANCES; stance_panel.lua shows them)
+    StanceRequest = { kind = "string" },                            -- the stance a person picked (stance_panel.lua); the manual switch hook applies it
+    ArmyShareRequest = { kind = "number" },                         -- army share 0..1 a person set (stance_panel.lua); nil = the bot's own rule
+    ScoutNet    = { kind = "table", open = true },                  -- scout_net.lua API: RequestScout / SacrificeScout / Picture ... (CORE)
 }
 
 -- WG entries that belong to BAR's own widgets, not to a bot (ignored by Validate).  Add names here when a stock widget

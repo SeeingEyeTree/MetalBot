@@ -27,6 +27,8 @@ M.TABLE = {
         savior       = "cormabm",      -- mobile anti-nuke
         silo         = "corsilo",
         aa_light     = "corrl",     aa_heavy   = "corflak",
+        -- mobile AA, by lab (the air-defence floor / rush, lab_rules): flak truck (T2 vehicle plant), T2 bot, T1 vehicle, T1 bot, hover
+        aa_flak_truck = "corsent",  aa_t2_bot  = "coraak",  aa_t1_veh  = "cormist", aa_t1_bot = "corcrash", aa_hover = "corah",
         nano         = "cornanotc",
         con_t1_bot   = "corck",     con_t1_veh = "corcv",   con_t1_air = "corca",
         con_t2_bot   = "corack",    con_t2_veh = "coracv",  con_t2_air = "coraca",

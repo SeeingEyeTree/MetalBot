@@ -200,6 +200,44 @@ do
         if spike({ frame = i * 30, metal = { income = (i % 10 == 0) and 5000 or 300 } }) then fired = true end
     end
     check(not fired, "income_switch: short spikes do not switch (the income is smoothed)")
+
+    -- burst_switch: nothing before income holds, `to` until `spend` went into the army (or burst_s), then `back` for good
+    local burst = SH.burst_switch{ to = "burst", back = "hold", income = 250, hold_s = 20, spend = 5000, burst_s = 240 }
+    local function B(frame, inc, av) return burst({ frame = frame, metal = { income = inc }, armyValue = av or 1000 }) end
+    check(B(0, 100) == nil and B(30, 100) == nil, "burst_switch: no stance before income holds")
+    local bf, bgot = 60, nil
+    while not bgot and bf < 6000 do bgot = B(bf, 400); bf = bf + 30 end
+    local startF = bf - 30
+    check(bgot == "burst" and startF >= 60 + 600, "burst_switch: the burst starts once income held 20 s (frame " .. startF .. ")")
+    check(B(startF + 30 * 30, 0, 4000) == "burst", "burst_switch: still on below the spend, even if income drops")
+    check(B(startF + 40 * 30, 0, 2000) == "burst", "burst_switch: losses do not undo the spend so far")
+    check(B(startF + 50 * 30, 0, 6100) == "hold", "burst_switch: ends once the army value rose by `spend`")
+    check(B(startF + 300 * 30, 900, 1000) == "hold", "burst_switch: then `back` for good")
+    local timed = SH.burst_switch{ to = "burst", back = "hold", income = 0, hold_s = 0, spend = 5000, burst_s = 240 }
+    check(timed({ frame = 0, metal = { income = 1 }, armyValue = 0 }) == "burst", "burst_switch: starts")
+    check(timed({ frame = 239 * 30, metal = { income = 1 }, armyValue = 0 }) == "burst" and
+          timed({ frame = 240 * 30, metal = { income = 1 }, armyValue = 0 }) == "hold", "burst_switch: burst_s caps it without the spend")
+    local alive = 0
+    local counted = SH.burst_switch{ to = "burst", back = "hold", income = 0, hold_s = 0, unit = "corshad", count = 30, burst_s = 300,
+                                     spend = 10, count_fn = function() return alive end }
+    check(counted({ frame = 0, metal = { income = 1 }, armyValue = 0 }) == "burst", "burst_switch (count): starts")
+    alive = 29
+    check(counted({ frame = 30 * 30, metal = { income = 1 }, armyValue = 99999 }) == "burst",
+          "burst_switch (count): army value does not end it while under the count")
+    alive = 30
+    check(counted({ frame = 31 * 30, metal = { income = 1 }, armyValue = 0 }) == "hold", "burst_switch (count): ends at `count` alive")
+end
+
+-- plan.share: a floor under the hook's share while the stance is current
+do
+    local lo = { name = "lo", units = { { n = "corak", share = 1 } } }
+    local burstSt = { name = "burstSt", plan = { army = "hold", share = 0.65 }, units = { { n = "corshad", share = 1 } } }
+    local ps = ST.New{ stances = { lo = lo, burstSt = burstSt }, initial = "lo",
+                       hooks = { army_share = function() return 0.10 end } }
+    ps:Tick(30, {})
+    check(math.abs(ps:Share() - 0.10) < 1e-9, "plan.share: no floor without the field")
+    ps:Set("burstSt"); ps:Tick(60, {})
+    check(math.abs(ps:Share() - 0.65) < 1e-9, "plan.share lifts the share (" .. ps:Share() .. ")")
 end
 
 check(#W.errors == 0, "no Lua errors")

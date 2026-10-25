@@ -4,6 +4,11 @@
 `--list` for what is skipped or known to fail). It needs no Lua install -- it runs the suites through lupa. The rest of this file is how
 the individual pieces work.
 
+**Test tracker (2026-10-25):** every run is logged (`tests/test_tracker.json`, `tests/test_history.jsonl`, both git-ignored). A suite that has passed
+20 runs in a row is *stable* and is skipped by a normal run (a failure resets its streak). `--touched` also runs stable suites that cover a file
+changed in git (uncommitted, or `--since REF`); `--all` runs everything; `--status` shows streaks and which stable suites the change touches.
+A suite covers the repo paths its source names, plus `tests/covers.json` (`{"test_name": ["path/prefix"]}`) for indirect coverage.
+
 MetalBot targets Lua 5.1. Before submitting a code change, compile each changed Lua file
 without producing an output file:
 

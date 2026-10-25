@@ -291,8 +291,56 @@ function M.Install(X)
         AssignCons(T, frame)
     end
 
+    -- AIR_CON_LABS (user 2026-10-25: CORE lost many T1 air cons to fighters and did not replace them -- one air lab, its queue
+    -- shared with the floor).  While the jobs + reserve want at least AIR_CON_DEFICIT more T1 air cons than stand ready, for
+    -- AIR_CON_DEFICIT_S seconds, an open grid's capstone becomes a T1 air lab, built next instead of last (a skipped capstone past
+    -- CAPSTONE_MAX comes back for it); at most AIR_CON_LABS_MAX of them.  con_orders.QueueAirCon then spreads the cons over every
+    -- T1 air lab (and keeps making them if the line's air lab is gone).  Not at the unit cap (consolidation).
+    local function UpdateAirConRecovery(T, frame, res)
+        local C = T.CFG
+        if not C.AIR_CON_LABS or T.consolidateOn or not T.labDefID or not T.CB or frame - (T.acCheckF or -1e9) < 90 then return end
+        T.acCheckF = frame
+        local gap = CB.Unmet(T.CB, 1, frame, res) + (T.CB.reserve and T.CB.reserve[1] or 0) - CB.Available(T.CB, 1, true)
+        if gap >= C.AIR_CON_DEFICIT then T.acDefSince = T.acDefSince or frame else T.acDefSince = nil end
+        if not (T.acDefSince and frame - T.acDefSince >= C.AIR_CON_DEFICIT_S * 30) then return end
+        T.capAirLabs = T.capAirLabs or {}
+        local live = 0
+        for _, c in ipairs(T.capAirLabs) do
+            if not c.dead then
+                local alive = c.id and Spring.GetUnitDefID(c.id)
+                local st = c.st
+                if alive or (st and not st.done) then live = live + 1 else c.dead = c.id ~= nil end
+            end
+        end
+        if live >= C.AIR_CON_LABS_MAX then return end
+        for _, st in ipairs(T.gridStates) do
+            if not st.done and not st.capAirLab and st.builderID and Spring.GetUnitDefID(st.builderID) then
+                local cdef = Spring.GetUnitDefID(st.builderID)
+                for _, item in ipairs(st.queue) do
+                    if item.cls == "factory" and (not item.built or item.status == "skipped") and item.status ~= "started"
+                       and item.status ~= "claimed" and cdef and T.BP.CanBuild(cdef, T.labDefID) then
+                        local wx, wz = T.BP.SnapToBuildGrid(T.labDefID, item.wx, item.wz)
+                        item.defID, item.wx, item.wz = T.labDefID, wx, wz
+                        item.built, item.status = false, nil
+                        st.deferFactories, st.capAirLab = false, true
+                        T.capAirLabs[#T.capAirLabs + 1] = { x = wx, z = wz, st = st }
+                        T.acDefSince = frame        -- the next one only after another full deficit window
+                        Spring.Echo(string.format("[LT] %s T1 air con deficit (%d short for %ds): grid (%d, %d) capstone -> T1 air lab at (%d, %d), built next (%d of max %d)",
+                            Clock(frame), gap, C.AIR_CON_DEFICIT_S, st.anchorX, st.anchorZ, wx, wz, live + 1, C.AIR_CON_LABS_MAX))
+                        return
+                    end
+                end
+            end
+        end
+        if frame - (T.acLogF or -1e9) >= 1800 then
+            T.acLogF = frame
+            Spring.Echo(string.format("[LT] %s T1 air con deficit (%d short) but no open grid has a capstone left for a T1 air lab", Clock(frame), gap))
+        end
+    end
+
     X.InsideLine = InsideLine
     X.AddCompleted = AddCompleted
+    X.UpdateAirConRecovery = UpdateAirConRecovery
     X.OpenFirstGrid = OpenFirstGrid
     X.ReleaseCandidates = ReleaseCandidates
 

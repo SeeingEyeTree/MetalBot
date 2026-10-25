@@ -17,6 +17,8 @@
 --                map LOS/radar/explored
 --   [TRK] combat losses (lost_* = all, incl. our own reclaims; lost_enemy_* = enemy-attributed),
 --                what killed us (killers=name:count,...), damage, kills seen
+--   [TRK] reach  every 15 s: share of army-unit life spent within 15 s / 15-30 s / 30 s of move
+--                time (range-adjusted) of enemy units it can hit; see snapshotReach
 --   [TRK] event  name=<milestone> [extra key=value ...]
 -- All counters are cumulative unless the key says otherwise; diff consecutive rows for
 -- rates. bot_testing.py parses these into result["tracker_timeline"];
@@ -101,6 +103,10 @@ local STUCK_R       = 250      -- ...within this many elmos of it, and not movin
 local SITE_BUILDERS = 6        -- builders sampled per snapshot for free factory sites
 local SITE_DIRS     = 8        -- sample points per builder
 local EXIT_FACS     = 8        -- factories path-tested per snapshot
+local REACH_EVERY   = 450      -- game frames between reach samples (15 game-seconds)
+local REACH_NEAR    = 15       -- seconds of move time: "near" enemy value
+local REACH_FAR     = 30       -- seconds of move time: "within reach" of enemy value
+local REACH_CAP     = 120      -- seconds: cap on a unit's move time when taking the median
 
 local myTeam, myAlly, startX, startZ = nil, nil, 0, 0
 local firstSeenEnemy = -1
@@ -1379,6 +1385,126 @@ local function snapshotCombat(f)
         #top > 0 and table.concat(top, ",") or "-"))
 end
 
+-- ── Reach: how close our army lives to enemy value ───────────────────────────
+-- Every REACH_EVERY frames, each finished army unit gets its "move time to the enemy":
+-- the time it would take to walk (fly) from where it is to the point where its longest weapon
+-- reaches the nearest enemy unit it can actually hit = max(0, distance - weapon range) / speed.
+-- A unit is "near" when that is <= REACH_NEAR / REACH_FAR seconds.  Because the samples are
+-- evenly spaced, the share of samples that are near IS the share of the unit's life spent near
+-- (summed over all units, so long-lived units weigh more); `w_` fields weight each sample by the
+-- unit's metal cost.  Ground and air are kept apart: ground units should live near enemy value
+-- (to fight it or to stop it reaching eco); air units strike from afar, so their share is
+-- logged but not meant to be high.  Straight-line distance: terrain/pathing is ignored.
+-- Only enemies this process can see or has on radar are known, so a bot with no scouting reads
+-- low.  Output is a `reach` row: cumulative fields (reach_*) plus this interval (int_*).
+local reachCache = {}              -- unitDefID -> {range, speed, air, hitsAir, hitsGround, mv, name}
+local reachTot  = { n = 0, le15 = 0, band = 0, w = 0, w_le15 = 0, w_band = 0,
+                    air_n = 0, air_le15 = 0, air_band = 0 }
+local reachDef  = {}               -- def name -> {n, le15, band}  (ground units only)
+
+local function reachInfo(defID)
+    local r = reachCache[defID]
+    if r ~= nil then return r or nil end
+    local d = UnitDefs[defID]
+    if not d or not d.canMove or (d.speed or 0) <= 0 then reachCache[defID] = false; return nil end
+    local range = d.maxWeaponRange or 0
+    if range <= 0 and d.weapons then
+        for i = 1, #d.weapons do
+            local w = d.weapons[i]
+            local wd = w and w.weaponDef and WeaponDefs and WeaponDefs[w.weaponDef]
+            if wd then range = math.max(range, wd.range or 0) end
+        end
+    end
+    local hitsAir, hitsGround = capsOf(defID)
+    r = { range = range, speed = d.speed, air = d.canFly and true or false,
+          hitsAir = hitsAir, hitsGround = hitsGround, mv = cost(defID), name = d.name }
+    reachCache[defID] = r
+    return r
+end
+
+local function snapshotReach(f)
+    -- enemy positions as parallel arrays; kind 1 = ground, 2 = air, 0 = radar blip (type unknown)
+    local fx, fz, fk, fv, nf = {}, {}, {}, {}, 0
+    for _, uid in ipairs(enemyUnits()) do
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if x then
+            local defID = Spring.GetUnitDefID(uid)
+            local d = defID and UnitDefs[defID]
+            nf = nf + 1
+            fx[nf], fz[nf] = x, z
+            fk[nf] = d and (d.canFly and 2 or 1) or 0
+            fv[nf] = defID and cost(defID) or 0
+        end
+    end
+
+    local iv = { n = 0, le15 = 0, band = 0, w = 0, w_le15 = 0, w_band = 0,
+                 air_n = 0, air_le15 = 0, air_band = 0 }
+    local tList, foeMvSum = {}, 0
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeam) or {}) do
+        local defID = Spring.GetUnitDefID(uid)
+        if defID and roleOf(defID) == "army" and not Spring.GetUnitIsBeingBuilt(uid) then
+            local info = reachInfo(defID)
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if info and x then
+                local best, mvNear = math.huge, 0
+                for i = 1, nf do
+                    local k = fk[i]
+                    if (k == 2 and info.hitsAir) or (k ~= 2 and info.hitsGround) then
+                        local dd = dist2d(x, z, fx[i], fz[i]) - info.range
+                        local t = (dd > 0 and dd or 0) / info.speed
+                        if t < best then best = t end
+                        if t <= REACH_FAR then mvNear = mvNear + fv[i] end
+                    end
+                end
+                local le15 = best <= REACH_NEAR
+                local band = (not le15) and best <= REACH_FAR
+                if info.air then
+                    iv.air_n = iv.air_n + 1
+                    if le15 then iv.air_le15 = iv.air_le15 + 1 elseif band then iv.air_band = iv.air_band + 1 end
+                else
+                    local mv = info.mv
+                    iv.n, iv.w = iv.n + 1, iv.w + mv
+                    if le15 then iv.le15, iv.w_le15 = iv.le15 + 1, iv.w_le15 + mv
+                    elseif band then iv.band, iv.w_band = iv.band + 1, iv.w_band + mv end
+                    tList[#tList + 1] = math.min(best, REACH_CAP)
+                    foeMvSum = foeMvSum + mvNear
+                    local e = reachDef[info.name]
+                    if not e then e = { n = 0, le15 = 0, band = 0 }; reachDef[info.name] = e end
+                    e.n = e.n + 1
+                    if le15 then e.le15 = e.le15 + 1 elseif band then e.band = e.band + 1 end
+                end
+            end
+        end
+    end
+    for k, v in pairs(iv) do reachTot[k] = reachTot[k] + v end
+
+    table.sort(tList)
+    local function pct(a, b) return b > 0 and a / b or 0 end
+    local names = {}
+    for n in pairs(reachDef) do names[#names + 1] = n end
+    table.sort(names, function(a, b) return reachDef[a].n > reachDef[b].n end)
+    local top = {}
+    for i = 1, math.min(6, #names) do
+        local e = reachDef[names[i]]
+        top[i] = string.format("%s:%.2f/%.2f/%d", names[i], pct(e.le15, e.n),
+            pct(e.le15 + e.band, e.n), e.n)    -- name:share<=15s / share<=30s / samples
+    end
+    local T = reachTot
+    emit("reach", f, string.format(
+        "foes=%d n=%d le15=%.3f band15_30=%.3f le30=%.3f w_le15=%.3f w_band15_30=%.3f w_le30=%.3f "
+        .. "int_n=%d int_le15=%.3f int_band15_30=%.3f int_le30=%.3f int_w_le30=%.3f "
+        .. "int_t_med=%.1f int_foe_mv30_avg=%.0f air_n=%d air_le30=%.3f int_air_n=%d int_air_le30=%.3f "
+        .. "by_def=%s",
+        nf, T.n, pct(T.le15, T.n), pct(T.band, T.n), pct(T.le15 + T.band, T.n),
+        pct(T.w_le15, T.w), pct(T.w_band, T.w), pct(T.w_le15 + T.w_band, T.w),
+        iv.n, pct(iv.le15, iv.n), pct(iv.band, iv.n), pct(iv.le15 + iv.band, iv.n),
+        pct(iv.w_le15 + iv.w_band, iv.w),
+        #tList > 0 and tList[math.ceil(#tList / 2)] or -1, pct(foeMvSum, iv.n),
+        T.air_n, pct(T.air_le15 + T.air_band, T.air_n),
+        iv.air_n, pct(iv.air_le15 + iv.air_band, iv.air_n),
+        #top > 0 and table.concat(top, ",") or "-"))
+end
+
 -- After GameOver the engine keeps ticking for a while (autoquit); sampling then would log
 -- an empty, dead team as if it were part of the game.
 function widget:GameOver()
@@ -1393,6 +1519,7 @@ function widget:GameFrame(n)
         safe("threats", scanThreats, n)
     end
     if n % LOS_EVERY == 0 then safe("coverage", scanCoverage, n) end
+    if n > 0 and n % REACH_EVERY == 0 then safe("reach", snapshotReach, n) end
     if n > 0 and n % SAMPLE_EVERY == 0 then
         safe("eco", snapshotEco, n)
         safe("units", snapshotUnits, n)

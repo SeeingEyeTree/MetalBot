@@ -44,6 +44,8 @@ M.CFG = {
     LAUNCH_BLIND  = 1800,
     COMMIT_AA     = 1.6,      -- a wave in flight tolerates this x AA_MAX (it is committed)
     NO_TARGET_GRACE = 900,    -- frames a wave keeps its last points when the intel finds none
+    RALLY_FIGHTERS = true,    -- false (unit_runtime / HAMMER_ANVIL): between waves the fighters are left to the air wing (hunts, cover);
+                              -- a launch still takes every free fighter as the escort
 }
 local CFG = M.CFG
 
@@ -84,7 +86,10 @@ function M.Status() return S end
 -- Units ------------------------------------------------------------------------------------------------------
 local function Free(uid)
     local role = ARMY.RoleOf(uid)
+    -- BOMBER_WAIT: endgame.Strike parks every bomber behind the base (HOME_GUARD priority) until a commander is seen; a run
+    -- (RAID priority) takes them from there.  Without it no bomber was ever free in a CORE game (2026-10-25).
     return role == nil or role == "BOMBRUN" or role == "AIRWING" or role == "LINE" or role == "MUSTER" or role == "HOME_GUARD" or role == "BLOB"
+        or role == "BOMBER_WAIT"
 end
 
 -- fighters, bombers: arrays of {uid, x, z, hp, v}
@@ -210,7 +215,8 @@ local function EndWave(frame, why, fighters, bombers)
 end
 
 -- Update (every EVERY frames) --------------------------------------------------------------------------------
--- plan = WG.BombPlan (phase_plan.View) or nil.
+-- plan = WG.BombPlan (phase_plan.View) or nil.  plan.launch (unit_runtime: the bomber burst is over): launch now with every bomber
+-- that stands, without waiting for LAUNCH_MIN or for more intel (any known point will do); once -- later waves wait for RELAUNCH_MIN.
 function M.Update(frame, plan)
     if not (S and MM and UQ and EI and ARMY and MM.Ready()) then return end
     if frame % CFG.EVERY ~= 0 then return end
@@ -285,12 +291,16 @@ function M.Update(frame, plan)
     -- eyes: a couple of fighters over the enemy economy until the bombers know where to go
     local pts = M.Points(frame, CFG.MAX_POINTS, CFG.AA_MAX * math.max(bv + fv, 1))
     local fx, fz = MM.Foe()
-    for i, f in ipairs(fighters) do
-        if #pts == 0 and i <= CFG.SCOUT_FIGHTERS and fx then
-            Claim(frame, f.uid, CMD_MOVE, fx, fz)
-        else
-            Claim(frame, f.uid, CMD_FIGHT, stx, stz)
+    if CFG.RALLY_FIGHTERS then
+        for i, f in ipairs(fighters) do
+            if #pts == 0 and i <= CFG.SCOUT_FIGHTERS and fx then
+                Claim(frame, f.uid, CMD_MOVE, fx, fz)
+            else
+                Claim(frame, f.uid, CMD_FIGHT, stx, stz)
+            end
         end
+    else
+        Release(fighters)
     end
 
     local need = (S.waves == 0) and CFG.LAUNCH_MIN or CFG.RELAUNCH_MIN
@@ -300,12 +310,15 @@ function M.Update(frame, plan)
     local dmg = 0
     for _, p in ipairs(pts) do dmg = dmg + p.damage end
     local blind = dmg < CFG.MIN_LAUNCH_DAMAGE and not (S.bombStart and frame - S.bombStart >= CFG.LAUNCH_WAIT + CFG.LAUNCH_BLIND)
+    local now = plan.launch and not S.launched and S.waves == 0   -- the burst is over: the first wave goes with what stands (later: RELAUNCH_MIN)
+    if now then need, blind = 1, false end
     if #bombers >= need and frame - S.lastEnd >= CFG.COOLDOWN and #pts > 0 and not blind then
         S.waves = S.waves + 1
+        if plan.launch then S.launched = true end
         S.mode, S.t0, S.wave = "strike", frame, { startValue = fv + bv, bombers = #bombers, fighters = #fighters }
         S.nextLog = 0
-        Log(frame, "LAUNCH wave %d: %d bombers (%d value) + %d fighters; %d bombing points, best (%d,%d) damage %d aa %d",
-            S.waves, #bombers, bv, #fighters, #pts, pts[1].x, pts[1].z, pts[1].damage, pts[1].aa)
+        Log(frame, "LAUNCH wave %d%s: %d bombers (%d value) + %d fighters; %d bombing points, best (%d,%d) damage %d aa %d",
+            S.waves, now and " (launch now)" or "", #bombers, bv, #fighters, #pts, pts[1].x, pts[1].z, pts[1].damage, pts[1].aa)
         for _, f in ipairs(fighters) do Claim(frame, f.uid, CMD_FIGHT, pts[1].x, pts[1].z) end
         local who = Assign(bombers, pts)
         for _, b in ipairs(bombers) do

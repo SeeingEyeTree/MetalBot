@@ -20,9 +20,9 @@
 
 local M = {}
 
-M.TUNABLES = { "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_FLOOR_BASE", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
-M.TABLE_OPTIONS = { "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR" }
+M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR" }
 
 function M.Install(widget, WG, K)
 K = K or {}
@@ -180,6 +180,26 @@ local SHURI_EARLY = O("SHURI_EARLY", 9)
 local SHURI_STEP = O("SHURI_STEP", 6)   -- round 3: ~21 by 10:00, capped at 25 (user: 20-25 is enough)
 local SHURI_STEP_FRAMES = O("SHURI_STEP_FRAMES", 3 * 60 * 30)
 local SHURI_MAX = O("SHURI_MAX", 25)
+-- true: the standing Shuriken floor (ShuriWant) may go ahead of the air lab's owed cons all game, not only while a raid is on.  A bot
+-- without a unit controller (CORE_HUMAN) never sees a raid (WG.MetalBot is nil), so the air-con hold kept the Shurikens out (2026-10-25 game).
+local SHURI_LIFT_ALWAYS = O("SHURI_LIFT_ALWAYS", false)
+-- Air defence (user 2026-10-25, from a CORE game that saw a bomber at ~11:30 and a 30-bomber wave on its way at ~13:30 and built
+-- no AA).  The unit controller publishes mb.airRaid (enemy bombers in our half of the map).
+--   AA floor   once any bomber has been seen, keep AA_FLOOR_BASE + AA_FLOOR_PER_BOMBER x (most bombers seen at once) ground AA
+--              units (at most AA_FLOOR_MAX), alive or ordered, from whichever lab can make one (AA_FLOOR_PICKS, flak first)
+--   AIR RUSH   a large raid (mb.airRaid.rush): EVERY lab that can make AA clears its queue (the unit in progress too) once per
+--              raid and fills it AIR_RUSH_DEPTH deep with its best AA (AA_PICKS: flak trucks first; air labs make fighters).  The
+--              existing labs only -- no time to swap.  Labs holding owed air cons are left alone.
+local AA_FLOOR_BASE       = O("AA_FLOOR_BASE", 4)
+local AA_FLOOR_PER_BOMBER = O("AA_FLOOR_PER_BOMBER", 0.15)
+local AA_FLOOR_MAX        = O("AA_FLOOR_MAX", 12)
+local AIR_RUSH            = O("AIR_RUSH", true)
+local AIR_RUSH_DEPTH      = O("AIR_RUSH_DEPTH", 4)
+local AA_FLOOR_PICKS = K.AA_FLOOR_PICKS or { ROLES.Get("aa_flak_truck"), ROLES.Get("aa_t2_bot"), ROLES.Get("aa_t1_veh"), ROLES.Get("aa_t1_bot") }
+local AA_PICKS       = K.AA_PICKS or { ROLES.Get("aa_flak_truck"), ROLES.Get("aa_t2_bot"), ROLES.Get("aa_t1_veh"), ROLES.Get("aa_t1_bot"),
+                                       ROLES.Get("fighter_t2"), ROLES.Get("fighter_t1"), ROLES.Get("aa_hover") }
+local GROUND_AA_NAMES = {}
+for _, n in ipairs(AA_FLOOR_PICKS) do GROUND_AA_NAMES[n] = true end
 local function ShuriWant(frame)
     if frame < SHURI_RAMP_START then return 0 end
     if frame < SHURI_EARLY_FRAME then
@@ -305,6 +325,7 @@ local myRadar      = {}   -- [unitID] = true
 local myBombers    = {}   -- [unitID] = true
 local myGuards     = {}   -- [unitID] = true: home-guard air (GUARD_NAMES)
 local myShuri      = {}   -- [unitID] = true: Shurikens, counted on their own (SHURI_*)
+local myGroundAA   = {}   -- [unitID] = true: ground AA (AA_FLOOR_PICKS), the air-defence floor's count
 local SK = { decoys = {}, orders = {}, lab = {}, born = {}, own = {} }   -- born: [decoy] = the lab that made it; own: [labID] = assist record of a decoy-making lab   -- the sink: [decoy unitID] = true, decoy orders not started yet, [decoy] = sink lab id
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
@@ -359,6 +380,7 @@ local function KindOf(defID)
     if UQ ~= nil and UQ.is_bomber(defID) then return "bomber" end
     if IsScoutDef(d) then return "scout" end
     if IsFighterDef(defID) then return "fighter" end
+    if GROUND_AA_NAMES[d.name] then return "groundaa" end
     if IsDefenderDef(d) then return "defender" end
     return nil
 end
@@ -555,6 +577,16 @@ end
 local BT = VFS.Include("LuaUI/Widgets/bar_framework/build_tree.lua")   -- the build tree (C1): what a lab can build, cached per defID
 local function CanBuildSet(labDefID) return BT.Options(labDefID) end
 
+-- The first unit of `list` (names, best first) this lab can build, or nil: the air-defence picks.
+local function AAPick(labDefID, list)
+    local opts = CanBuildSet(labDefID)
+    for _, n in ipairs(list) do
+        local ud = UnitDefNames and UnitDefNames[n]
+        if ud and opts[ud.id] then return ud.id end
+    end
+    return nil
+end
+
 -- The next army unit the stance wants from this lab (nil if it can build none of them).  The strategy owns the mix;
 -- this only asks and notes the order.
 -- ARMY BUDGET: the strategy's share is a ratio, but the labs only see it as on/off (share > 0 -> build army all the time), so a
@@ -725,6 +757,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if kind == "bomber" then myBombers[unitID] = true; return end
     if kind == "guard" then myGuards[unitID] = true; return end
     if kind == "shuri" then myShuri[unitID] = true; return end
+    if kind == "groundaa" then myGroundAA[unitID] = true; return end
     if IsScoutDef(d) and not myScouts[unitID] then
         myScouts[unitID] = true
         scoutCount = scoutCount + 1
@@ -746,6 +779,7 @@ function widget:UnitDestroyed(unitID)
     myBombers[unitID]    = nil
     myGuards[unitID]     = nil
     myShuri[unitID]      = nil
+    myGroundAA[unitID]   = nil
     building[unitID]     = nil
     if lb then LB.Forget(lb, unitID) end
     armyFlip[unitID]     = nil
@@ -786,7 +820,7 @@ local function Have(kind, frame, valued)
         elseif k == kind then n = n + (valued and UnitValue(defID) or 1) end
     end
     local sets = { ringradar = RR.mine, scout = myScouts, fighter = myFighters, defender = myDefenders,
-                   rez = myRez, radar = myRadar, bomber = myBombers, guard = myGuards, shuri = myShuri }
+                   rez = myRez, radar = myRadar, bomber = myBombers, guard = myGuards, shuri = myShuri, groundaa = myGroundAA }
     local alive = sets[kind] or myDefenders
     if not valued then return n + CountAlive(alive) end
     for uid in pairs(alive) do
@@ -981,6 +1015,7 @@ local function Describe(labID, labDefID, frame)
     local lab = { id = labID, defID = labDefID, isSpine = isSpine, t1Spine = t1Spine,
                   skip = leaving or not spGetUnitDefID(labID), liftedHold = false }
     if lab.skip then return lab end
+    lab.held = CH.TileLabHeld(WG, labID)      -- owes the macro's air cons (or is the starter lab): the air-rush flush leaves it alone
     if SINK_ON and IsSinkLab(labID) then lab.isSink = true; return lab end    -- no picks: only the "sink" want applies
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
     -- in (or ahead of) either queue then.
@@ -991,9 +1026,9 @@ local function Describe(labID, labDefID, frame)
     -- Round 3 (user 2026-10-14): the air-con hold also gave way to nothing but raids all game (0 floor Shurikens before
     -- 11:00); the standing Shuriken force (RAID.SHURI_STANDING) may go ahead of the owed cons too.
     local shuriLift = false
-    if airConsFirst and RAID.airLab and not isSpine and UnitDefs[labDefID] and UnitDefs[labDefID].name == ROLES.Get("lab_t1_air") then
+    if airConsFirst and (RAID.airLab or SHURI_LIFT_ALWAYS) and not isSpine and UnitDefs[labDefID] and UnitDefs[labDefID].name == ROLES.Get("lab_t1_air") then
         airConsFirst, liftedHold = false, true
-        shuriLift = C.shuriRoom > 0 and Have("shuri", frame) < RAID.SHURI_STANDING
+        shuriLift = C.shuriRoom > 0 and (SHURI_LIFT_ALWAYS or Have("shuri", frame) < RAID.SHURI_STANDING)
     end
     lab.liftedHold = liftedHold
     -- T2/T3 spine labs are the spine's alone; T1 spine labs share the normal logic
@@ -1033,7 +1068,7 @@ local function Describe(labID, labDefID, frame)
     local isShuriLab = picks.cheap and UnitDefs[picks.cheap] and UnitDefs[picks.cheap].name == ROLES.Get("stunner")
     -- RAID_BOT (user 2026-10-13): a standing Shuriken force comes before the fighter floor until RAID.SHURI_STANDING stand (in
     -- the reviewed games the fighter floor -- 40 fighters against heavy enemy air -- took every slot)
-    if isShuriLab and C.shuriRoom > 0 and Have("shuri", frame) < RAID.SHURI_STANDING then
+    if isShuriLab and C.shuriRoom > 0 and (SHURI_LIFT_ALWAYS or Have("shuri", frame) < RAID.SHURI_STANDING) then
         floor, floorWhy = picks.cheap, "floor-shuriken"
     elseif needFighter and picks.fighter then
         floor, floorWhy = picks.fighter, "floor-fighter"
@@ -1099,6 +1134,21 @@ RegisterWants = function()
     lb.onOrder = OnOrder
     local function add(spec) LB.AddWant(lb, spec) end
     local function picks(lab) return lab.picks end
+
+    -- ── air defence (user 2026-10-25) ── a large air raid: every lab that can make AA clears its queue once per raid and makes AA
+    -- (flak trucks first), ahead of everything; once any bomber has been seen, a standing ground-AA floor goes ahead of busy queues
+    add{ name = "air-rush", prio = 150, mode = "flush", grace = 0, why = "air-rush",
+         depth = function() return AIR_RUSH_DEPTH end,
+         flushKey = function() return C.airRush end,
+         applies = function(lab) return C.airRush ~= nil and not lab.held end,
+         pick = function(lab) return AAPick(lab.defID, AA_PICKS) end }
+    add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
+         applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
+         pick = function(lab)
+             local d = AAPick(lab.defID, AA_FLOOR_PICKS)
+             if d then C.aaFloorRoom = C.aaFloorRoom - 1 end
+             return d
+         end }
 
     -- ── the spine's labs (T1 and T2/T3) ── cons the spine asks for, stance units on T2, the ring radar unit on T2
     add{ name = "ring-radar-spine", prio = 130, mode = "ahead", noPending = true, grace = SPINE_ORDER_GRACE, why = "ring-radar",
@@ -1337,6 +1387,13 @@ function widget:GameFrame(frame)
     C.rezRoom       = frame < REZ_START_FRAME and 0
                       or math.min(REZ_MAX, REZ_BASE + math.floor(((mb and mb.armyCount) or 0) / REZ_PER_ARMY)) - Have("rez", frame)
     C.airAlarm      = (mb and mb.airAlarm and frame - mb.airAlarm.frame <= AIR_ALARM_TTL) and true or false
+    -- air defence (AA_FLOOR_* / AIR_RUSH above): the rush's id while a large raid is on, and how many ground AA the floor still wants
+    local ar = mb and mb.airRaid
+    C.airRush = (AIR_RUSH and ar and ar.rush and ar.since) or nil
+    C.aaFloorRoom = 0
+    if ar and (ar.seenMax or 0) > 0 then
+        C.aaFloorRoom = math.min(AA_FLOOR_MAX, AA_FLOOR_BASE + math.ceil(AA_FLOOR_PER_BOMBER * ar.seenMax)) - Have("groundaa", frame)
+    end
     -- one T2 air lab (the lowest id that can build the Hawk) keeps the radar plane plus one Hawk per call; the others stay
     -- on Wasps / fighters
     C.callWant      = (mb and mb.callScouts) or 0

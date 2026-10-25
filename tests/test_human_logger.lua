@@ -58,6 +58,7 @@ local function Rows(tag) local r = {}; for _, l in ipairs(out) do if l:find("%[H
 
 -- a MOVE order to the three, given at frame 100 (flushed at 101)
 widget:GameFrame(100)
+widget:CommandNotify(CMD.MOVE, { 1000, 0, 800 }, {})        -- the UI issued it: CommandNotify fires before the units get it (never for a widget's order)
 for _, id in ipairs({ 10, 11, 12 }) do
     widget:UnitCommand(id, units[id][1], 0, CMD.MOVE, { 1000, 0, 800 }, {}, 0, 0, false, false)
 end
@@ -90,6 +91,24 @@ local before = #Rows("loc")
 widget:GameFrame(210)
 check(#Rows("loc") == before, "no loc row when no enemy is within LOC_R")
 check(#Rows("error") == 0, "no [HCL] error row")
+
+-- attribution (2026-10-25): an order no UI command matches is the bot's (counted, not logged); a lab queue click is matched on the short window
+local nCmd, nQueue = #Rows("cmd"), #Rows("queue")
+widget:GameFrame(300)
+widget:UnitCommand(10, units[10][1], 0, CMD.MOVE, { 2000, 0, 2100 }, {}, 0, 0, false, false)       -- no CommandNotify: another widget's order
+widget:GameFrame(302)
+check(#Rows("cmd") == nCmd, "an order with no UI command behind it is not logged as the person's")
+UnitDefs[9] = { name = "corlab", speed = 0, isFactory = true, metalCost = 470 }
+units[30] = { 9, 0, 900, 900, 1.0 }
+widget:GameFrame(400)
+widget:CommandNotify(-1, {}, {})
+widget:UnitCommand(30, 9, 0, -1, {}, {}, 0, 0, false, false)                                       -- the person clicked a unit in a lab
+widget:GameFrame(402)
+check(#Rows("queue") == nQueue + 1, "a lab click that matches a UI command is logged")
+widget:GameFrame(450)
+widget:UnitCommand(30, 9, 0, -1, {}, {}, 0, 0, false, false)                                       -- the bot queues the same unit 50 frames later
+widget:GameFrame(452)
+check(#Rows("queue") == nQueue + 1, "the bot queueing the same unit later is not logged (LAB_WINDOW)")
 
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

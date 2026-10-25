@@ -35,6 +35,6 @@ energy income collapsed 20k -> 8-11k from ~16:00, ~450k metal spent by 20:00. No
   run at once from 16:00 (half-finished grids). Try `EARLY_CAPSTONES` and limiting concurrent retrofits.
 - Grids open far ahead of their nanos (30+ grids with 0 nanos at 10:00).
 - Audit's "fully upgraded" = 18 T2 mexes + 4 fusions (upgrade blueprint); the in-between spots (user: fusion or mex) are not counted yet.
-- Variance between identical runs: `knowledge/variance_notes_2026-10-12.md`. Repeated-game tool: `python runs_stance/ab_variants.py TAG GAMES PARALLEL [variant...]`.
+- Variance between identical runs: `knowledge/sessions/variance_notes_2026-10-12.md`. Repeated-game tool: `python runs_stance/ab_variants.py TAG GAMES PARALLEL [variant...]`.
 - Numbers to remember: T1 mex 2.37 m/s, T2 mex 9.48 m/s (`knowledge/economy_numbers.md`); Dragon 14.1 E per metal.
 - Tests: `tests/test_slot_spine.lua` (51), `test_strategy` (36), `test_behavior_host` (29), `test_line_crew` (300) pass; `line_transition.lua` has no unit test (checked by vacuum games).

@@ -151,6 +151,60 @@ function M.income_switch(o)
     end
 end
 
+-- switch hook (HAMMER_ANVIL, 2026-10-25): a one-off burst.  Nothing (the current stance stays) until smoothed metal income has
+-- held `income` for `hold_s` seconds and the minute is at least `minute`; then the stance `to` until the army value has risen by
+-- `spend` metal since the burst began (state.armyValue, its highest rise) or `burst_s` seconds have passed; then the stance `back`
+-- for the rest of the game.  Spend, not time, ends it: the burst's labs are often not standing yet when it starts (eco_sim: the
+-- spine's air labs stood 60-75 s into a 90 s window).  The user's T1_bombing_run intent: "spend a lot quickly and then go back
+-- into eco".  The burst's army share comes from its stance (plan.share, strategy.lua), not from here.
+-- With unit + count it ends once `count` of `unit` are alive instead (spend is then not used).
+--   hooks = { switch = H.burst_switch{ to = "anvil_burst", back = "anvil_hold", income = 250, hold_s = 20, unit = "corshad", count = 30, burst_s = 300 } }
+function M.burst_switch(o)
+    o = o or {}
+    local to, back = o.to, o.back
+    local income, holdF, smooth = o.income or 250, (o.hold_s or 20) * 30, o.smooth or 0.2
+    local burstF, minute, spend = (o.burst_s or 240) * 30, o.minute or 0, o.spend
+    -- unit + count (HAMMER_ANVIL: 30 Shadows): the burst ends once that many of the unit are alive -- the burst's own units, not
+    -- the whole army (by army value the ground army's growth ended the first burst after 48 s).  o.count_fn(state) -> n for tests.
+    local countFn = o.count_fn
+    if not countFn and o.unit then
+        countFn = function(state)
+            local ud = UnitDefNames and UnitDefNames[o.unit]
+            local team = state.team or (Spring.GetMyTeamID and Spring.GetMyTeamID())
+            return (ud and team and Spring.GetTeamUnitDefCount and Spring.GetTeamUnitDefCount(team, ud.id)) or 0
+        end
+    end
+    local phase, ema, since, startF, startAV, rise = "wait", nil, nil, nil, nil, 0
+    return function(state)
+        local f = state.frame or 0
+        if phase == "wait" then
+            local inc = (state.metal and state.metal.income) or 0
+            ema = ema and (ema + smooth * (inc - ema)) or inc
+            if ema >= income and (state.minute or f / 1800) >= minute then
+                since = since or f
+                if f - since >= holdF then
+                    phase, startF, startAV = "burst", f, state.armyValue or 0
+                    Spring.Echo(string.format("[STRAT] burst: metal income %.0f >= %d for %d s at %.1f min: stance %s (spend %s, at most %d s)",
+                        ema, income, holdF / 30, state.minute or f / 1800, tostring(to), tostring(spend), burstF / 30))
+                end
+            else
+                since = nil
+            end
+        end
+        if phase == "burst" then
+            rise = math.max(rise, (state.armyValue or startAV) - startAV)
+            local n = countFn and o.count and countFn(state) or nil
+            if (n and n >= o.count) or (not countFn and spend and rise >= spend) or f - startF >= burstF then
+                phase = "done"
+                Spring.Echo(string.format("[STRAT] burst over at %.1f min after %d s, army value +%.0f, %s %s: stance %s",
+                    state.minute or f / 1800, math.floor((f - startF) / 30), rise, tostring(n or "-"), tostring(o.unit or ""), tostring(back)))
+            end
+        end
+        if phase == "burst" then return to end
+        if phase == "done" then return back end
+    end
+end
+
 -- Several switch hooks in order: the first that names a stance wins (put cap_switch first -- once on, it holds).
 function M.chain_switch(list)
     return function(state, strat)

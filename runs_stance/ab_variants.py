@@ -8,7 +8,7 @@ over PARALLEL workers (each match pins its own core, ~4 GB RAM).  Results land i
 a summary (mean, sd and range over the games of each variant) is printed and saved to runs_stance/<TAG>_summary.txt.
 
 Judge on the interval averages (metal_inc_avg etc.) and on metal_used (everything the bot actually spent), not on the minute-mark
-samples.  The sd across games of one variant is the run-to-run drift: see knowledge/variance_notes_2026-10-12.md.
+samples.  The sd across games of one variant is the run-to-run drift: see knowledge/sessions/variance_notes_2026-10-12.md.
 """
 import json, math, os, re, shutil, statistics, subprocess, sys, time
 

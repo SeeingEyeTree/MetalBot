@@ -74,10 +74,42 @@ function M.Install(X)
         return CB.Shortfall(T.CB, 2, T2Ordered(T, frame), true, frame or 0, T.lastRes)
     end
 
+    -- The T1 air labs that make air cons: the line's air lab and the capstone T1 air labs (AIR_CON_LABS, grid_core), alive and
+    -- finished.  A capstone lab's id is found at its site once it stands.
+    local function AirConLabs(T)
+        local out = {}
+        if T.airLabID and Spring.GetUnitDefID(T.airLabID) then out[#out + 1] = T.airLabID end
+        for _, c in ipairs(T.capAirLabs or {}) do
+            if not (c.id and Spring.GetUnitDefID(c.id)) then
+                c.id = nil
+                for _, uid in ipairs(Spring.GetUnitsInCylinder(c.x, c.z, 120, T.teamID) or {}) do
+                    if Spring.GetUnitDefID(uid) == T.labDefID and not Spring.GetUnitIsBeingBuilt(uid) then c.id = uid; break end
+                end
+            end
+            if c.id and c.id ~= T.airLabID then out[#out + 1] = c.id end
+        end
+        return out
+    end
+
+    local function QueueLen(labID)
+        local cmds = Spring.GetFactoryCommands and Spring.GetFactoryCommands(labID, -1) or nil
+        return type(cmds) == "table" and #cmds or 0
+    end
+
     local function QueueAirCon(T, frame, why, ahead)
         if AirConsEarlyFull(T) or ConHold(T, frame or 0, "air con") then return end
         if T.CFG.IDLE_CON_SWEEP and (T.idleSurplus or 0) > T.CFG.IDLE_CON_MAX then return end     -- cons stand idle with nothing to assist: no more
+        -- the line's air lab, or (AIR_CON_LABS) the T1 air lab with the shortest queue -- also when the line's lab is gone
         local lab = T.airLabID
+        local all = AirConLabs(T)
+        if #all > 1 or (#all == 1 and all[1] ~= lab) then
+            local best, bestN
+            for _, id in ipairs(all) do
+                local n = QueueLen(id)
+                if not bestN or n < bestN then best, bestN = id, n end
+            end
+            lab = best
+        end
         if lab and Spring.GetUnitDefID(lab) and T.airConDefID then
             OrderCon(T, lab, T.airConDefID, frame, ahead or not T.CFG.AIR_CON_AT_BACK)
             T.airConsOrdered = T.airConsOrdered + 1
@@ -182,6 +214,7 @@ function M.Install(X)
     X.OrderT2Con = OrderT2Con
     X.T2Shortfall = T2Shortfall
     X.QueueAirCon = QueueAirCon
+    X.AirConLabs = AirConLabs
     X.AirConOrderDone = AirConOrderDone
     X.SetReserves = SetReserves
     X.KeepAirConReserve = KeepAirConReserve

@@ -65,5 +65,14 @@
  ],
  "strategy.lua": [
   "army_share"
+ ],
+ "unit_runtime.lua": [
+  "corape",
+  "corbw",
+  "corcrwh",
+  "cormabm",
+  "corshad",
+  "corveng",
+  "corvp"
  ]
 }

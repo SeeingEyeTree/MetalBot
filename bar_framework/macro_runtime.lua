@@ -10,7 +10,7 @@
 -- Configuration (K overrides M.DEFAULTS key by key; `false` switches a stance off, nil means "absent"):
 --   NAME          bot name for log rows / the line_transition label
 --   LT_PRESETS    line_transition preset groups (bar_framework/presets/line_transition.lua), LT_CFG: options on top of them
---   STANCE, HOLD_STANCE, LATE_STANCE, INCOME_SWITCH, PLAN, MIX, SHARE, MATCH   the strategy (stances + game_plan / cap_switch / income_switch / income_mix hooks)
+--   STANCE, HOLD_STANCE, LATE_STANCE, INCOME_SWITCH, BURST_SWITCH, PLAN, MIX, SHARE, MATCH   the strategy (stances + game_plan / cap_switch / income_switch / income_mix hooks)
 --   CON_HOLD_VALUE   a live ground raid worth this holds new air/T2 con orders; absent/false = no hold
 --   SPINE, SPINE_CFG   the slot spine on/off and its overrides
 --   the line/con/commander timings listed in M.DEFAULTS below
@@ -39,6 +39,7 @@ M.DEFAULTS = {
     HOLD_STANCE         = "hold",          -- RAID_BOT: the game plan after bad trades (strategy_hooks.game_plan); nil = never
     LATE_STANCE         = "raid_late",     -- stance taken once the unit cap is filling (strategy_hooks.cap_switch): most value per unit slot; nil = never
     INCOME_SWITCH2      = nil,             -- a second, higher income switch { to, income, hold_s }: it wins over INCOME_SWITCH once it holds (T1 -> T2 -> a third stance)
+    BURST_SWITCH        = nil,             -- { to, back, income = 250, hold_s = 20, spend, burst_s = 240, minute }: once income holds, stance `to` until `spend` metal went into the army (at most burst_s), then `back` for good (strategy_hooks.burst_switch; after the income switches in the chain)
     INCOME_SWITCH       = nil,             -- { to = "<stance>", income = 1100, hold_s = 20 }: take that stance once smoothed metal income holds (strategy_hooks.income_switch); e.g. a T1 stance -> a T2 stance
     PLAN                = {},              -- strategy_hooks.game_plan options (hold_ratio, trade_ratio, min_lost, ...)
     MIX                 = {},              -- strategy_hooks.income_mix options (lo, hi, mass_lo, ...)
@@ -46,6 +47,8 @@ M.DEFAULTS = {
     LATE_CAP_FRAC       = 0.75,        -- ... cap share at which it is taken (not before LATE_MINUTE)
     LATE_MINUTE         = 12,
     SHARE               = {},        -- strategy_hooks.v16_share / match_enemy options (start, floor, hold, ratio, ...)
+    AIR_RUSH_SHARE      = 1.0,       -- user 2026-10-25: the army share while a large air raid is on (mb.airRaid.rush, unit_runtime): all of income
+                                     -- into the AA the labs are rushing; false = no lift
     MATCH               = true,      -- army share follows the scouted enemy army (humans); false = plain v16_share for bot-vs-bot
     SPINE_CFG           = { FLOAT_MULT = 2.5 },   -- slot_spine overrides: while both banks float, plan nanos/labs for 2.5x income
     RECLAIM_STARTER_LAB = true,      -- reclaim the starter bot lab once the air lab is queued and the cons are out
@@ -80,7 +83,7 @@ M.DEFAULTS = {
 }
 
 -- Options whose default is nil on purpose (a key set to nil is "absent", so these are the only ones not in M.DEFAULTS).
-M.NIL_OPTIONS = { CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true }
+M.NIL_OPTIONS = { MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
 
 function M.Install(widget, WG, K)
 local CFG = {}
@@ -154,13 +157,23 @@ local function IsGroundCon(d)
     return d ~= nil and d.isBuilder and not d.canFly and not d.isFactory and d.speed and d.speed > 0
 end
 
+-- A con must be able to place a factory or a mex.  Without this the cheapest "builder" of the vehicle plant was the Trapper (cormlv,
+-- 65 m, builds only mines) and the rez bot / spy in other labs: the line got a minelayer where its con bot should be.
+local function BuildsEconomy(d)
+    for _, o in ipairs(d.buildOptions or {}) do
+        local od = UnitDefs[o]
+        if od and (od.isFactory or (od.extractsMetal or 0) > 0) then return true end
+    end
+    return false
+end
+
 local function FindConBotDefID(labDefID)
     local d = UnitDefs[labDefID]
     if not d or not d.buildOptions then return nil end
     local best, bestCost = nil, math.huge
     for _, optID in ipairs(d.buildOptions) do
         local od = UnitDefs[optID]
-        if IsGroundCon(od) and (od.metalCost or 999999) < bestCost then
+        if IsGroundCon(od) and BuildsEconomy(od) and (od.metalCost or 999999) < bestCost then
             bestCost, best = od.metalCost or 999999, optID
         end
     end
@@ -531,8 +544,14 @@ function widget:Initialize()
             -- RAID_BOT: cap_switch first (once on it holds for the game), then the game plan
             local function StanceList()           -- the stances to load (a stance switched off with false is not loaded)
                 local out = {}
-                for _, n in ipairs({ CFG.STANCE, CFG.HOLD_STANCE, CFG.LATE_STANCE, CFG.INCOME_SWITCH and CFG.INCOME_SWITCH.to or false, CFG.INCOME_SWITCH2 and CFG.INCOME_SWITCH2.to or false }) do
+                for _, n in ipairs({ CFG.STANCE, CFG.HOLD_STANCE, CFG.LATE_STANCE, CFG.INCOME_SWITCH and CFG.INCOME_SWITCH.to or false, CFG.INCOME_SWITCH2 and CFG.INCOME_SWITCH2.to or false,
+                                     CFG.BURST_SWITCH and CFG.BURST_SWITCH.to or false, CFG.BURST_SWITCH and CFG.BURST_SWITCH.back or false }) do
                     if n then out[#out + 1] = n end
+                end
+                for _, n in ipairs(CFG.MANUAL_STANCES or {}) do          -- MANUAL_STANCES: the buttons' choices (stance_panel.lua)
+                    local dup = false
+                    for _, m in ipairs(out) do if m == n then dup = true end end
+                    if not dup then out[#out + 1] = n end
                 end
                 return out
             end
@@ -546,16 +565,40 @@ function widget:Initialize()
             if CFG.INCOME_SWITCH then
                 switches[#switches + 1] = H.income_switch(CFG.INCOME_SWITCH)
             end
+            if CFG.BURST_SWITCH then                   -- after the income switches (they win once they hold), before the game plan (it always names one)
+                switches[#switches + 1] = H.burst_switch(CFG.BURST_SWITCH)
+            end
             if CFG.HOLD_STANCE then
                 local po = { raid = CFG.STANCE, hold = CFG.HOLD_STANCE }
                 for k, v in pairs(CFG.PLAN or {}) do po[k] = v end
                 switches[#switches + 1] = H.game_plan(po)
             end
+            if CFG.MANUAL_STANCES then
+                -- a person picks the stance (stance_panel.lua writes WG.StanceRequest); no automatic switch runs
+                switches = { function() local r = WG and WG.StanceRequest; if r and r ~= (STRAT and STRAT:Name()) then return r end end }
+            end
             STRAT = ST.New{
                 stances = StanceList(), initial = CFG.STANCE,
                 -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
                 -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
-                hooks = { army_share = (CFG.MATCH and H.match_enemy or H.v16_share)(CFG.SHARE),
+                hooks = { army_share = (function(base0)
+                              -- a large air raid: the share goes to AIR_RUSH_SHARE while it lasts (the labs clear their queues for AA)
+                              local base = base0
+                              if CFG.AIR_RUSH_SHARE then
+                                  base = function(state, strat)
+                                      local ar = WG and WG.MetalBot and WG.MetalBot.airRaid
+                                      if ar and ar.rush then return CFG.AIR_RUSH_SHARE end
+                                      return base0(state, strat)
+                                  end
+                              end
+                              if not CFG.MANUAL_STANCES then return base end
+                              -- a person sets the share (stance_panel.lua writes WG.ArmyShareRequest, 0..1; nil = automatic)
+                              return function(state, strat)
+                                  local r = WG and tonumber(WG.ArmyShareRequest)
+                                  if r then return r end
+                                  return base(state, strat)
+                              end
+                          end)((CFG.MATCH and H.match_enemy or H.v16_share)(CFG.SHARE)),
                           switch = (#switches > 0) and H.chain_switch(switches) or nil,
                           weights = H.income_mix(CFG.MIX) },
             }
@@ -573,6 +616,7 @@ function widget:Initialize()
             if STRAT:Stance() then
                 STRAT:InstallSlotSpine(SPINE)
                 CH.Publish(WG, "Strategy", STRAT)
+                if CFG.MANUAL_STANCES and WG then WG.StanceChoices = CFG.MANUAL_STANCES end
             else
                 STRAT = nil
                 Spring.Echo("[STANCE] stance " .. tostring(CFG.STANCE) .. " did not load; the spine has no army")
