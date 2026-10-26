@@ -1,7 +1,1 @@
-## Bounties
-
-**Fix scaling logic - $6 usd**
-
-Submit a pr that fixes bot scaling, so that it scales at the same level as a good metal player.
-
-Paid out in crypto
+Bot that plays Full Metal Plate. Eventually there will be a bot maker. Only COR for right now. 
