@@ -213,10 +213,11 @@ end
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeamID)
     if (teamID ~= 0 and teamID ~= 1) or isCommander(unitDefID) then return end
     local d = UnitDefs[unitDefID]
+    local ad = attackerDefID and UnitDefs[attackerDefID]     -- the killer's type (unit_report.py: value killed per unit type)
     Spring.Echo(string.format(
-        "[STATS] destroyed frame=%d team=%d def=%s mv=%d attacker_team=%d",
+        "[STATS] destroyed frame=%d team=%d def=%s mv=%d attacker_team=%d attacker_def=%s",
         Spring.GetGameFrame(), teamID, (d and d.name or "?"),
-        (d and d.metalCost or 0), (attackerTeamID or -1)))
+        (d and d.metalCost or 0), (attackerTeamID or -1), (ad and ad.name or "-")))
 end
 
 -- ── Helper: live stats via direct unit query ──────────────────────────────────
