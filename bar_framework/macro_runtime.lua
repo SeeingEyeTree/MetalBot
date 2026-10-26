@@ -47,6 +47,8 @@ M.DEFAULTS = {
     LATE_CAP_FRAC       = 0.75,        -- ... cap share at which it is taken (not before LATE_MINUTE)
     LATE_MINUTE         = 12,
     SHARE               = {},        -- strategy_hooks.v16_share / match_enemy options (start, floor, hold, ratio, ...)
+    CAP_T1_FRAC         = 0.6,       -- user 2026-10-25: from this unit-cap fill the stances' T1 combat units are dropped (strategy.lua CapFiltered:
+                                     -- room for Tigers / Demons / eco instead of hundreds of Grunts); false = never
     AIR_RUSH_SHARE      = 1.0,       -- user 2026-10-25: the army share while a large air raid is on (mb.airRaid.rush, unit_runtime): all of income
                                      -- into the AA the labs are rushing; false = no lift
     MATCH               = true,      -- army share follows the scouted enemy army (humans); false = plain v16_share for bot-vs-bot
@@ -578,7 +580,7 @@ function widget:Initialize()
                 switches = { function() local r = WG and WG.StanceRequest; if r and r ~= (STRAT and STRAT:Name()) then return r end end }
             end
             STRAT = ST.New{
-                stances = StanceList(), initial = CFG.STANCE,
+                stances = StanceList(), initial = CFG.STANCE, capFilter = CFG.CAP_T1_FRAC or nil,
                 -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
                 -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
                 hooks = { army_share = (function(base0)

@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_FLOOR_BASE", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_FLOOR_BASE", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR" }
 
@@ -189,12 +189,15 @@ local SHURI_LIFT_ALWAYS = O("SHURI_LIFT_ALWAYS", false)
 --              units (at most AA_FLOOR_MAX), alive or ordered, from whichever lab can make one (AA_FLOOR_PICKS, flak first)
 --   AIR RUSH   a large raid (mb.airRaid.rush): EVERY lab that can make AA clears its queue (the unit in progress too) once per
 --              raid and fills it AIR_RUSH_DEPTH deep with its best AA (AA_PICKS: flak trucks first; air labs make fighters).  The
---              existing labs only -- no time to swap.  Labs holding owed air cons are left alone.
+--              existing labs only -- no time to swap.  Labs holding owed air cons are left alone.  Only until our AA (ground AA +
+--              fighters, alive or ordered) is worth AIR_RUSH_MULT x the raid still in sight; when the raid is over the rush's AA
+--              still queued is taken off again (user 2026-10-25: it kept making AA after the bombers were dead).
 local AA_FLOOR_BASE       = O("AA_FLOOR_BASE", 4)
 local AA_FLOOR_PER_BOMBER = O("AA_FLOOR_PER_BOMBER", 0.15)
 local AA_FLOOR_MAX        = O("AA_FLOOR_MAX", 12)
 local AIR_RUSH            = O("AIR_RUSH", true)
 local AIR_RUSH_DEPTH      = O("AIR_RUSH_DEPTH", 4)
+local AIR_RUSH_MULT       = O("AIR_RUSH_MULT", 2.0)
 local AA_FLOOR_PICKS = K.AA_FLOOR_PICKS or { ROLES.Get("aa_flak_truck"), ROLES.Get("aa_t2_bot"), ROLES.Get("aa_t1_veh"), ROLES.Get("aa_t1_bot") }
 local AA_PICKS       = K.AA_PICKS or { ROLES.Get("aa_flak_truck"), ROLES.Get("aa_t2_bot"), ROLES.Get("aa_t1_veh"), ROLES.Get("aa_t1_bot"),
                                        ROLES.Get("fighter_t2"), ROLES.Get("fighter_t1"), ROLES.Get("aa_hover") }
@@ -1140,8 +1143,13 @@ RegisterWants = function()
     add{ name = "air-rush", prio = 150, mode = "flush", grace = 0, why = "air-rush",
          depth = function() return AIR_RUSH_DEPTH end,
          flushKey = function() return C.airRush end,
-         applies = function(lab) return C.airRush ~= nil and not lab.held end,
-         pick = function(lab) return AAPick(lab.defID, AA_PICKS) end }
+         applies = function(lab) return C.airRush ~= nil and not lab.held and (C.rushRoom or 0) > 0 end,
+         pick = function(lab)
+             if (C.rushRoom or 0) <= 0 then return nil end
+             local d = AAPick(lab.defID, AA_PICKS)
+             if d then C.rushRoom = C.rushRoom - UnitValue(d) end
+             return d
+         end }
     add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
          applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
          pick = function(lab)
@@ -1390,6 +1398,19 @@ function widget:GameFrame(frame)
     -- air defence (AA_FLOOR_* / AIR_RUSH above): the rush's id while a large raid is on, and how many ground AA the floor still wants
     local ar = mb and mb.airRaid
     C.airRush = (AIR_RUSH and ar and ar.rush and ar.since) or nil
+    C.rushRoom = 0
+    if C.airRush then
+        C.rushRoom = AIR_RUSH_MULT * (ar.value or 0) - Have("groundaa", frame, true) - Have("fighter", frame, true)
+        C.lastRushKey = C.airRush
+    elseif C.lastRushKey and lb then
+        -- the raid is over: the AA the rush queued comes off the queues (whatever is left of it)
+        local set = {}
+        for _, n in ipairs(AA_PICKS) do local ud = UnitDefNames and UnitDefNames[n]; if ud then set[ud.id] = true end end
+        local nLabs = LB.EndFlush(lb, C.lastRushKey, set)
+        local sec = math.floor(frame / 30)
+        Spring.Echo(string.format("[LabCtrl] %d:%02d air raid over: the rush's AA taken off %d lab queues", math.floor(sec / 60), sec % 60, nLabs))
+        C.lastRushKey = nil
+    end
     C.aaFloorRoom = 0
     if ar and (ar.seenMax or 0) > 0 then
         C.aaFloorRoom = math.min(AA_FLOOR_MAX, AA_FLOOR_BASE + math.ceil(AA_FLOOR_PER_BOMBER * ar.seenMax)) - Have("groundaa", frame)

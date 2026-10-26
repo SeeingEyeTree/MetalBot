@@ -38,6 +38,11 @@ local CFG = {
     BP_WEIGHT     = 4, ECO_BONUS = 150, VALUE_WEIGHT = 0.15,
     STATION_FRAC  = 0.12,     -- idle wing waits this far along home -> foe
     MARGIN        = 300,
+    -- AIR_TIMING (user 2026-10-25: "it sends out fighters randomly ... fighters should be kept at home, move behind the army to respond to
+    -- enemy air, or go with a bombing run"): NO_SWEEP drops the sweeps over the enemy economy; HUNT_NEAR_R limits hunts to enemy air
+    -- within this of our base or the wing's station (behind the army).  nil / false = the old wing.
+    NO_SWEEP      = false,
+    HUNT_NEAR_R   = nil,
 }
 M.CFG = CFG
 
@@ -62,7 +67,7 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[AW] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
-M.NIL_OPTIONS = { "ECO_BONUS", "VALUE_WEIGHT" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+M.NIL_OPTIONS = { "ECO_BONUS", "VALUE_WEIGHT", "HUNT_NEAR_R" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     combat, guards, bombersSet = o.combat, o.guards, o.bombers
@@ -274,7 +279,12 @@ function M.Update(frame)
         return
     end
     local tgt = PickAirTarget(frame, fv)
-    if not tgt then
+    if tgt and CFG.HUNT_NEAR_R then                  -- only enemy air near our base or the station behind the army
+        local hx, hz = MM.Home()
+        local r2 = CFG.HUNT_NEAR_R * CFG.HUNT_NEAR_R
+        if (tgt.x - hx) ^ 2 + (tgt.z - hz) ^ 2 > r2 and (tgt.x - stx) ^ 2 + (tgt.z - stz) ^ 2 > r2 then tgt = nil end
+    end
+    if not tgt and not CFG.NO_SWEEP then
         local cl = PickCluster(frame, CFG.HUNT_AA_MAX * fv)
         if cl then tgt = { x = cl.x, z = cl.z, kind = "sweep", v = cl.damage } end
     end

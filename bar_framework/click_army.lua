@@ -46,6 +46,13 @@ local CFG = {
     MAX_GROUPS      = 3,      -- user: "you want 3 different attacks in general"
     LAUNCH_MIN_AV   = 1800,   -- smallest group worth sending (~15 gators; human's first push had 25)
     LAUNCH_RATIO    = 2.5,    -- stage av must be this x the av still walking to the stage (user: 2.5)
+    -- Production-based mass (AIR_TIMING, user 2026-10-25: "an attack should at least be as large as what can be made in 20 seconds ...
+    -- most alive units were reinforcing"): with M.SetProduction(army metal/s), the smallest fast group is LAUNCH_PROD_S x that (the
+    -- slow group SLOW_PROD_FRAC of it), and BATCH_REINFORCE makes new units gather at the stage and join the weakest group together,
+    -- in batches worth the same, instead of walking out one by one.  nil / false = off.
+    LAUNCH_PROD_S   = nil,
+    SLOW_PROD_FRAC  = 0.5,
+    BATCH_REINFORCE = false,
     LAUNCH_FORCE_AV = 5400,   -- ...or this much, whatever is walking in
     FALL_FRAC       = 0.30,   -- a group is spent when this share of its peak size is left
     FALL_MAX_FRAMES = 1200,   -- ...and survivors give up waiting for the return after this long
@@ -164,6 +171,11 @@ local CFG = {
     -- biggest recently seen enemy army cluster (worth >= FLANK_MIN_FRAC of the core), the group heads for a waypoint
     -- FLANK_OFFSET to one side of it (the side is kept per group) until it is past the cluster.
     FLANK           = true,
+    -- SIDE_R (AIR_TIMING's push, user 2026-10-25: "a main push ... the slow cost effective units pull attention to let the raids get
+    -- in"): a fast group's targets within SIDE_R of the slow group's target score x SIDE_PENALTY, so the raids hit the sides while
+    -- the main push draws the enemy army.  nil = off.
+    SIDE_R          = nil,
+    SIDE_PENALTY    = 0.25,
     FLANK_CLEAR     = 1800,
     FLANK_OFFSET    = 2800,
     FLANK_MIN_FRAC  = 0.5,
@@ -248,6 +260,16 @@ local CFG = {
     SCOUT_ROUTE        = false,
 }
 M.CFG = CFG
+-- The slow group's speed line at run time (unit_runtime: the plan army "defend" turns the slow group on while it pushes, so
+-- Mammoths / Pounders screen and Sheldons support instead of trailing the fast raid groups).  0 = no slow group.
+local prodRate = 0
+function M.SetProduction(rate) prodRate = math.max(0, rate or 0) end
+local function ProdMin(frac) return CFG.LAUNCH_PROD_S and prodRate * CFG.LAUNCH_PROD_S * (frac or 1) or 0 end
+local slowCache
+function M.SetSlowSpeed(v)
+    v = v or 0
+    if CFG.SLOW_SPEED ~= v then CFG.SLOW_SPEED = v; slowCache = {} end
+end
 
 local CMD_MOVE, CMD_FIGHT, CMD_ATTACK = 10, 16, 20
 -- BAR gadget unit_target_on_the_move: 34923 set target (unit id, or x y z), 34924 cancel.  Resolved from the engine's
@@ -292,7 +314,7 @@ local function Value(defID)
     return d and ((d.metalCost or 0) + (d.energyCost or 0) / 70) or 0
 end
 
-local slowCache = {}
+slowCache = {}          -- (declared above M.SetSlowSpeed)
 local function IsSlow(defID)
     local v = slowCache[defID]
     if v == nil then
@@ -307,7 +329,7 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[CK] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
-M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY", "LAUNCH_PROD_S", "SIDE_R" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     BC.Apply("click_army", CFG, o.cfg, o.label, M.NIL_OPTIONS)    -- caller overrides (LINE_CLICK: no automatic slow group)
@@ -563,6 +585,14 @@ local function PickTarget(frame, g, groupValue)
                and Dist(t.x, t.z, o.target.x, o.target.z) < CFG.DIFF_R then
                 score = score * CFG.DIFF_PENALTY
                 break
+            end
+        end
+        if CFG.SIDE_R and not g.slow then                  -- the raids go for the sides, away from the main push
+            for _, o in ipairs(groups) do
+                if o.slow and o.target and Dist(t.x, t.z, o.target.x, o.target.z) < CFG.SIDE_R then
+                    score = score * CFG.SIDE_PENALTY
+                    break
+                end
             end
         end
         if not bestScore or score > bestScore then best, bestScore = t, score end
@@ -1804,7 +1834,21 @@ function M.Update(frame)
 
     --  2. With all MAX_GROUPS fast groups out, a fast unit goes straight to the weakest of them.
     local toStage = rest
-    if FastCount() >= CFG.MAX_GROUPS and WeakestAttacker() then
+    if FastCount() >= CFG.MAX_GROUPS and WeakestAttacker() and CFG.BATCH_REINFORCE then
+        -- BATCH_REINFORCE: they gather at the stage; once the fast ones there are worth a group, they go together
+        local staged, sv = {}, 0
+        for _, u in ipairs(rest) do
+            if not u.slow and Dist(u.x, u.z, stageX, stageZ) <= CFG.STAGE_JOIN_R then staged[#staged + 1] = u; sv = sv + u.v end
+        end
+        if #staged > 0 and sv >= math.max(CFG.LAUNCH_MIN_AV, ProdMin(1)) then
+            local g = WeakestAttacker()
+            local joined = {}
+            for _, u in ipairs(staged) do JoinGroup(frame, g, u); joined[u.uid] = true end
+            toStage = {}
+            for _, u in ipairs(rest) do if not joined[u.uid] then toStage[#toStage + 1] = u end end
+            Log(frame, "batch of %d reinforcements (%d value) -> group #%d", #staged, sv, g.id or 0)
+        end
+    elseif FastCount() >= CFG.MAX_GROUPS and WeakestAttacker() then
         toStage = {}
         for _, u in ipairs(rest) do
             local g = (not u.slow) and WeakestAttacker() or nil
@@ -1828,7 +1872,7 @@ function M.Update(frame)
             reinforceAV = reinforceAV + u.v
         end
     end
-    if mode ~= "hold" and not HasSlowGroup() and foeKnown and slowAV >= CFG.SLOW_MIN_AV then
+    if mode ~= "hold" and not HasSlowGroup() and foeKnown and slowAV >= math.max(CFG.SLOW_MIN_AV, ProdMin(CFG.SLOW_PROD_FRAC)) then
         -- the escorts: the fast units nearest the stage, up to the share of the slow value
         local want = CFG.SLOW_ESCORT_SHARE * slowAV
         local picked, have = {}, 0
@@ -1863,6 +1907,7 @@ function M.Update(frame)
         else minAV = e.av0 + (e.av1 - e.av0) * (frame - e.f0) / (e.f1 - e.f0) end
         if CFG.LAUNCH_RATIO_EARLY and frame < e.f1 then ratio = CFG.LAUNCH_RATIO_EARLY end
     end
+    minAV = math.max(minAV, ProdMin(1))        -- LAUNCH_PROD_S: at least that many seconds of army production
     if mode ~= "hold" and FastCount() < CFG.MAX_GROUPS and foeKnown and stageAV >= minAV
        and #stagedFast >= CFG.MIN_GROUP_UNITS then
         if stageAV >= ratio * reinforceAV or stageAV >= CFG.LAUNCH_FORCE_AV then

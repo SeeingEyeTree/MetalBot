@@ -69,6 +69,19 @@ do
     check(lb.flushed[1] == nil, "Forget drops the flush record")
 end
 
+-- ── EndFlush: the flush key is over -- its units come off every lab it flushed, other labs untouched ──
+do
+    local removed = {}
+    local lb = NewBroker{ clear = function(id) queues[id] = 0 end, remove = function(id, set) removed[#removed + 1] = { id = id, set = set } end }
+    LB.AddWant(lb, { name = "aa", prio = 150, mode = "flush", depth = 2, grace = 0, flushKey = function() return "r1" end, pick = function() return 7 end })
+    queues[1], queues[2] = 3, 3
+    LB.Service(lb, Lab(1), 0); LB.Service(lb, Lab(2), 0)
+    lb.flushed[3] = "r0"
+    local n = LB.EndFlush(lb, "r1", { [7] = true })
+    check(n == 2 and #removed == 2 and removed[1].set[7] and lb.flushed[1] == nil and lb.flushed[3] == "r0",
+          "EndFlush: the key's labs get their units removed; another key's lab is left alone")
+end
+
 -- ── grace: a lab just ordered is left alone; a want's own grace overrides ──
 do
     local lb = NewBroker()

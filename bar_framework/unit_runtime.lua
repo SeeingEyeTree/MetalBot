@@ -8,21 +8,67 @@
 --     UNIT.Install(widget, WG, { <overrides> })
 -- WG is passed in for the same reason as lab_rules.lua (a VFS.Include'd file does not see the widget's own WG; in
 -- --server single that is a per-team shim).  Overrides (K): MECH = { <keys of the MECH table below> }, BOMB_RUN = { <bomb_run.lua
--- CFG keys> }.  Install(widget, WG, {}) is CORE's unit controller.
+-- CFG keys> }, ENDGAME = { <endgame.lua M.* settings, e.g. STRIKE_MIN_VALUE> }, STUN_KILL = { <see UpdateStunKill> } or true.
+-- Install(widget, WG, {}) is CORE's unit controller.
 -- Everything inside Install is CORE's unit_controller.lua, edited only where marked "unit_runtime".
 --
--- Stance plan fields read here (2026-10-25, HAMMER_ANVIL):
---   army = "defend"   the ground army DEFENDS (maneuver_defence: blobs on a perimeter intercept raids) and PUSHES (click_army raid
---                     groups at enemy build power / eco) while it clearly outweighs the scouted enemy ground army: plan.push =
---                     { ratio = 1.3, back = 1.0, hold_s = 20, min_value = 3000 } (push at ratio, back to defend under `back`, each
---                     held hold_s).  army = "hold" means the same: click_army's old hold mode (the whole army parked in a ring at a
---                     stage point, launching nothing) is gone.
+-- Stance plan fields read here (2026-10-25, AIR_TIMING):
+--   army = "defend"   the ground army DEFENDS (maneuver_defence blobs intercept raids), PUSHES (click_army raid groups at enemy build
+--                     power / eco, plus the slow group) while it clearly outweighs the scouted enemy ground army, and RAIDS the far side
+--                     (low-risk targets, a garrison stays) when nobody has raided us for a while.  Out, it comes home only when it
+--                     trades very badly or loses its critical mass; a raid on us is answered by reinforcements and home guards.  The rule:
+--                     M.ArmyMode, options in plan.push = { ratio 1.3, min_value 3000, quiet_s 90, back_value 600, bad_lost 3000,
+--                     bad_ratio 0.4, bad_ends 2, crit_frac 0.5, cooldown_s 60, hold_s 20, quiet_def 0.5, keep 0.25, slow 50 }.
+--                     Long-range support (Sheldons, Lashers, Banishers) is maneuver_defence's SUPPORT_ROLE: behind the screen, never an
+--                     interceptor, no kite.  army = "hold" means the same: click_army's old hold mode (the whole army parked in a ring
+--                     at a stage point, launching nothing) is gone.
 --   bomb_run = "rally" | "launch"   bomb_run.lua flies the bombers (T1_bombing_run's control: fighters FIGHT ahead, ~4 bombers per eco
 --                     point, home when spent).  "rally": hold them at the station and launch at LAUNCH_MIN; "launch": go now with
 --                     what stands, later waves at RELAUNCH_MIN.  No stance with bomb_run = bomb_run never runs (CORE).
 
 local M = {}
-M.OPTIONS = { MECH = true, BOMB_RUN = true }
+
+-- The plan army "defend"'s mode from the game state (pure, tests/test_army_mode.lua).  x = { own, enemy (ground values), quietS (seconds
+-- since the last raid on us), raidV (ground value of the raid on us now), trade = click_army.TradeSummary, peak (our ground's highest value
+-- since this push / raid began), coolS (seconds since the army last pulled back), prod (army production, metal/s) }; o = plan.push.
+-- Returns mode, ratio, why.  trade is the GROUND ARMY's own trade (what our ground units killed and lost, unit_runtime GroundTrade).
+--   "defend"  the blobs hold the base
+--   "push"    our ground >= ratio x the scouted enemy's: click_army groups + the slow group
+--   "raid"    quiet for quiet_s and our ground >= min_value: low-risk raids on the far side (weakly defended targets only), a
+--             garrison stays home (user 2026-10-25: "move to the other side if there are not many raids and try low risk raids")
+-- Out (push / raid) the army comes home ONLY when it trades very badly (lost >= bad_lost at a kill ratio < bad_ratio, or bad_ends groups
+-- spent in a row) or has lost its critical mass (under crit_s seconds of army production -- user 2026-10-25: "an attack should at least be
+-- as large as what can be made in 20 seconds" -- or under min_value).  A raid on us does not recall it:
+-- raid_response answers with reinforcements, home guards and the garrison (user 2026-10-25: "a raid should just pull reinforcing units
+-- and home guard").  After a pull-back no new push / raid for cooldown_s.
+function M.ArmyMode(cur, x, o)
+    o = o or {}
+    local up, minV = o.ratio or 1.3, o.min_value or 3000
+    local ratio = (x.enemy or 0) > 0 and (x.own or 0) / x.enemy or nil
+    local own = x.own or 0
+    local strong = own >= minV and ((ratio == nil and own >= 4 * minV) or (ratio ~= nil and ratio >= up))
+    if cur == "push" or cur == "raid" then
+        local tr = x.trade
+        local bad = tr ~= nil and (((tr.lost or 0) >= (o.bad_lost or 3000) and (tr.ratio or 1) < (o.bad_ratio or 0.4))
+                                   or (tr.badEnds or 0) >= (o.bad_ends or 2))
+        if bad then return "defend", ratio, "trading badly" end
+        -- critical mass: at least crit_s seconds of army production (x.prod, metal/s) -- or, without a production rate, crit_frac of the peak
+        local crit = x.prod and x.prod > 0 and (o.crit_s or 20) * x.prod or nil
+        if own < minV or (crit and own < crit) or (not crit and x.peak and own < (o.crit_frac or 0.5) * x.peak) then
+            return "defend", ratio, "lost critical mass"
+        end
+        if cur == "raid" and strong then return "push", ratio, "ahead" end
+        return cur, ratio
+    end
+    if (x.coolS or 1e9) < (o.cooldown_s or 60) then return "defend", ratio, "cooling down" end
+    if strong then return "push", ratio, "ahead" end
+    if o.quiet ~= false and own >= minV and (x.raidV or 0) < (o.back_value or 600) and (x.quietS or 0) >= (o.quiet_s or 90) then
+        return "raid", ratio, "quiet"
+    end
+    return "defend", ratio
+end
+
+M.OPTIONS = { MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true }
 
 function M.Install(widget, WG, K)
 K = K or {}
@@ -258,12 +304,13 @@ local GROUND_AA = {
 -- built no AA).  Enemy bombers in our part of the map (typed contacts, fresh), anywhere -- not only near the base centre, the
 -- outer grids are what a bombing run hits.  Published as mb.airRaid (bar_framework/WG_CHANNELS.md):
 --   seenMax  most bombers seen at once in our part of the map, ever (the labs' AA floor grows with it)
---   rush     n >= RUSH_MIN or value >= RUSH_VALUE: a large raid; held HOLD frames after the last such sighting.  The labs clear
+--   rush     n >= RUSH_MIN or value >= RUSH_VALUE: a large raid; over once fewer than END_MIN bombers have been seen for END_HOLD
+--            frames (user 2026-10-25: the first version held it 40 s past the last big sighting and kept making AA).  The labs clear
 --            their queues for AA (lab_rules "air-rush"), the army share goes to AIR_RUSH_SHARE (macro_runtime), and every ground
 --            AA unit and free fighter FIGHTs at the raid's projected position.
 --   since    the frame this rush began (the labs clear once per rush)
 local AIRDEF = {
-    AGE = 450, OUR_FRAC = 0.65, RUSH_MIN = 8, RUSH_VALUE = 1200, HOLD = 1200, LEAD_S = 12, LOG_EVERY = 300,
+    AGE = 450, OUR_FRAC = 0.65, RUSH_MIN = 8, RUSH_VALUE = 1200, END_MIN = 3, END_HOLD = 300, LEAD_S = 12, LOG_EVERY = 300,
     raid = nil,            -- mb.airRaid
     seenMax = 0, lastX = nil, lastZ = nil, lastF = nil, rushUnits = {},
 }
@@ -1033,6 +1080,35 @@ local function UpdateGroundAA(frame)
         if MM then x, z = MM.Clamp(x, z, MAP_MARGIN) end
         ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, { role = "AA_SCREEN", cmd = CMD_FIGHT, x = x, z = z }, frame)
     end
+    -- unit_runtime (user 2026-10-25: the Tigers "had no AA with them"): with attack groups out, the escorts are shared over ALL of
+    -- them -- the main push and each raid group -- by value, each escort FIGHTing just behind its group's core
+    if #escort > 0 and CA and CA.Groups then
+        local gs = {}
+        for _, g in ipairs(CA.Groups() or {}) do if g.state == "attack" and g.cx then gs[#gs + 1] = g end end
+        if #gs > 0 then
+            table.sort(gs, function(a, b) return (a.value or 0) > (b.value or 0) end)
+            local tot = 0
+            for _, g in ipairs(gs) do tot = tot + (g.value or 0) end
+            local k = 1
+            for gi, g in ipairs(gs) do
+                local n = (gi == #gs) and (#escort - k + 1) or math.floor(#escort * (g.value or 0) / math.max(tot, 1) + 0.5)
+                local hx, hz = baseX - g.cx, baseZ - g.cz
+                local d = math.sqrt(hx * hx + hz * hz)
+                local bx, bz = g.cx, g.cz
+                if d > 1 then bx, bz = g.cx + hx / d * math.min(d, GROUND_AA.BEHIND), g.cz + hz / d * math.min(d, GROUND_AA.BEHIND) end
+                for j = 1, n do
+                    local uid = escort[k]
+                    if not uid then break end
+                    local a, r = j * 2.4, 60 * math.sqrt(j)
+                    local x, z = bx + math.cos(a) * r, bz + math.sin(a) * r
+                    if MM then x, z = MM.Clamp(x, z, MAP_MARGIN) end
+                    ARMY.Claim(ARMY.PRIO.LINE, uid, { role = "AA_ESCORT", cmd = CMD_FIGHT, x = x, z = z }, frame)
+                    k = k + 1
+                end
+            end
+            return
+        end
+    end
     if #escort > 0 then
         local cx, cz
         if CA then cx, cz = CA.Centroid() end
@@ -1261,6 +1337,69 @@ local function UpdateAirAlarm(frame)
     end
 end
 
+-- unit_runtime (K.STUN_KILL, AIR_TIMING; user 2026-10-25: "when an enemy unit gets stunned nothing goes to kill it"): a visible enemy
+-- that is stunned (Spring.GetUnitIsStunned) gets up to PER_TARGET of the nearest free armed ground units within RANGE on ATTACK (RESPOND
+-- priority) until it dies or wakes.  Units busy intercepting, raiding, retreating or answering an air raid are left alone.  "[STUN]" rows.
+local STUN = { PER_TARGET = 4, RANGE = 1500, MAX_TARGETS = 6, LOG_EVERY = 300, on = {}, lastLog = -1e9, kills = 0 }   -- on[target] = { uid ... }
+local STUN_BUSY = { RETREAT = true, RAID = true, MD_RESPOND = true, RESPOND = true, AIR_DEF = true, BOMBRUN = true, STRIKE = true,
+                    AIRWING = true, STUN_KILL = true }
+local function UpdateStunKill(frame)
+    if not (K.STUN_KILL and ARMY and TM and Spring.GetUnitIsStunned) then return end
+    local cfg = type(K.STUN_KILL) == "table" and K.STUN_KILL or {}
+    local per, range, maxT = cfg.PER_TARGET or STUN.PER_TARGET, cfg.RANGE or STUN.RANGE, cfg.MAX_TARGETS or STUN.MAX_TARGETS
+    -- targets: fresh enemy contacts that are stunned now
+    local targets = {}
+    for id, c in pairs(TM.Contacts()) do
+        if c.defID and frame - (c.frame or -1e9) <= 30 and not c.air then
+            local _, stunned = Spring.GetUnitIsStunned(id)
+            if stunned then targets[#targets + 1] = { id = id, x = c.x, z = c.z } end
+        end
+    end
+    local live = {}
+    for _, t in ipairs(targets) do live[t.id] = t end
+    for tid, list in pairs(STUN.on) do                            -- dead or awake: hand the units back
+        if not live[tid] then
+            if not spGetUnitDefID(tid) then STUN.kills = STUN.kills + 1 end
+            for _, uid in ipairs(list) do if ARMY.RoleOf(uid) == "STUN_KILL" then ARMY.Release(uid) end end
+            STUN.on[tid] = nil
+        end
+    end
+    if #targets == 0 then return end
+    -- free armed ground units (click_army members, maneuver blobs, home guards)
+    local pool = {}
+    local function consider(uid, defID)
+        local d = UnitDefs[defID]
+        if d and not d.canFly and d.weapons and #d.weapons > 0 and spGetUnitDefID(uid) and not STUN_BUSY[ARMY.RoleOf(uid) or ""] then
+            local x, _, z = spGetUnitPosition(uid)
+            if x then pool[#pool + 1] = { uid = uid, x = x, z = z } end
+        end
+    end
+    for uid, defID in pairs(combatUnits) do consider(uid, defID) end
+    if MD then for uid, u in pairs(MD.units) do consider(uid, u.defID) end end
+    local used, nT = {}, 0
+    for _, t in ipairs(targets) do
+        if nT >= maxT then break end
+        local list = STUN.on[t.id] or {}
+        local keep = {}
+        for _, uid in ipairs(list) do if ARMY.RoleOf(uid) == "STUN_KILL" then keep[#keep + 1] = uid; used[uid] = true end end
+        table.sort(pool, function(a, b) return (a.x - t.x) ^ 2 + (a.z - t.z) ^ 2 < (b.x - t.x) ^ 2 + (b.z - t.z) ^ 2 end)
+        for _, u in ipairs(pool) do
+            if #keep >= per then break end
+            if not used[u.uid] and (u.x - t.x) ^ 2 + (u.z - t.z) ^ 2 <= range * range then
+                if ARMY.Claim(ARMY.PRIO.RESPOND, u.uid, { role = "STUN_KILL", cmd = CMD.ATTACK or 20, targetID = t.id, x = t.x, z = t.z }, frame) then
+                    keep[#keep + 1] = u.uid; used[u.uid] = true
+                end
+            end
+        end
+        if #keep > 0 then STUN.on[t.id] = keep; nT = nT + 1 end
+    end
+    if nT > 0 and frame - STUN.lastLog >= STUN.LOG_EVERY then
+        STUN.lastLog = frame
+        Spring.Echo(string.format("[STUN] %d:%02d %d stunned enemies under attack (%d stunned in sight), %d killed so far",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, nT, #targets, STUN.kills))
+    end
+end
+
 -- unit_runtime: enemy bombers anywhere in our part of the map (AIRDEF above).  Every 30 frames.
 local function UpdateAirRaid(frame)
     if not (TM and UQ and MM and MM.Ready and MM.Ready()) then return end
@@ -1302,10 +1441,12 @@ local function UpdateAirRaid(frame)
             r.rushF = frame
         end
     end
-    if r.rush and frame - (r.rushF or 0) > AIRDEF.HOLD then
+    if n < AIRDEF.END_MIN then r.n, r.value = n, value end        -- the live raid (the labs size the rush by r.value)
+    if n >= AIRDEF.END_MIN then r.bigF = frame end
+    if r.rush and frame - (r.bigF or r.rushF or 0) > AIRDEF.END_HOLD then
         r.rush = false
-        Spring.Echo(string.format("[AIRDEF] %s air raid over (no large raid seen for %d s; %d AA units and fighters were sent)", clock,
-            AIRDEF.HOLD / 30, r.defenders or 0))
+        Spring.Echo(string.format("[AIRDEF] %s air raid over (fewer than %d bombers seen for %d s; %d AA units and fighters were sent)", clock,
+            AIRDEF.END_MIN, AIRDEF.END_HOLD / 30, r.defenders or 0))
     end
 end
 
@@ -1393,6 +1534,16 @@ local function PublishState(frame)
             if UQ and UQ.is_air(defID) then av = av + (UQ.metal_cost(defID) or 0)
             else gv = gv + ((UQ and UQ.metal_cost(defID)) or 0) end
         end
+    end
+    -- unit_runtime: the maneuver blobs' units (and shadows) are ground army too -- they are not in combatUnits, so in the plan army
+    -- "defend" armyGround was 0 and the push / raid decision compared nothing with the enemy (the army never moved out)
+    if MD then
+        for uid, u in pairs(MD.units) do
+            if spGetUnitDefID(uid) and not combatUnits[uid] then gv = gv + ((UQ and UQ.metal_cost(u.defID)) or 0) end
+        end
+    end
+    for uid, defID in pairs(shadowUnits) do
+        if spGetUnitDefID(uid) and not combatUnits[uid] then gv = gv + ((UQ and UQ.metal_cost(defID)) or 0) end
     end
     mb.armyGround, mb.armyAir = gv, av
     mb.trade = CA and CA.TradeSummary and CA.TradeSummary(frame) or nil
@@ -1486,7 +1637,7 @@ function widget:Initialize()
     if RC then RC.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY,
                         teamID = myTeamID, allyID = myAllyID } end
     EG = EI and Load("endgame")
-    if EG then EG.Init{ EI = EI, MM = MM, UQ = UQ, ARMY = ARMY, TM = TM, teamID = myTeamID } end
+    if EG then EG.Init{ EI = EI, MM = MM, UQ = UQ, ARMY = ARMY, TM = TM, teamID = myTeamID, cfg = K.ENDGAME } end
     LF = nil
     CA = EI and Load("click_army")
     if CA then
@@ -1515,7 +1666,8 @@ function widget:Initialize()
     AW = EI and Load("air_wing")
     if AW then AW.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards, bombers = bombers,
                         -- RAID_BOT: the idle wing waits at click_army's fighter post (behind the front, out of enemy AA)
-                        station = CA and CA.FighterPost and function(f) return CA.FighterPost(f) end or nil } end
+                        station = CA and CA.FighterPost and function(f) return CA.FighterPost(f) end or nil,
+                        cfg = K.AIR_WING, label = "unit_runtime" } end
     -- unit_runtime: bomb_run for stances whose plan has bomb_run (claims at RAID priority, above endgame's BOMBER_WAIT parking)
     BR = EI and Load("bomb_run")
     if BR then BR.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, bombers = bombers, combat = combatUnits, guards = homeGuards,
@@ -1533,7 +1685,9 @@ function widget:Initialize()
             -- dropped as "already ordered".
             HOST = BH.New{ give = function(uid, cmd, params)
                 Spring.GiveOrderToUnit(uid, cmd, params, {})
-                if ARMY and ARMY.RoleOf(uid) == "BLOB" then ARMY.Release(uid) end
+                -- unit_runtime: the maneuver blobs' roles too, so their next claim is sent instead of dropped as "already ordered"
+                local role = ARMY and ARMY.RoleOf(uid)
+                if role == "BLOB" or role == "MD_POST" or role == "MD_RESPOND" or role == "MD_RETURN" or role == "MD_SUPPORT" then ARMY.Release(uid) end
             end }
             CTX = BC.New{ UQ = UQ, MM = MM, allyID = myAllyID }
             -- range_kite: no kiting while the unit defends the base (raid response, home guard) -- it moves in front
@@ -1637,28 +1791,78 @@ end
 -- groups the shadows keep in view and go back to their posts.  Off for every other stance.
 -- unit_runtime (2026-10-25): plan army = "defend" (and "hold", whose parked ring is gone) defends with the blobs and pushes with
 -- click_army's raid groups while our ground army outweighs the scouted enemy's by plan.push.ratio (see the header).
-local push = { on = false, since = nil, ratio = nil }
+-- The ground army's own trade over the last GROUND_TRADE_S seconds: enemy units our armed ground units killed (attacker type), and
+-- our armed ground units the enemy killed (2026-10-25: click_army's group trade read 300k killed for 156k lost while 380 Tigers lost 159k
+-- and killed 57k, so the pull-back never fired).
+local GROUND_TRADE_S = 150
+local gtrade = {}            -- { f, killed, lost }
+local function IsGroundArmy(defID)
+    local d = defID and UnitDefs[defID]
+    return d ~= nil and not d.canFly and not d.isBuilder and (d.speed or 0) > 0 and d.weapons ~= nil and #d.weapons > 0
+end
+local function NoteGroundTrade(frame, killed, lost) gtrade[#gtrade + 1] = { f = frame, killed = killed, lost = lost } end
+local function GroundTrade(frame)
+    local k, l, keep = 0, 0, {}
+    for _, e in ipairs(gtrade) do
+        if frame - e.f <= GROUND_TRADE_S * 30 then keep[#keep + 1] = e; k, l = k + e.killed, l + e.lost end
+    end
+    gtrade = keep
+    return { killed = k, lost = l, ratio = l > 0 and k / l or (k > 0 and 99 or 1) }
+end
+-- army production, metal/s: metal income x the strategy's army share
+local function ArmyProduction()
+    local _, _, _, inc = Spring.GetTeamResources(myTeamID, "metal")
+    local share = WG and WG.Strategy and WG.Strategy.Share and WG.Strategy:Share() or 0
+    return (tonumber(inc) or 0) * (tonumber(share) or 0)
+end
+
+local push = { on = false, mode = "defend", since = nil, ratio = nil, lastRaidF = 0, logF = -1e9, caDef = nil, peak = nil, backF = -1e9 }
 local function DefendPlan(plan) return plan ~= nil and (plan.army == "defend" or plan.army == "hold") end
 local function UpdatePush(frame)
     local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
-    if not DefendPlan(plan) then push.on, push.since = false, nil; return end
+    if not DefendPlan(plan) then push.on, push.mode, push.since = false, "defend", nil; return end
     local o = plan.push or {}
-    local up, down, holdF, minV = o.ratio or 1.3, o.back or 1.0, (o.hold_s or 20) * 30, o.min_value or 3000
+    local holdF = (o.hold_s or 20) * 30
     local own = (WG.MetalBot and WG.MetalBot.armyGround) or 0
     local enemy = EI and EI.GroundValue and EI.GroundValue(frame) or 0
-    local ratio = enemy > 0 and own / enemy or nil
+    -- a ground raid on us now (raid_response's record, fresh), or an intruder inside the blobs' ring
+    local raid = WG.MetalBot and WG.MetalBot.raid
+    local raidV = (raid and frame - (raid.frame or -1e9) <= 60) and (raid.ground or 0) or 0
+    if MD then for _, cl in ipairs(MD.clusters or {}) do if cl.inside then raidV = math.max(raidV, cl.v or 0) end end end
+    if raidV >= (o.back_value or 600) then push.lastRaidF = frame end
+    local quietS = (frame - push.lastRaidF) / 30
+    if push.mode ~= "defend" then push.peak = math.max(push.peak or 0, own) else push.peak = nil end
+    local trade = GroundTrade(frame)
+    local caT = CA and CA.TradeSummary and CA.TradeSummary(frame) or nil
+    trade.badEnds = caT and caT.badEnds or 0
+    local prod = ArmyProduction()
+    push.prod = prod
+    local want, ratio, why = M.ArmyMode(push.mode, { own = own, enemy = enemy, quietS = quietS, raidV = raidV, trade = trade,
+                                                     peak = push.peak, coolS = (frame - push.backF) / 30, prod = prod }, o)
     push.ratio = ratio
-    -- the enemy army unknown: push only with a big army (it is somewhere; holding 100k at home is the failure this replaces)
-    local want
-    if push.on then want = (ratio == nil and own >= 4 * minV) or (ratio ~= nil and ratio >= down)
-    else want = own >= minV and ((ratio == nil and own >= 4 * minV) or (ratio ~= nil and ratio >= up)) end
-    if want == push.on then push.since = nil; return end
+    if frame - push.logF >= 1800 then
+        push.logF = frame
+        Spring.Echo(string.format("[UnitCtrl] %d:%02d army plan %s: own ground %.0f vs enemy %.0f (ratio %s), quiet %ds, raid on us %.0f",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, push.mode:upper(), own, enemy, ratio and string.format("%.2f", ratio) or "?",
+            math.floor(quietS), raidV))
+    end
+    if want == push.mode then push.since = nil; return end
     push.since = push.since or frame
-    if frame - push.since >= holdF then
-        push.on, push.since = want, nil
-        Spring.Echo(string.format("[UnitCtrl] %d:%02d army plan %s: own ground %.0f vs enemy %.0f (ratio %s)", math.floor(frame / 1800),
-            math.floor(frame / 30) % 60, want and "PUSH (click_army raid)" or "DEFEND (maneuver blobs)", own, enemy,
-            ratio and string.format("%.2f", ratio) or "?"))
+    -- coming home on a bad trade / lost mass: at once (the army is losing); going out: held hold_s
+    local need = (want == "defend") and 30 or holdF
+    if frame - push.since >= need then
+        local from = push.mode
+        push.mode, push.on, push.since = want, want ~= "defend", nil
+        if want == "defend" then push.backF = frame end
+        Spring.Echo(string.format("[UnitCtrl] %d:%02d army plan %s -> %s (%s): own ground %.0f (peak %.0f) vs enemy %.0f (ratio %s), trade %s, quiet %ds, raid on us %.0f",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, from:upper(), want:upper(), why or "-", own, push.peak or own, enemy,
+            ratio and string.format("%.2f", ratio) or "?",
+            trade and string.format("%.0f/%.0f", trade.killed or 0, trade.lost or 0) or "-", math.floor(quietS), raidV))
+    end
+    -- raid mode picks only weakly defended targets (click_army TARGET_DEF_MAX x quiet_def)
+    if CA and CA.CFG then
+        push.caDef = push.caDef or CA.CFG.TARGET_DEF_MAX
+        CA.CFG.TARGET_DEF_MAX = (push.mode == "raid") and push.caDef * (o.quiet_def or 0.5) or push.caDef
     end
 end
 
@@ -1673,8 +1877,12 @@ local function EnsureMD()
     if MD then return MD end
     if not (MDm and ARMY and TM) then return nil end
     local plan = WG.Strategy:Plan()
+    -- unit_runtime: the plan army "defend" plays long-range support as support (maneuver_defence SUPPORT_ROLE) unless its stance says not
+    local cfg = {}
+    if DefendPlan(plan) then cfg.SUPPORT_ROLE, cfg.MAX_GROUP_SPEED = true, 150 end
+    for k, v in pairs((plan and plan.maneuver) or {}) do cfg[k] = v end
     MD = MDm.New{ ARMY = ARMY, teamID = myTeamID, mapX = Game.mapSizeX or 8192, mapZ = Game.mapSizeZ or 8192,
-                  enemyBase = EnemyBase, contacts = function() return TM.Contacts() end, cfg = plan and plan.maneuver }
+                  enemyBase = EnemyBase, contacts = function() return TM.Contacts() end, cfg = cfg }
     return MD
 end
 
@@ -1692,7 +1900,10 @@ local function ManeuverTake(unitID, unitDefID, d)
     end
     if d.weapons and #d.weapons > 0 and not d.canFly and not IsScoutDef(unitDefID) then
         MDm.Add(MD, unitID, unitDefID)
-        if HOST then WG.Strategy:Assign(HOST, unitID, unitDefID) end
+        -- unit_runtime: support in the blobs gets no kite -- the blobs place it behind the screen and at range; a kite step and the
+        -- blob's order fought over the unit (Sheldons were pulled back and forth)
+        local u = MD.units[unitID]
+        if HOST and not (u and u.support) then WG.Strategy:Assign(HOST, unitID, unitDefID) end
         return true
     end
     return false
@@ -1705,7 +1916,7 @@ end
 local lastStance, lastManeuver = nil, false
 local function StanceHandover(frame)
     local name = WG and WG.Strategy and WG.Strategy.Name and WG.Strategy:Name()
-    if name and push.on then name = name .. "+push" end    -- unit_runtime: defend <-> push hands the army over like a stance change
+    if name and push.on then name = name .. "+" .. push.mode end    -- unit_runtime: defend <-> push / raid hands the army over like a stance change
     if not name or name == lastStance then return end
     local prev, was, now = lastStance, lastManeuver, ManeuverPlan()
     lastStance, lastManeuver = name, now
@@ -1718,9 +1929,25 @@ local function StanceHandover(frame)
     end
     if MD then for uid, u in pairs(MD.units) do list[uid] = u.defID end end
     for uid, defID in pairs(shadowUnits) do list[uid] = defID end
+    -- unit_runtime: a "raid" leaves a garrison (plan.push.keep, the slowest units) in the blobs; it is not handed to click_army
+    local garrison = {}
+    if push.mode == "raid" and MD then
+        local plan = WG.Strategy:Plan()
+        local keep = (plan and plan.push and plan.push.keep) or 0.25
+        local ids = {}
+        for uid, defID in pairs(list) do if spGetUnitDefID(uid) then ids[#ids + 1] = { uid = uid, sp = (UnitDefs[defID] or {}).speed or 0 } end end
+        table.sort(ids, function(a, b) if a.sp ~= b.sp then return a.sp < b.sp end return a.uid < b.uid end)
+        for i = 1, math.floor(#ids * keep) do garrison[ids[i].uid] = true end
+    end
     local n = 0
     for uid, defID in pairs(list) do
-        if spGetUnitDefID(uid) then
+        if garrison[uid] and MD.units[uid] then
+            if ARMY then ARMY.Release(uid) end                    -- stays a blob unit; MD claims it again
+        elseif garrison[uid] then
+            combatUnits[uid] = nil
+            if ARMY then ARMY.Release(uid) end
+            MDm.Add(MD, uid, defID)
+        elseif spGetUnitDefID(uid) then
             n = n + 1
             combatUnits[uid], homeGuards[uid], musterPool[uid], antiRaid[uid], shadowUnits[uid] = nil, nil, nil, nil, nil
             scoutUnits[uid], responding[uid] = nil, nil
@@ -1852,7 +2079,18 @@ function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer,
                  attackerID, attackerDefID, Spring.GetGameFrame())
 end
 
-function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID)
+function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeam)
+    -- unit_runtime: the ground army's own trade (GroundTrade)
+    do
+        local f = Spring.GetGameFrame()
+        local d = UnitDefs[unitDefID]
+        local v = d and ((d.metalCost or 0) + (d.energyCost or 0) / 70) or 0
+        if teamID == myTeamID then
+            if IsGroundArmy(unitDefID) and attackerTeam and attackerTeam ~= myTeamID then NoteGroundTrade(f, 0, v) end
+        elseif attackerTeam == myTeamID and IsGroundArmy(attackerDefID) then
+            NoteGroundTrade(f, v, 0)
+        end
+    end
     -- our air unit shot down by an enemy fighter (armed air that is not a bomber): the labs answer with fighters
     if teamID == myTeamID and attackerID and UQ and UQ.is_air(unitDefID) then
         local ad = spGetUnitDefID(attackerID)
@@ -2059,8 +2297,32 @@ function widget:GameFrame(frame)
         elseif CA then
             -- unit_runtime: always raid here.  plan army = "hold" used to park the whole army at the stage point (click_army
             -- hold mode); now "hold" / "defend" run the maneuver blobs and reach this branch only while pushing.
+            -- A "defend" push runs click_army's slow group (plan.push.slow, default 50: Mammoths / Pounders screen, Sheldons
+            -- behind them, trading with the enemy army) next to the fast groups that hunt build power.
+            local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
+            if CA.SetSlowSpeed then
+                CA.SetSlowSpeed(DefendPlan(plan) and ((plan.push and plan.push.slow) or 50) or 0)
+            end
+            -- a "defend" PUSH = the main push (the slow group: Mammoths, Sheldons, Banishers ... below plan.push.slow) and
+            -- plan.push.raid_groups fast groups (default 2) that go for the sides (SIDE_R) while the main push draws the enemy army
+            if CA.CFG then
+                push.caGroups = push.caGroups or CA.CFG.MAX_GROUPS
+                local pushing = DefendPlan(plan) and push.mode == "push"
+                CA.CFG.MAX_GROUPS = pushing and ((plan.push and plan.push.raid_groups) or 2) or push.caGroups
+                CA.CFG.SIDE_R = pushing and ((plan.push and plan.push.side_r) or 2500) or nil
+                -- out (push / raid): a group launches with at least prod_s seconds of army production, and reinforcements gather and go
+                -- in batches of that size (user 2026-10-25: "it never waited to group up ... most alive units were reinforcing")
+                local out = DefendPlan(plan) and push.mode ~= "defend"
+                CA.CFG.LAUNCH_PROD_S = out and ((plan.push and plan.push.prod_s) or 20) or nil
+                CA.CFG.BATCH_REINFORCE = out
+                if CA.SetProduction then CA.SetProduction(push.prod or 0) end
+            end
             CA.SetMode("raid", frame)
             CA.Update(frame)
+            if push.mode == "raid" and MD then         -- the garrison keeps its posts while the rest raids
+                local okM, errM = pcall(MDm.Update, MD, frame)
+                if not okM then Spring.Echo("[MD] error: " .. tostring(errM)) end
+            end
         end
         if SF and not HUMAN_SLOW then SF.Update(frame) end
     end
@@ -2094,7 +2356,7 @@ function widget:GameFrame(frame)
     end
     if DEBUG_DRAW_LINE and frame % DEBUG_DRAW_PERIOD == 0 then DrawLine() end
     if frame % 30 == 0 then UpdateEndgame(frame) end
-    if frame % 30 == 0 then UpdateAirAlarm(frame); UpdateAirRaid(frame) end
+    if frame % 30 == 0 then UpdateAirAlarm(frame); UpdateAirRaid(frame); UpdateStunKill(frame) end
     UpdateNukes(frame)
     if frame % 1800 == 900 then EchoMech(frame) end
 

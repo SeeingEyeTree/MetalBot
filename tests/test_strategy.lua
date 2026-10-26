@@ -226,6 +226,50 @@ do
           "burst_switch (count): army value does not end it while under the count")
     alive = 30
     check(counted({ frame = 31 * 30, metal = { income = 1 }, armyValue = 0 }) == "hold", "burst_switch (count): ends at `count` alive")
+
+    -- safe_ratio / abort_ratio: no burst while outmatched on the ground (the defensive `back` meanwhile); a running burst aborts
+    local gated = SH.burst_switch{ to = "burst", back = "hold", income = 0, hold_s = 0, burst_s = 300, safe_ratio = 0.8, abort_ratio = 0.5 }
+    local function GS(frame, ratio) return gated({ frame = frame, metal = { income = 1 }, armyValue = 0, armyRatio = ratio }) end
+    check(GS(0, 0.38) == "hold", "burst_switch (gated): ratio 0.38 < 0.8 -> held, the defensive stance")
+    check(GS(30, 0.6) == "hold", "burst_switch (gated): still under safe_ratio -> held")
+    check(GS(60, 0.9) == "burst", "burst_switch (gated): safe -> the burst")
+    check(GS(90, 0.6) == "burst", "burst_switch (gated): 0.6 is above abort_ratio -> the burst goes on")
+    check(GS(120, 0.4) == "hold" and GS(150, 2.0) == "hold", "burst_switch (gated): under abort_ratio -> aborted to `back`, for good")
+    local unknown = SH.burst_switch{ to = "burst", back = "hold", income = 0, hold_s = 0, burst_s = 300, safe_ratio = 0.8 }
+    check(unknown({ frame = 0, metal = { income = 1 }, armyValue = 0 }) == "burst", "burst_switch (gated): no enemy ground known -> not held")
+end
+
+-- unit-cap filter: from capFilter the stances' T1 combat units leave the comp and the picks (off again 0.05 below)
+do
+    UnitDefNames.corak.customParams = { techlevel = "1" }
+    local mix = { name = "mix", units = { { n = "corak", share = 0.7 }, { n = "correap", share = 0.3 } } }
+    local cf = ST.New{ stances = { mix = mix }, initial = "mix", capFilter = 0.6 }
+    local function Has(list, name) for _, u in ipairs(list) do if u.defID == Id(name) then return true end end return false end
+    cf:Tick(30, { capFrac = 0.5 })
+    check(Has(cf:UnitList(), "corak"), "cap filter: below the fill the T1 unit stays in the comp")
+    cf:Tick(60, { capFrac = 0.65 })
+    local ul = cf:UnitList()
+    check(not Has(ul, "corak") and Has(ul, "correap") and math.abs(ul[1].share - 1) < 1e-9, "cap filter: the T1 combat unit is dropped, the rest renormalised")
+    local got = {}
+    for _ = 1, 20 do local d = cf:Pick(function() return true end); if d then got[d] = true; cf:Note(d, 1) end end
+    check(not got[Id("corak")] and got[Id("correap")], "cap filter: picks skip the T1 combat unit")
+    cf:Tick(90, { capFrac = 0.57 })
+    check(not Has(cf:UnitList(), "corak"), "cap filter: hysteresis (still on 0.03 under)")
+    cf:Tick(120, { capFrac = 0.54 })
+    check(Has(cf:UnitList(), "corak"), "cap filter: off again 0.05 under")
+    local onlyT1 = ST.New{ stances = { t1 = { name = "t1", units = { { n = "corak", share = 1 } } } }, initial = "t1", capFilter = 0.6 }
+    onlyT1:Tick(30, { capFrac = 0.9 })
+    check(Has(onlyT1:UnitList(), "corak"), "cap filter: a stance of only T1 units keeps its comp")
+    UnitDefNames.corak.customParams = {}
+end
+
+-- behaviours: a stance unit without behaviours falls through to the stance's extras (the sink's Dragons in raid_late)
+do
+    local late = { name = "late", units = { { n = "corsumo", share = 1 } },
+                   extras = { { n = "corsumo", behaviors = { "kite" } } } }
+    local bs = ST.New{ stances = { late = late }, initial = "late" }
+    local names = bs:BehaviorsFor(Id("corsumo"))
+    check(names and names[1] == "kite", "BehaviorsFor: the extras' behaviours when the comp entry has none")
 end
 
 -- plan.share: a floor under the hook's share while the stance is current

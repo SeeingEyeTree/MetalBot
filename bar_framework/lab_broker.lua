@@ -67,6 +67,21 @@ local function DefaultOrder(labID, defID)
     Spring.GiveOrderToUnit(labID, -defID, {}, {})
 end
 
+-- Take these units (set of defIDs) off a factory queue, all of them (the one in progress too); the rest stays.
+local function DefaultRemove(labID, defIDs)
+    local cmds
+    if Spring.GetFactoryCommands then cmds = Spring.GetFactoryCommands(labID, -1)
+    else cmds = Spring.GetUnitCommands(labID, -1) end
+    local seen = {}
+    for _, c in ipairs(type(cmds) == "table" and cmds or {}) do
+        local id = c.id
+        if id and id < 0 and defIDs[-id] and not seen[id] then
+            seen[id] = true
+            Spring.GiveOrderToUnit(labID, id, {}, { "right", "ctrl", "shift" })
+        end
+    end
+end
+
 -- Empty a factory queue, the unit in progress included: a build order with right (dequeue) + ctrl (x20) + shift (x5) takes
 -- 100 of that unit off the queue; once per unit type in it.
 local function DefaultClear(labID)
@@ -102,7 +117,7 @@ function LB.New(o)
     return { wants = {}, byName = {}, cfg = cfg, depth = o.depth or 3, last = {}, pending = {}, stats = {}, orders = 0,
              echo = o.echo or function(s) Spring.Echo(s) end, clock = o.clock or tostring,
              queueLen = o.queueLen or DefaultQueueLen, order = o.order or DefaultOrder, insert = o.insert or DefaultInsert,
-             clear = o.clear or DefaultClear, flushed = {},
+             clear = o.clear or DefaultClear, remove = o.remove or DefaultRemove, flushed = {},
              onOrder = o.onOrder, name = o.unitName or function(d) return (UnitDefs and UnitDefs[d] and UnitDefs[d].name) or tostring(d) end,
              lastLog = -1e9, lastLogOrders = 0, dirty = true }
 end
@@ -242,6 +257,19 @@ end
 -- a unit started in a lab: its pending insert has been honoured
 function LB.UnitStarted(lb, builderID)
     if builderID and lb.pending[builderID] then lb.pending[builderID] = nil end
+end
+
+-- The flush want `key` is over: take `defIDs` (the units it queued) off every lab it flushed with that key.  Returns the lab count.
+function LB.EndFlush(lb, key, defIDs)
+    local n = 0
+    for id, k in pairs(lb.flushed) do
+        if k == key then
+            lb.remove(id, defIDs)
+            lb.flushed[id] = nil
+            n = n + 1
+        end
+    end
+    return n
 end
 
 function LB.Forget(lb, labID)

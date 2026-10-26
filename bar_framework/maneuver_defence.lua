@@ -11,6 +11,10 @@
 --
 -- Slow units (speed < BACKSTOP_SPEED: Pounders) are the backstop: they hold the line with the blobs (just behind their posts) and
 -- only fight what reaches them.  They never intercept.
+-- SUPPORT_ROLE (2026-10-25, opt-in; unit_runtime turns it on for the plan army "defend"): long-range support (SUPPORT_NAMES, or range >=
+-- SUPPORT_MIN_RANGE and slower than SUPPORT_SPEED, minus SCREEN_NAMES) never intercepts either -- a Sheldon used to be sent to stand IN
+-- FRONT of raiders.  It posts SUPPORT_BACK behind its blob; when a live group comes within SUPPORT_REACT_R of its post it FIGHTs from
+-- SUPPORT_RANGE_FRAC of its own range from the group, on our side, and goes back to the post when the group is gone.
 --
 -- USAGE (unit_controller), the same shape as perimeter_guard:
 --   local MD = VFS.Include("LuaUI/Widgets/bar_framework/maneuver_defence.lua")
@@ -52,9 +56,20 @@ M.CFG = {
     SPREAD         = 110,      -- responders spread across the path by this
     REPLAN         = 90,
     LOG_EVERY      = 1800,
+    MAX_GROUP_SPEED    = nil,      -- (unit_runtime "defend": 150) a group faster than this is not chased: the blobs cannot catch it
+                                   -- (a 2026-10-25 game sent 30 Tigers at a 266 elmos/s group, again and again: 434 walks back)
+    SUPPORT_ROLE       = false,
+    SUPPORT_NAMES      = { cormort = true, cormist = true, corban = true, corhrk = true },
+    SCREEN_NAMES       = { corsumo = true, corshiva = true, corjugg = true, corlevlr = true },
+    SUPPORT_MIN_RANGE  = 700,
+    SUPPORT_SPEED      = 60,
+    SUPPORT_BACK       = 320,      -- the support posts this far behind its blob (the backstop stands BACKSTOP_BACK behind)
+    SUPPORT_REACT_R    = 1600,     -- a live group this close to a support's post: it moves up to fire
+    SUPPORT_RANGE_FRAC = 0.85,     -- ...to this share of its range from the group
 }
 
 local function Dist2(ax, az, bx, bz) return (ax - bx) ^ 2 + (az - bz) ^ 2 end
+local SupportSpot          -- below (OrderPosts)
 local function Clock(frame) return string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60) end
 local function Alive(uid) return uid ~= nil and Spring.GetUnitDefID(uid) ~= nil end
 local function Value(defID) local d = UnitDefs[defID or -1]; return d and (d.metalCost or 0) or 0 end
@@ -90,9 +105,20 @@ function M.New(o)
     return md
 end
 
+-- Long-range support (SUPPORT_ROLE): its weapon range, or nil when the unit is not support.
+local function SupportRange(K, d)
+    if not K.SUPPORT_ROLE or not d or not d.name or K.SCREEN_NAMES[d.name] then return nil end
+    local range = d.maxWeaponRange or 0
+    if K.SUPPORT_NAMES[d.name] or (range >= K.SUPPORT_MIN_RANGE and (d.speed or 0) < K.SUPPORT_SPEED) then return math.max(range, 300) end
+    return nil
+end
+M.SupportRange = SupportRange
+
 function M.Add(md, uid, defID)
     local d = UnitDefs[defID] or {}
-    md.units[uid] = { defID = defID, speed = d.speed or 0, v = Value(defID), back = (d.speed or 0) < md.K.BACKSTOP_SPEED }
+    local sr = SupportRange(md.K, d)
+    md.units[uid] = { defID = defID, speed = d.speed or 0, v = Value(defID), back = sr ~= nil or (d.speed or 0) < md.K.BACKSTOP_SPEED,
+                      support = sr }
 end
 
 function M.Remove(md, uid) md.units[uid], md.responding[uid] = nil, nil end
@@ -213,7 +239,8 @@ local function Replan(md, frame)
                 bx, bz = b.x, b.z
                 local dx, dz = centre.x - bx, centre.z - bz               -- a little behind the blob, toward the base
                 local l = math.max(math.sqrt(dx * dx + dz * dz), 1)
-                bx, bz = bx + dx / l * K.BACKSTOP_BACK, bz + dz / l * K.BACKSTOP_BACK
+                local back = md.units[uid].support and K.SUPPORT_BACK or K.BACKSTOP_BACK     -- support further back than the screen
+                bx, bz = bx + dx / l * back, bz + dz / l * back
                 local a, r = per[i] * GOLDEN, K.BLOB_SPREAD * math.sqrt(per[i])
                 bx, bz = bx + math.cos(a) * r, bz + math.sin(a) * r
             elseif slots and slots[k] then
@@ -341,7 +368,8 @@ local function Dispatch(md, frame)
     for _, cl in ipairs(md.clusters) do
         local need = K.NEED_MULT * cl.v
         local sent = sentOn[cl.id] or 0
-        if sent < need and not md.ignore[cl.id] then
+        local tooFast = K.MAX_GROUP_SPEED and (cl.speed or 0) > K.MAX_GROUP_SPEED
+        if sent < need and not md.ignore[cl.id] and not tooFast then
             local cand = {}
             local floor = math.min(60, 0.7 * (cl.speed or 0))
             for uid, u in pairs(md.units) do
@@ -383,6 +411,27 @@ local function Dispatch(md, frame)
     return byId
 end
 
+-- Where a support unit fires from: the nearest live, non-ignored group within SUPPORT_REACT_R of its post, approached to
+-- SUPPORT_RANGE_FRAC of its range on the side of the asset the group heads for (else its post).  nil = no group near: stay posted.
+SupportSpot = function(md, u, byId, assets)
+    local K, h = md.K, u.home
+    local best, bd
+    for id, cl in pairs(byId) do
+        if not md.ignore[id] then
+            local d = Dist2(cl.x, cl.z, h.x, h.z)
+            if d <= K.SUPPORT_REACT_R ^ 2 and (not bd or d < bd) then best, bd = cl, d end
+        end
+    end
+    if not best then return nil end
+    local asset = ICPT.PickAsset(best, assets) or h
+    local ux, uz = asset.x - best.x, asset.z - best.z
+    local l = math.sqrt(ux * ux + uz * uz)
+    if l < 1 then ux, uz, l = h.x - best.x, h.z - best.z, math.max(1, math.sqrt((h.x - best.x) ^ 2 + (h.z - best.z) ^ 2)) end
+    local r = (u.support or 600) * K.SUPPORT_RANGE_FRAC
+    local x, z = best.x + ux / l * r, best.z + uz / l * r
+    return math.max(150, math.min(md.o.mapX - 150, x)), math.max(150, math.min(md.o.mapZ - 150, z))
+end
+
 local function OrderPosts(md, frame, byId)
     local ARMY, K = md.o.ARMY, md.K
     if not ARMY then return end
@@ -398,6 +447,9 @@ local function OrderPosts(md, frame, byId)
             elseif r.lx then                                    -- just out of sight: hold the last known spot until released
                 ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "MD_RESPOND", cmd = ARMY.CMD_MOVE, x = r.lx, z = r.lz }, frame)
             end
+        elseif u.support and u.home and SupportSpot(md, u, byId, assets) then
+            local sx, sz = SupportSpot(md, u, byId, assets)
+            ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "MD_SUPPORT", cmd = ARMY.CMD_FIGHT, x = sx, z = sz }, frame)
         else
             local h = u.home
             if h then

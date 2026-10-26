@@ -237,6 +237,70 @@ local n2 = 0
 for _, r in pairs(md.responding) do if r.state == "out" then n2 = n2 + 1 end end
 check(n2 == 8, "the same group inside the ring: everyone defends (" .. n2 .. ")")
 
+-- ── SUPPORT_ROLE: Sheldons never intercept; they post behind the screen and fire from ~their range on a raid ──
+do
+    local SHEL = UnitDefNames.cormort.id
+    UnitDefNames.cormort.maxWeaponRange = 850
+    check(MD.SupportRange({ SUPPORT_ROLE = false, SCREEN_NAMES = {}, SUPPORT_NAMES = { cormort = true } }, UnitDefNames.cormort) == nil,
+          "support role off: a Sheldon is no support")
+    local md2, cont2, br2 = Setup(16, 0, { SUPPORT_ROLE = true })
+    local shels = {}
+    for i = 1, 4 do
+        local id = S.Spawn("cormort", 0, 6200 + i * 5, 6400, { silent = true })
+        shels[#shels + 1] = id; MD.Add(md2, id, SHEL)
+    end
+    check(md2.units[shels[1]].support == 850 and md2.units[shels[1]].back, "a Sheldon is support (range 850) and held back")
+    check(MD.SupportRange(md2.K, UnitDefNames.corsumo) == nil, "a Mammoth is screen, not support")
+    Step(md2, 1)
+    for _, id in ipairs(br2) do local h = md2.homeOf(id); Put(id, h.x, h.z) end
+    for _, id in ipairs(shels) do local h = md2.homeOf(id); Put(id, h.x, h.z) end
+    Step(md2, 1)
+    -- the support posts are further behind their blob than the backstop's 150
+    local behind = 0
+    for _, id in ipairs(shels) do
+        local h = md2.homeOf(id)
+        local nb = 1e9
+        for _, b in ipairs(md2.blobs) do nb = math.min(nb, D(h.x, h.z, b.x, b.z)) end
+        if nb > 200 and nb < 500 then behind = behind + 1 end
+    end
+    check(behind == #shels, "the Sheldons post ~SUPPORT_BACK behind a blob (" .. behind .. "/" .. #shels .. ")")
+    for i = 1, 3 do cont2[#cont2 + 1] = { x = 7400 + (i % 3) * 30, z = 6000, defID = BRUTE, frame = frame, v = 1, air = false } end
+    local function Fresh2() for _, c in pairs(cont2) do c.frame = frame end end
+    Step(md2, 2, Fresh2)
+    local fired, standoff = 0, 0
+    for _, id in ipairs(shels) do
+        check(not (md2.responding[id] and md2.responding[id].state == "out"), "a Sheldon never intercepts")
+        local l = LastOrder(id)
+        if l and l.cmd == ARMY.CMD_FIGHT then
+            local h = md2.homeOf(id)
+            local dGroup = D(l.params[1], l.params[3], 7430, 6000)
+            if dGroup > 500 and dGroup < 850 and D(l.params[1], l.params[3], h.x, h.z) > 50 then
+                fired = fired + 1
+                if l.params[1] < 7430 then standoff = standoff + 1 end
+            end
+        end
+    end
+    check(fired >= 1, "a raid near the post: Sheldons FIGHT from ~85% of their range (" .. fired .. " of " .. #shels .. ")")
+    check(standoff == fired, "...from our side of the group")
+end
+
+-- ── MAX_GROUP_SPEED: a group faster than the cap (air the contacts did not flag, very fast raiders) is not chased ──
+do
+    local md3, cont3 = Setup(16, 0, { MAX_GROUP_SPEED = 150 })
+    Step(md3, 2)
+    for i = 1, 3 do cont3[#cont3 + 1] = { x = 7400 + i * 30, z = 6000, defID = BRUTE, frame = frame, v = 1, air = false } end
+    Step(md3, 1, function() for _, c in pairs(cont3) do c.frame = frame end end)
+    -- now move the group 260 elmos/s (it was at ~7460; one tick = 1 s)
+    Step(md3, 1, function() for _, c in pairs(cont3) do c.x, c.frame = c.x - 260, frame end end)
+    Step(md3, 1, function() for _, c in pairs(cont3) do c.x, c.frame = c.x - 260, frame end end)
+    local fast
+    for _, cl in ipairs(md3.clusters) do fast = cl end
+    check(fast and (fast.speed or 0) > 150, "the group is fast (" .. tostring(fast and math.floor(fast.speed or 0)) .. " elmos/s)")
+    local outNow = 0
+    for uid, r in pairs(md3.responding) do if r.state == "out" and r.cid == (fast and fast.id) then outNow = outNow + 1 end end
+    check(outNow == 0 or md3.intercepts <= 1, "a 260 elmos/s group gets no new interceptors (" .. outNow .. ")")
+end
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("test_maneuver_defence: %d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

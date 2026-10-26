@@ -44,6 +44,13 @@ M.BASE_SEEN_AGE   = 3600   -- ...or recon must have seen their base within 2 min
 M.CONFIRM_CHECKS  = 2
 M.STRIKE_FRESH    = 1800   -- a commander sighting this recent is worth a strike
 M.BOMBER_MIN      = 4      -- wait for this many, unless the commander is in view now
+-- STRIKE_MIN_VALUE (opt-in, AIR_TIMING; user 2026-10-25): strike the commander only with bombers worth at least this (metal + energy/70)
+-- -- one pass that kills it with 20% lost, ~47 T1 bombers -- and never with fewer just because it is in view.  Below it the bombers are
+-- not claimed for the strike at all (bomb_run flies them at eco, which is the higher-percentage play: a commander can cloak or dodge).
+-- nil = the old rule (BOMBER_MIN, or any number while it is in view).
+M.STRIKE_MIN_VALUE = nil
+-- STRIKE_PARK = false (with STRIKE_MIN_VALUE): bombers short of a strike are not parked behind the base (BOMBER_WAIT) -- the bomb_run owns them
+M.STRIKE_PARK     = true
 M.STAGE_BACK      = 600    -- bombers wait this far behind home
 M.NUKE_FRESH      = 900
 M.NUKE_INTERVAL   = 900    -- frames between missiles
@@ -64,6 +71,7 @@ local reason     = ""
 function M.Init(opts)
     EI, MM, UQ, ARMY, TM = opts.EI, opts.MM, opts.UQ, opts.ARMY, opts.TM
     myTeamID = opts.teamID
+    for k, v in pairs(opts.cfg or {}) do M[k] = v end      -- unit_runtime K.ENDGAME (STRIKE_MIN_VALUE, STRIKE_PARK, ...)
 end
 
 function M.Hunting() return hunting end
@@ -165,6 +173,18 @@ function M.Strike(frame, bomberIDs)
     local inView = cuid and Spring.GetUnitPosition(cuid) ~= nil
     local fresh = cx and frame - cf <= M.STRIKE_FRESH
     local go = fresh and (#bomberIDs >= M.BOMBER_MIN or inView)
+    if M.STRIKE_MIN_VALUE then
+        local v = 0
+        for _, uid in ipairs(bomberIDs) do
+            local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+            if d then v = v + (d.metalCost or 0) + (d.energyCost or 0) / 70 end
+        end
+        go = fresh and v >= M.STRIKE_MIN_VALUE - 1e-6
+        if not go then
+            for _, uid in ipairs(bomberIDs) do if ARMY.RoleOf(uid) == "STRIKE" then ARMY.Release(uid) end end
+            if not M.STRIKE_PARK then return end
+        end
+    end
 
     if go then
         for _, uid in ipairs(bomberIDs) do

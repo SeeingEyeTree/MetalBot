@@ -151,20 +151,20 @@ function M.income_switch(o)
     end
 end
 
--- switch hook (HAMMER_ANVIL, 2026-10-25): a one-off burst.  Nothing (the current stance stays) until smoothed metal income has
+-- switch hook (AIR_TIMING, 2026-10-25): a one-off burst.  Nothing (the current stance stays) until smoothed metal income has
 -- held `income` for `hold_s` seconds and the minute is at least `minute`; then the stance `to` until the army value has risen by
 -- `spend` metal since the burst began (state.armyValue, its highest rise) or `burst_s` seconds have passed; then the stance `back`
 -- for the rest of the game.  Spend, not time, ends it: the burst's labs are often not standing yet when it starts (eco_sim: the
 -- spine's air labs stood 60-75 s into a 90 s window).  The user's T1_bombing_run intent: "spend a lot quickly and then go back
 -- into eco".  The burst's army share comes from its stance (plan.share, strategy.lua), not from here.
--- With unit + count it ends once `count` of `unit` are alive instead (spend is then not used).
+-- With unit + count it ends once `count` of `unit` are alive instead (spend is then not used).  safe_ratio / abort_ratio: see below.
 --   hooks = { switch = H.burst_switch{ to = "anvil_burst", back = "anvil_hold", income = 250, hold_s = 20, unit = "corshad", count = 30, burst_s = 300 } }
 function M.burst_switch(o)
     o = o or {}
     local to, back = o.to, o.back
     local income, holdF, smooth = o.income or 250, (o.hold_s or 20) * 30, o.smooth or 0.2
     local burstF, minute, spend = (o.burst_s or 240) * 30, o.minute or 0, o.spend
-    -- unit + count (HAMMER_ANVIL: 30 Shadows): the burst ends once that many of the unit are alive -- the burst's own units, not
+    -- unit + count (AIR_TIMING: 30 Shadows): the burst ends once that many of the unit are alive -- the burst's own units, not
     -- the whole army (by army value the ground army's growth ended the first burst after 48 s).  o.count_fn(state) -> n for tests.
     local countFn = o.count_fn
     if not countFn and o.unit then
@@ -174,13 +174,29 @@ function M.burst_switch(o)
             return (ud and team and Spring.GetTeamUnitDefCount and Spring.GetTeamUnitDefCount(team, ud.id)) or 0
         end
     end
+    -- safe_ratio / abort_ratio (AIR_TIMING, user 2026-10-25: it bombed while a much bigger enemy ground army with AA was scouted, and
+    -- lost the base): the burst waits while our ground army is under safe_ratio x the scouted enemy ground (state.armyRatio; unknown =
+    -- safe) and takes `back` meanwhile (a defensive stance builds ground units); a running burst is aborted to `back` under abort_ratio.
+    local safeR, abortR = o.safe_ratio, o.abort_ratio
+    local heldLogF = -1e9
+    local function Ratio(state) return state.armyRatio end
     local phase, ema, since, startF, startAV, rise = "wait", nil, nil, nil, nil, 0
     return function(state)
         local f = state.frame or 0
+        local held = false
         if phase == "wait" then
             local inc = (state.metal and state.metal.income) or 0
             ema = ema and (ema + smooth * (inc - ema)) or inc
-            if ema >= income and (state.minute or f / 1800) >= minute then
+            local r = Ratio(state)
+            local unsafe = safeR and r and r < safeR
+            if ema >= income and (state.minute or f / 1800) >= minute and unsafe then
+                held, since = true, nil
+                if f - heldLogF >= 1800 then
+                    heldLogF = f
+                    Spring.Echo(string.format("[STRAT] burst held: ground ratio %.2f < %.2f (own %.0f vs enemy %.0f) -- defend first: stance %s",
+                        r, safeR, state.armyGround or 0, state.enemyGround or 0, tostring(back)))
+                end
+            elseif ema >= income and (state.minute or f / 1800) >= minute then
                 since = since or f
                 if f - since >= holdF then
                     phase, startF, startAV = "burst", f, state.armyValue or 0
@@ -190,6 +206,11 @@ function M.burst_switch(o)
             else
                 since = nil
             end
+        end
+        if phase == "burst" and abortR and Ratio(state) and Ratio(state) < abortR then
+            phase = "done"
+            Spring.Echo(string.format("[STRAT] burst ABORTED at %.1f min: ground ratio %.2f < %.2f (own %.0f vs enemy %.0f): stance %s",
+                state.minute or f / 1800, Ratio(state), abortR, state.armyGround or 0, state.enemyGround or 0, tostring(back)))
         end
         if phase == "burst" then
             rise = math.max(rise, (state.armyValue or startAV) - startAV)
@@ -201,7 +222,7 @@ function M.burst_switch(o)
             end
         end
         if phase == "burst" then return to end
-        if phase == "done" then return back end
+        if phase == "done" or held then return back end
     end
 end
 

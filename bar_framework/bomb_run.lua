@@ -44,7 +44,15 @@ M.CFG = {
     LAUNCH_BLIND  = 1800,
     COMMIT_AA     = 1.6,      -- a wave in flight tolerates this x AA_MAX (it is committed)
     NO_TARGET_GRACE = 900,    -- frames a wave keeps its last points when the intel finds none
-    RALLY_FIGHTERS = true,    -- false (unit_runtime / HAMMER_ANVIL): between waves the fighters are left to the air wing (hunts, cover);
+    -- Grouping (AIR_TIMING, user 2026-10-25: "bombers should never attack in a stream ... always group up and get a large number"):
+    LAUNCH_NOW_MIN = 1,       -- "launch now" (plan.launch) still needs this many bombers (AIR_TIMING 20)
+    GATHER_R      = nil,      -- only bombers within this of the station count toward a launch and go in the wave (nil = all)
+    FIXED_WAVE    = false,    -- a wave is the bombers it launched with; bombers built during it rally at the station for the next one
+    AA_PENALTY    = 1,        -- weight of a point's AA in its score (score / (1 + AA_PENALTY x aa / cap)); higher = undefended eco first
+    ALL_FIGHTERS  = false,    -- (AIR_TIMING) a launch and a wave out take EVERY fighter as the escort -- home guards and air-raid
+                              -- responders too (user 2026-10-25: "when a bombing run goes out all of the fighters should go with it");
+                              -- they are released when the wave ends
+    RALLY_FIGHTERS = true,    -- false (unit_runtime / AIR_TIMING): between waves the fighters are left to the air wing (hunts, cover);
                               -- a launch still takes every free fighter as the escort
 }
 local CFG = M.CFG
@@ -93,7 +101,9 @@ local function Free(uid)
 end
 
 -- fighters, bombers: arrays of {uid, x, z, hp, v}
-local function Gather()
+-- Roles an ALL_FIGHTERS escort takes a fighter from (RAID priority beats them); a retreating fighter is left alone.
+local ESCORT_FROM = { HOME_GUARD = true, AIR_DEF = true, RESPOND = true, AA_SCREEN = true, AA_ESCORT = true }
+local function Gather(allFighters)
     local fighters, bombers = {}, {}
     local function add(list, uid, defID)
         local x, _, z = Spring.GetUnitPosition(uid)
@@ -102,8 +112,12 @@ local function Gather()
         list[#list + 1] = { uid = uid, x = x, z = z, hp = (hp and mhp and mhp > 0) and hp / mhp or 1, v = Value(defID) }
     end
     for uid, defID in pairs(combat) do
-        if UQ.is_air(defID) and UQ.is_dedicated_aa(defID) and Alive(uid) and not guards[uid] and Free(uid) then
-            add(fighters, uid, defID)
+        if UQ.is_air(defID) and UQ.is_dedicated_aa(defID) and Alive(uid) then
+            if allFighters then
+                if Free(uid) or ESCORT_FROM[ARMY.RoleOf(uid) or ""] then add(fighters, uid, defID) end
+            elseif not guards[uid] and Free(uid) then
+                add(fighters, uid, defID)
+            end
         end
     end
     for uid in pairs(bombersSet) do
@@ -146,7 +160,7 @@ function M.Points(frame, want, aaCap)
             local aa = EI.ThreatAt(frame, x, z, "air")
             if aa <= aaCap then
                 cands[#cands + 1] = { x = x, z = z, damage = sum, aa = aa,
-                                      score = sum / (1 + Dist(hx, hz, x, z) / CFG.DIST_SCALE) / (1 + aa / math.max(aaCap, 1)) }
+                                      score = sum / (1 + Dist(hx, hz, x, z) / CFG.DIST_SCALE) / (1 + CFG.AA_PENALTY * aa / math.max(aaCap, 1)) }
             end
         end
     end
@@ -220,7 +234,16 @@ end
 function M.Update(frame, plan)
     if not (S and MM and UQ and EI and ARMY and MM.Ready()) then return end
     if frame % CFG.EVERY ~= 0 then return end
-    local fighters, bombers = Gather()
+    local fighters, bombers = Gather(CFG.ALL_FIGHTERS)     -- (the rally releases them, the return brings them all home)
+    local stx, stz = Station()
+    -- FIXED_WAVE: while a wave is out (or coming home) only its own bombers are the wave; the rest keep rallying at the station
+    if CFG.FIXED_WAVE and S.mode ~= "rally" and S.wave and S.wave.members then
+        local own = {}
+        for _, b in ipairs(bombers) do
+            if S.wave.members[b.uid] then own[#own + 1] = b else Claim(frame, b.uid, CMD_MOVE, stx, stz) end
+        end
+        bombers = own
+    end
     local fv, bv = SumV(fighters), SumV(bombers)
 
     if plan and plan.bomb and not S.bombStart then S.bombStart = frame end
@@ -279,7 +302,6 @@ function M.Update(frame, plan)
     end
 
     -- RALLY -----------------------------------------------------------------------------------------------
-    local stx, stz = Station()
     local active = plan and (plan.bomb or S.waves > 0)
     if not active then
         -- not our moment (or the raid was dropped): leave the units to everyone else
@@ -311,11 +333,20 @@ function M.Update(frame, plan)
     for _, p in ipairs(pts) do dmg = dmg + p.damage end
     local blind = dmg < CFG.MIN_LAUNCH_DAMAGE and not (S.bombStart and frame - S.bombStart >= CFG.LAUNCH_WAIT + CFG.LAUNCH_BLIND)
     local now = plan.launch and not S.launched and S.waves == 0   -- the burst is over: the first wave goes with what stands (later: RELAUNCH_MIN)
-    if now then need, blind = 1, false end
+    if now then need, blind = math.max(1, CFG.LAUNCH_NOW_MIN or 1), false end
+    -- GATHER_R: only the bombers that stand at the station go (the wave arrives together, not as a stream)
+    if CFG.GATHER_R then
+        local ready = {}
+        for _, b in ipairs(bombers) do if Dist(b.x, b.z, stx, stz) <= CFG.GATHER_R then ready[#ready + 1] = b end end
+        bombers, bv = ready, SumV(ready)
+    end
     if #bombers >= need and frame - S.lastEnd >= CFG.COOLDOWN and #pts > 0 and not blind then
+        if CFG.ALL_FIGHTERS then fighters = Gather(true); fv = SumV(fighters) end      -- every fighter goes with the wave
         S.waves = S.waves + 1
         if plan.launch then S.launched = true end
-        S.mode, S.t0, S.wave = "strike", frame, { startValue = fv + bv, bombers = #bombers, fighters = #fighters }
+        local members = {}
+        for _, b in ipairs(bombers) do members[b.uid] = true end
+        S.mode, S.t0, S.wave = "strike", frame, { startValue = fv + bv, bombers = #bombers, fighters = #fighters, members = members }
         S.nextLog = 0
         Log(frame, "LAUNCH wave %d%s: %d bombers (%d value) + %d fighters; %d bombing points, best (%d,%d) damage %d aa %d",
             S.waves, now and " (launch now)" or "", #bombers, bv, #fighters, #pts, pts[1].x, pts[1].z, pts[1].damage, pts[1].aa)

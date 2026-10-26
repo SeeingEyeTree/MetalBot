@@ -39,7 +39,7 @@ function M.New(o)
     local loader = o.loader or SL
     assert(loader, "stance_loader not available")
     local s = setmetatable({ loader = loader, stances = {}, hooks = o.hooks or {}, ledger = nil, weights = nil,
-                             log = o.log ~= false, switchedF = -1e9 }, Strategy)
+                             log = o.log ~= false, switchedF = -1e9, capFilter = o.capFilter }, Strategy)
     local list = o.stances or {}
     for k, v in pairs(list) do
         local name, st
@@ -89,9 +89,18 @@ function Strategy:Tick(frame, state)
         if ok then share = tonumber(v) else self:Fail("army_share", v, frame) end
     end
     if not share and self.current and self.current.suggestedShare then share = self.current.suggestedShare / 100 end
-    -- plan.share (optional, HAMMER_ANVIL 2026-10-25): a floor under the hook's share while this stance is current (a burst stance)
+    -- plan.share (optional, AIR_TIMING 2026-10-25): a floor under the hook's share while this stance is current (a burst stance)
     local plan = self.current and self.current.plan
     if plan and tonumber(plan.share) then share = math.max(share or 0, tonumber(plan.share)) end
+    if self.capFilter and state.capFrac then         -- the unit-cap filter (see CapFiltered), with a little hysteresis
+        local was = self.capTight
+        if state.capFrac >= self.capFilter then self.capTight = true
+        elseif state.capFrac < self.capFilter - 0.05 then self.capTight = false end
+        if self.log and was ~= self.capTight and (was ~= nil or self.capTight) then
+            Spring.Echo(string.format("[STRAT] unit cap %.0f%% full: T1 combat units %s the stances", 100 * state.capFrac,
+                self.capTight and "dropped from" or "back in"))
+        end
+    end
     self.share = Clamp01(share or M.DEFAULT_SHARE)
     if h.weights then
         local ok, w = pcall(h.weights, state, self)
@@ -114,16 +123,35 @@ function Strategy:Fail(hook, err, frame)
 end
 
 -- canBuild(defID) -> truthy.  Returns defID or nil.
+-- Unit-cap filter (user 2026-10-25: ~600 Grunts held unit cap late in a game that could have been Tigers, Demons or eco).  Once the
+-- unit cap is a concern (state.capFrac >= capFilter, off again 0.05 below), the stances' T1 combat units (tech level 1, armed, mobile,
+-- not a builder) are dropped from the comp and from the picks.  Scouts and the other lab rules are not stance picks.  A stance that is
+-- nothing but T1 combat units keeps its comp (the labs then make nothing new of it).
+local function IsT1Combat(defID)
+    local d = UnitDefs and UnitDefs[defID]
+    if not d or d.isBuilder or d.isFactory or not d.weapons or #d.weapons == 0 or (d.speed or 0) <= 0 then return false end
+    local tl = d.customParams and tonumber(d.customParams.techlevel)
+    return tl == 1
+end
+M.IsT1Combat = IsT1Combat
+
+function Strategy:CapFiltered(defID) return self.capTight == true and IsT1Combat(defID) end
+
+local function CapCanBuild(self, canBuild)
+    if not self.capTight then return canBuild end
+    return function(d) return not IsT1Combat(d) and (canBuild == nil or canBuild(d)) end
+end
+
 function Strategy:Pick(canBuild, skip, positiveOnly)
     if not self.current then return nil end
-    return self.loader.Pick(self.current, self.ledger, canBuild, skip, positiveOnly, self.weights)
+    return self.loader.Pick(self.current, self.ledger, CapCanBuild(self, canBuild), skip, positiveOnly, self.weights)
 end
 
 -- A unit of the PREVIOUS stance the lab can build (slot_spine WAVE_SWAP: a lab that is about to be replaced keeps producing, so unit
 -- production never dips during a swap).  Nil without a previous stance.
 function Strategy:PickPrev(canBuild)
     if not (self.prev and self.prevLedger) then return nil end
-    local defID = self.loader.Pick(self.prev, self.prevLedger, canBuild, nil, nil, nil)
+    local defID = self.loader.Pick(self.prev, self.prevLedger, CapCanBuild(self, canBuild), nil, nil, nil)
     if defID and self.prev.byDef[defID] then self.loader.Note(self.prevLedger, defID, 1) end
     return defID
 end
@@ -133,9 +161,14 @@ function Strategy:Note(defID, n)
 end
 
 -- The behaviours the current stance names for this unit type: names, overrides (or nil).
+-- A stance unit without behaviours falls through to the stance's extras (2026-10-25: raid_late builds Dragons as 64% of its comp with
+-- no behaviours, so the sink's Dragon waves -- SINK_EXTRAS dragon_raid / dragon_defend -- were never attached and the Dragons sat
+-- at their labs).
 function Strategy:BehaviorsFor(defID)
     local cur = self.current
-    local u = cur and (cur.byDef[defID] or (cur.extraByDef and cur.extraByDef[defID]))
+    if not cur then return nil end
+    local u = cur.byDef[defID]
+    if not (u and u.behaviors and #u.behaviors > 0) then u = cur.extraByDef and cur.extraByDef[defID] end
     if not (u and u.behaviors and #u.behaviors > 0) then return nil end
     return u.behaviors, u.cfg
 end
@@ -158,10 +191,16 @@ end
 function Strategy:UnitList()
     local out, sum = {}, 0
     if not self.current then return out end
+    local drop = false
+    if self.capTight then                          -- the cap filter, unless it would leave nothing
+        for _, u in ipairs(self.current.units) do if not IsT1Combat(u.defID) then drop = true; break end end
+    end
     for _, u in ipairs(self.current.units) do
-        local w = (self.weights and self.weights[u.n]) or 1
-        out[#out + 1] = { defID = u.defID, share = u.share * w }
-        sum = sum + u.share * w
+        if not (drop and IsT1Combat(u.defID)) then
+            local w = (self.weights and self.weights[u.n]) or 1
+            out[#out + 1] = { defID = u.defID, share = u.share * w }
+            sum = sum + u.share * w
+        end
     end
     if sum > 0 then for _, u in ipairs(out) do u.share = u.share / sum end end
     return out
