@@ -54,6 +54,16 @@ M.CFG = {
     SINK_FLOAT_FRAC   = 0.10,        -- one more lab while the metal bank has held max(SINK_FLOAT_MIN, FRAC x storage) ...
     SINK_FLOAT_MIN    = 3000,
     SINK_FLOAT_FRAMES = 20 * 30,     -- ... for this long
+    -- 2026-10-25 (eco_sim, 6 seeds): "what the spine can spend" leaves out the economy's own spending (grids, retrofits, fusions), so
+    -- the first lab went up at 12:21 with 1.5k banked and took cons and metal from the retrofits: -9% income at 20:00, a third fewer
+    -- T2 mexes at 18:00.  Now the first lab also needs a floating bank (the SINK_FLOAT_* rule), and the lab count is sized from the
+    -- income that is really unspent (income - pull), not income above the spine's capacity.
+    SINK_START_FLOAT  = true,
+    SINK_START_MIN    = 15000,       -- the first lab's float: the bank held min(SINK_START_CAP, max(SINK_START_MIN, SINK_START_FRAC x storage)) ...
+    SINK_START_FRAC   = 0.05,        --   (a 3-5k working bank at 12 min is no float; the real float began at 16-18 min in eco_sim)
+    SINK_START_CAP    = 40000,       --   (2026-10-25 game vs a person: 25% of a 504k storage = 126k, the sink started at 20:55 with 226k banked)
+    SINK_START_FRAMES = 30 * 30,     -- ... for this long
+    SINK_SURPLUS_PULL = true,
 }
 
 local Spring, UnitDefs, UnitDefNames, WG, Game, CMD = Spring, UnitDefs, UnitDefNames, WG, Game, CMD
@@ -70,7 +80,9 @@ local function Clock(frame) return E.Clock and E.Clock(frame) or string.format("
 function M.Init(env)
     E = env
     K = {}
-    for k, v in pairs(M.CFG) do K[k] = (env.cfg and env.cfg[k] ~= nil) and env.cfg[k] or v end
+    for k, v in pairs(M.CFG) do      -- (not `cfg[k] ~= nil and cfg[k] or v`: that turns an explicit false back into the default)
+        if env.cfg and env.cfg[k] ~= nil then K[k] = env.cfg[k] else K[k] = v end
+    end
     CB = env.CB
     SK = { jobs = {}, done = {}, nDone = 0, bad = {} }
     M.State = SK
@@ -239,6 +251,11 @@ function M.LabAbsorb()
     return bp * (u.metalCost or 0) / u.buildTime
 end
 
+-- The bank the first lab waits for (SINK_START_*).
+function M.StartThreshold(storage)
+    return math.min(K.SINK_START_CAP, math.max(K.SINK_START_MIN, K.SINK_START_FRAC * (storage or 0)))
+end
+
 -- Labs the sink should have now.  0 until the spine is saturated.  Then enough to absorb what the spine cannot spend (income minus the
 -- spine's full capacity, at SINK_LAB_UTIL of a lab's absorb), and one more than there are while the metal bank floats -- the sink exists
 -- to stop banking, so a floating bank always asks for another lab.  Never more than SINK_MAX.
@@ -246,21 +263,27 @@ function M.DesiredLabs(frame, res)
     local have = SK.nDone + #SK.jobs
     local sat, cap = M.SpineSaturated(res)
     SK.lastCap = cap
-    if have == 0 and not sat then return 0 end
+    local floating = res.metal >= math.max(K.SINK_FLOAT_MIN, K.SINK_FLOAT_FRAC * res.metalStorage)
+    if floating then SK.floatSince = SK.floatSince or frame else SK.floatSince = nil end
+    local floated = SK.floatSince ~= nil and frame - SK.floatSince >= K.SINK_FLOAT_FRAMES
+    if have == 0 and K.SINK_START_FLOAT then
+        if res.metal >= M.StartThreshold(res.metalStorage) then SK.startSince = SK.startSince or frame
+        else SK.startSince = nil end
+        if not (SK.startSince and frame - SK.startSince >= K.SINK_START_FRAMES) then return 0 end
+    elseif have == 0 and not sat then
+        return 0
+    end
     local want = math.max(have, 1)
     local inc = res.metalIncomeS or res.metalIncome or 0
     local absorb = M.LabAbsorb()
     if absorb and absorb > 0 then
-        local surplus = math.max(0, inc - (cap or 0))
-        want = math.max(want, math.ceil(surplus / (K.SINK_LAB_UTIL * absorb)))
+        local surplus
+        local pull = res.metalPullS or res.metalPull
+        if K.SINK_SURPLUS_PULL and pull then surplus = math.max(0, inc - pull)
+        else surplus = math.max(0, inc - (cap or 0)) end
+        want = math.max(want, have + math.ceil(surplus / (K.SINK_LAB_UTIL * absorb)) - (K.SINK_SURPLUS_PULL and pull and #SK.jobs or 0))
     end
-    local floating = res.metal >= math.max(K.SINK_FLOAT_MIN, K.SINK_FLOAT_FRAC * res.metalStorage)
-    if floating then
-        SK.floatSince = SK.floatSince or frame
-        if frame - SK.floatSince >= K.SINK_FLOAT_FRAMES then want = math.max(want, have + 1) end
-    else
-        SK.floatSince = nil
-    end
+    if floated then want = math.max(want, have + 1) end
     return math.min(want, K.SINK_MAX)
 end
 

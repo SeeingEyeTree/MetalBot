@@ -179,6 +179,10 @@ function M.Install(X)
                 return n
             end,
             start = function(id) return StartRetrofit(T, id) end,
+            onDone = function(st)          -- grid recovery judges a retrofitted grid by the T2 mexes it built (grid_recovery)
+                if st.builderID and Spring.GetUnitDefID(st.builderID) then CB.Release(cb, st.builderID) end   -- the default onDone's job
+                if T.CFG.GRID_RECOVER and X.RememberRetrofitMexes then X.RememberRetrofitMexes(T, st) end
+            end,
             produce = function(frame, res) UpdateRetrofitCons(T, frame, res) end })
     end
 end

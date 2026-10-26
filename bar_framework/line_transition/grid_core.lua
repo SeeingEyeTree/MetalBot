@@ -293,12 +293,14 @@ function M.Install(X)
 
     -- AIR_CON_LABS (user 2026-10-25: CORE lost many T1 air cons to fighters and did not replace them -- one air lab, its queue
     -- shared with the floor).  While the jobs + reserve want at least AIR_CON_DEFICIT more T1 air cons than stand ready, for
-    -- AIR_CON_DEFICIT_S seconds, an open grid's capstone becomes a T1 air lab, built next instead of last (a skipped capstone past
-    -- CAPSTONE_MAX comes back for it); at most AIR_CON_LABS_MAX of them.  con_orders.QueueAirCon then spreads the cons over every
+    -- AIR_CON_DEFICIT_S seconds, an open grid's SKIPPED capstone (past CAPSTONE_MAX) comes back as a T1 air lab, built next; at most
+    -- AIR_CON_LABS_MAX of them.  con_orders.QueueAirCon then spreads the cons over every
     -- T1 air lab (and keeps making them if the line's air lab is gone).  Not at the unit cap (consolidation).
     local function UpdateAirConRecovery(T, frame, res)
         local C = T.CFG
         if not C.AIR_CON_LABS or T.consolidateOn or not T.labDefID or not T.CB or frame - (T.acCheckF or -1e9) < 90 then return end
+        -- not in the opening: the jobs always want more cons than stand there (the first game spent both labs at 4:30 / 5:30)
+        if frame < (C.AIR_CON_START_FRAME or 0) or not T.firstGridOK then return end
         T.acCheckF = frame
         local gap = CB.Unmet(T.CB, 1, frame, res) + (T.CB.reserve and T.CB.reserve[1] or 0) - CB.Available(T.CB, 1, true)
         if gap >= C.AIR_CON_DEFICIT then T.acDefSince = T.acDefSince or frame else T.acDefSince = nil end
@@ -317,7 +319,10 @@ function M.Install(X)
             if not st.done and not st.capAirLab and st.builderID and Spring.GetUnitDefID(st.builderID) then
                 local cdef = Spring.GetUnitDefID(st.builderID)
                 for _, item in ipairs(st.queue) do
-                    if item.cls == "factory" and (not item.built or item.status == "skipped") and item.status ~= "started"
+                    -- only a capstone the grid would skip anyway (past CAPSTONE_MAX): a T2 air lab capstone makes the T2 cons the
+                    -- retrofits and the fusion push need, so it is never taken (AIR_CON_LAB_TAKE_T2 allows it)
+                    local spare = item.status == "skipped" or C.AIR_CON_LAB_TAKE_T2
+                    if item.cls == "factory" and spare and (not item.built or item.status == "skipped") and item.status ~= "started"
                        and item.status ~= "claimed" and cdef and T.BP.CanBuild(cdef, T.labDefID) then
                         local wx, wz = T.BP.SnapToBuildGrid(T.labDefID, item.wx, item.wz)
                         item.defID, item.wx, item.wz = T.labDefID, wx, wz

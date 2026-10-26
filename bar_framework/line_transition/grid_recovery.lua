@@ -81,6 +81,25 @@ function M.Install(X)
         end
     end
 
+    -- A finished retrofit's own mex spots (the T2 mexes it built).  2026-10-25: the T1 grid has 22 mexes, the retrofit 18 T2 mexes and
+    -- 4 fusions on the corner spots, so a retrofitted grid always had "4 of 22 mex spots empty" against the T1 list -> the retrofit
+    -- was re-opened every RECOVER_EVERY, forever (500+ recoveries a game in eco_sim, each holding a T2 con: the fusion push and the
+    -- other retrofits starved; real game: income flat at 3.2k from 21:00).  A retrofitted grid is now judged against these.
+    local function RememberRetrofitMexes(T, st)
+        if not st then return end
+        local key = Key(st.anchorX, st.anchorZ)
+        T.gridMexes = T.gridMexes or {}
+        local list = T.gridMexes[key]
+        if not list then list = { anchorX = st.anchorX, anchorZ = st.anchorZ, spots = {}, have = {} }; T.gridMexes[key] = list end
+        list.retroSpots, list.retroHave = list.retroSpots or {}, list.retroHave or {}
+        for _, it in ipairs(st.queue or {}) do
+            if it.cls == "metal" and it.act ~= "reclaim" and it.status == "built" then
+                local sk = math.floor(it.wx) .. "," .. math.floor(it.wz)
+                if not list.retroHave[sk] then list.retroHave[sk] = true; list.retroSpots[#list.retroSpots + 1] = { x = it.wx, z = it.wz } end
+            end
+        end
+    end
+
     -- Is any mex of ours (T1 or T2, finished or a frame) standing on this spot?
     local function MexAt(T, x, z)
         for _, uid in ipairs(Spring.GetUnitsInCylinder(x, z, 40, T.teamID) or {}) do
@@ -113,7 +132,13 @@ function M.Install(X)
                 T.recoverMiss[key] = nil
             else
                 local gone = 0
-                for _, s in ipairs(list.spots) do if not MexAt(T, s.x, s.z) then gone = gone + 1 end end
+                local spots = (T.upgradedKeys[key] and list.retroSpots and #list.retroSpots > 0) and list.retroSpots or list.spots
+                local emptyKey = {}
+                for _, s in ipairs(spots) do
+                    if not MexAt(T, s.x, s.z) then gone = gone + 1; emptyKey[#emptyKey + 1] = math.floor(s.x) .. "," .. math.floor(s.z) end
+                end
+                emptyKey = table.concat(emptyKey, ";")
+                if list.gaveUp == emptyKey then gone = 0 end      -- these spots stayed empty through repeated re-runs: not refillable
                 if gone < C.RECOVER_MIN_MEX then
                     T.recoverMiss[key] = nil
                 elseif not T.recoverMiss[key] then
@@ -122,6 +147,15 @@ function M.Install(X)
                     -- the raid is still there: wait
                 else
                     T.recoverMiss[key] = nil
+                    -- the same spots empty again right after a re-run: count it; after RECOVER_SAME_MAX in a row give up on them
+                    if list.lastEmpty == emptyKey then list.same = (list.same or 0) + 1 else list.same, list.lastEmpty = 0, emptyKey end
+                    local giveUp = list.same >= (C.RECOVER_SAME_MAX or 2)
+                    if giveUp then
+                        list.gaveUp = emptyKey
+                        Spring.Echo(string.format("[LT] %s RECOVER grid (%d, %d): the same %d spots stayed empty after %d re-runs -> left alone",
+                            Clock(frame), list.anchorX, list.anchorZ, gone, list.same))
+                    end
+                    if not giveUp then
                     T.recovered = (T.recovered or 0) + 1
                     if T.upgradedKeys[key] and T.upgradeBP then
                         T.upgradedKeys[key] = nil                  -- retrofit again: the T2 con rebuilds the mohos
@@ -134,12 +168,14 @@ function M.Install(X)
                         Spring.Echo(string.format("[LT] %s RECOVER grid (%d, %d): %d of %d mex spots empty -> grid re-run queued first (%d recoveries)",
                             Clock(frame), list.anchorX, list.anchorZ, gone, #list.spots, T.recovered))
                     end
+                    end   -- not giveUp
                 end
             end
         end
     end
 
     X.AuditGrids = AuditGrids
+    X.RememberRetrofitMexes = RememberRetrofitMexes
     X.RememberGridMexes = RememberGridMexes
     X.ThreatNear = ThreatNear
     X.UpdateRecovery = UpdateRecovery

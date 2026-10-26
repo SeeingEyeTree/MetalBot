@@ -31,7 +31,8 @@ local spine = { Front = function()
     return { dx = 1, dz = 0, px = 0, pz = 1, facing = 0 }, { { x = 2000, z = 6000 }, { x = 2000, z = 6272 } }
 end }
 local capacity = 3000
-MS.Init{ cfg = { SINK_HELPERS = 2, SINK_FLOAT_FRAMES = 60 }, CB = CB,
+-- SINK_START_FLOAT off here: this scenario checks the saturation rule itself (the float gate has its own check at the end)
+MS.Init{ cfg = { SINK_HELPERS = 2, SINK_FLOAT_FRAMES = 60, SINK_START_FLOAT = false }, CB = CB,
          SPINE = function() return spine end, trans = function() return trans end, teamID = 0,
          Capacity = function() return capacity end }
 
@@ -63,11 +64,11 @@ check(MS.EnergyRatio() ~= nil, "the energy ratio applies once a lab is being pla
 -- no capacity figure: SINK_INCOME decides
 do
     local MS2 = VFS.Include("LuaUI/Widgets/bar_framework/metal_sink.lua")
-    MS2.Init{ cfg = { SINK_INCOME = 2000 }, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0 }
+    MS2.Init{ cfg = { SINK_START_FLOAT = false, SINK_INCOME = 2000 }, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0 }
     check(MS2.SpineSaturated({ metalIncomeS = 1900 }) == false and MS2.SpineSaturated({ metalIncomeS = 2100 }) == true,
           "without a capacity figure SINK_INCOME decides")
     local MS3 = VFS.Include("LuaUI/Widgets/bar_framework/metal_sink.lua")
-    MS3.Init{ cfg = {}, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0, Capacity = function() return 100 end }
+    MS3.Init{ cfg = { SINK_START_FLOAT = false,}, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0, Capacity = function() return 100 end }
     check(MS3.SpineSaturated({ metalIncomeS = 400 }) == false, "a tiny capacity does not start the sink under SINK_MIN_INCOME")
 end
 
@@ -121,7 +122,7 @@ do
     local MS6 = VFS.Include("LuaUI/Widgets/bar_framework/metal_sink.lua")
     local jobs6 = {}
     local CB6 = { AddJob = function(cb, j) jobs6[j.name] = j end, Release = function() end, Take = function() return nil end }
-    MS6.Init{ cfg = { SINK_PARALLEL = 3, SINK_MAX = 10 }, CB = CB6, SPINE = function() return spine end, trans = function() return { CB = {}, noConLabs = {} } end,
+    MS6.Init{ cfg = { SINK_START_FLOAT = false, SINK_PARALLEL = 3, SINK_MAX = 10 }, CB = CB6, SPINE = function() return spine end, trans = function() return { CB = {}, noConLabs = {} } end,
               teamID = 0, Capacity = function() return 1000 end }
     local absorb = MS6.LabAbsorb()
     check(absorb and absorb > 0, "a lab's absorb (m/s) is computed from the unit and the decoys (" .. tostring(absorb) .. ")")
@@ -138,7 +139,7 @@ end
 -- a sink for another unit finds its own lab
 do
     local MS4 = VFS.Include("LuaUI/Widgets/bar_framework/metal_sink.lua")
-    MS4.Init{ cfg = { SINK_UNIT = "corkarg" }, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0 }
+    MS4.Init{ cfg = { SINK_START_FLOAT = false, SINK_UNIT = "corkarg" }, CB = CB, SPINE = function() return spine end, trans = function() return trans end, teamID = 0 }
     local l4 = MS4.LabDef()
     check(l4 == nil or (l4.isFactory and l4.name ~= "coraap"), "another unit gets its own lab (" .. tostring(l4 and l4.name) .. ")")
 end
@@ -158,7 +159,7 @@ do
     local free = nil
     local jobs5 = {}
     local CB5 = { AddJob = function(cb, j) jobs5[j.name] = j end, Release = function() end, Take = function() return nil end }
-    MS5.Init{ cfg = { SINK_UNIT = "xsink" }, CB = CB5, SPINE = function() return spine end, trans = function() return trans end, teamID = 0,
+    MS5.Init{ cfg = { SINK_START_FLOAT = false, SINK_UNIT = "xsink" }, CB = CB5, SPINE = function() return spine end, trans = function() return trans end, teamID = 0,
               Capacity = function() return 1000 end,
               BorrowCon = function(defID) borrowed[#borrowed + 1] = defID; return free end,
               GiveBackCon = function(uid) given[#given + 1] = uid end }
@@ -182,5 +183,20 @@ do
     check(given[1] == gcon, "the con is given back to the spine when the lab stands")
 end
 check(#W.errors == 0, "no Lua errors (" .. tostring(W.errors[1]) .. ")")
+
+-- SINK_START_FLOAT (default on): a saturated spine alone does not start the first lab; the bank must float (SINK_START_MIN / FRAC) for
+-- SINK_START_FRAMES first
+do
+    MS.Init{ cfg = { SINK_START_FRAMES = 300 }, CB = CB,
+             SPINE = function() return spine end, trans = function() return trans end, teamID = 0, Capacity = function() return 3000 end }
+    local r = { metalIncomeS = 2900, metal = 4000, metalStorage = 40000 }
+    check(MS.DesiredLabs(1000, r) == 0, "float gate: saturated but a 4k bank -> no lab")
+    r.metal = 20000
+    check(MS.DesiredLabs(1030, r) == 0, "float gate: the bank floats, not yet for long enough")
+    check(MS.DesiredLabs(1400, r) >= 1, "float gate: floated SINK_START_FRAMES -> the first lab")
+    check(MS.StartThreshold(40000) == 15000 and MS.StartThreshold(504000) == 25200 and MS.StartThreshold(2000000) == 40000,
+          "float gate threshold: 15k floor, 5% of storage, 40k cap (" .. MS.StartThreshold(504000) .. " at 504k storage)")
+end
+
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

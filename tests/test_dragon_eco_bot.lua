@@ -48,7 +48,7 @@ S.Spawn("corcom", 1, ex, ez)
 S.Spawn("corlab", 1, ex - 200, ez, { silent = true })
 
 for f = 0, 20 * 1800, 10 do
-    W.res.metal.cur = 800
+    W.res.metal.cur = (f < 13 * 1800) and 800 or 40000      -- the 60k income floats the bank (the sink's first lab needs a float)
     W.res.metal.income = (f < 9 * 1800 and 300) or (f < 13 * 1800 and 1500) or 60000
     if f == 5 * 1800 then
         for i = 1, 12 do S.Spawn("corlevlr", 0, hx + 400 + i * 15, hz + 400) end

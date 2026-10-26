@@ -17,7 +17,7 @@ end
 local LAB = VFS.Include("LuaUI/Widgets/bar_framework/lab_rules.lua")
 
 LAB.Install(widget, WG, {
-    REZ_START_FRAME = 3 * 60 * 30,    -- rez floor (user 2026-10-25): the line's T1 bot lab (REZ_LAB) makes rez bots from ~3:00 ...
-    REZ_BASE = 8, REZ_MAX = 20,       -- ... keeping at least 8 alive (more with the army, up to 20)
+    REZ_START_FRAME = 8 * 60 * 30,    -- rez floor (user 2026-10-25): the line's T1 bot lab (REZ_LAB) makes rez bots from 8:00 ...
+    REZ_BASE = 4, REZ_MAX = 20,       -- ... keeping at least 4 alive (more with the army, up to 20).  2026-10-25 eco_sim (6 seeds): 3:00 / 8 cost 13% income at 10:00
     SINK = true,    -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
 })

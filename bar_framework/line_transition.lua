@@ -114,9 +114,11 @@ LT.CFG = {
     SILO_GRIDS = { [6] = true, [12] = true },   -- grids crowned with a nuke silo (built by a T2 con once the grid is up)
     CAPSTONE_MAX = nil,           -- grids numbered above this skip their T2 lab capstone
     AIR_CON_LABS = true,          -- user 2026-10-25: a T1 air con deficit turns an open grid's capstone into a T1 air lab (grid_core.UpdateAirConRecovery)
-    AIR_CON_LABS_MAX = 2,         -- ... at most this many of them
+    AIR_CON_LABS_MAX = 3,         -- ... at most this many of them
+    AIR_CON_START_FRAME = 8 * 60 * 30,   -- ... not before this (and the first grid's air-con cap lifted): the opening always wants more cons
     AIR_CON_DEFICIT = 2,          -- ... when jobs + reserve want this many more T1 air cons than stand ready ...
     AIR_CON_DEFICIT_S = 60,       -- ... for this long
+    AIR_CON_LAB_TAKE_T2 = false,  -- true: a grid's T2 air lab capstone may become the T1 air lab too (default: only skipped capstones)
     ENERGY_BUILDING = nil,        -- what a wind block becomes under energy push / consolidation (default corfus; corafus = 3000 E in the same 96x96)
     EARLY_CAPSTONES = nil, EARLY_CAPSTONE_NANOS = 4,   -- the first N grids build their T2 lab once this many nanos stand
     RETROFIT_FLOAT_CONS = false, RETROFIT_FLOAT_FRAC = 0.2, RETROFIT_FLOAT_BATCH = 2,   -- idle T2 labs make cons while metal floats and grids wait
@@ -201,6 +203,7 @@ LT.CFG = {
     RESERVE_COUNT_IDLE = false,   -- RAID_BOT: idle air cons (any book) count toward the air-con reserve (it re-ordered 2 forever; 38 sat idle)
     RECOVER_EVERY     = 300,      -- frames between looks
     RECOVER_MIN_MEX   = 1,        -- empty mex spots in a grid that trigger a rebuild
+    RECOVER_SAME_MAX  = 2,        -- the same spots empty again after this many re-runs in a row: left alone (not refillable)
     RECOVER_SAFE_R    = 1500,     -- no raid cluster (WG.MetalBot.threats) this close to the grid
     -- SECOND_AIR_LAB (RAID_BOT): once the line is built, a second T1 air lab on it -- a 3x2 block of wind (or free) slots
     -- is reserved, the winds reclaimed, and the lab built with nanos on the slots beside it.  It is not the macro's air
