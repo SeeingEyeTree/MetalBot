@@ -20,6 +20,7 @@ M.TABLE = {
         decoy        = "cordecom",     -- the decoy commander the sink labs and line labs are assisted by
         sink_unit    = "corcrwh",      -- the unit the metal sink makes (a Dragon)
         radar_plane  = "corawac",
+        scout_air    = "corfink",      -- T1 air scout (bomb_run's wave scouts)
         fighter_t1   = "corveng",   fighter_t2 = "corvamp",
         bomber_t1    = "corshad",   bomber_t2  = "corhurc",
         stunner      = "corbw",        -- cheap air raider that stuns (Shuriken)
@@ -30,6 +31,9 @@ M.TABLE = {
         -- mobile AA, by lab (the air-defence floor / rush, lab_rules): flak truck (T2 vehicle plant), T2 bot, T1 vehicle, T1 bot, hover
         aa_flak_truck = "corsent",  aa_t2_bot  = "coraak",  aa_t1_veh  = "cormist", aa_t1_bot = "corcrash", aa_hover = "corah",
         nano         = "cornanotc",
+        raider_veh   = "corgator",     -- the vehicle plant's cheap fast fighter (Incisor): early defence from the line's vp
+        grunt        = "corak",        -- the T1 bot lab's basic fighter (early defence from the starter lab)
+        radar        = "corrad",       -- T1 radar tower (the commander's early radar)
         con_t1_bot   = "corck",     con_t1_veh = "corcv",   con_t1_air = "corca",
         con_t2_bot   = "corack",    con_t2_veh = "coracv",  con_t2_air = "coraca",
         lab_t1_bot   = "corlab",    lab_t1_veh = "corvp",   lab_t1_air = "corap",

@@ -13,9 +13,9 @@
 --
 -- Each tick, per rez bot, in order:
 --   1. badly hurt itself          -> back to the nearest nano cluster
---   2. a damaged friend nearby    -> repair it (mobile units first: they fight)
---   3. a wreck nearby             -> resurrect it if it was an armed unit worth having,
---                                    else reclaim it
+--   2. a SAFE wreck nearby        -> resurrect it if it was an armed unit worth having,
+--                                    else reclaim it (the first job; RECLAIM_FIRST)
+--   3. a damaged friend nearby    -> repair it (second job; never an air unit)
 --   4. nothing to do              -> follow the army, TRAIL elmos behind its front
 --
 -- Also answers "where should a wounded unit go to be healed" for the retreat pass
@@ -45,6 +45,8 @@ M.HEAL_NANO_RANGE = 5000   -- ...else to a nano turret this close
 M.NANO_REFRESH    = 300    -- frames between nano position scans
 M.UNSAFE_THREAT   = 1      -- EI ground threat above this makes a wreck not worth it
 M.SAFETY_CHECKS   = 4      -- best candidates tested for that, per kind
+M.RECLAIM_FIRST   = true   -- safe metal (a wreck out of enemy guns) is the first job, repair only when there is none
+M.REPAIR_AIR      = false  -- aircraft are never repaired (rez bots chased them across the map)
 
 local CMD_MOVE      = 10
 local CMD_REPAIR    = 40
@@ -139,8 +141,9 @@ local function DamagedFriend(uid, x, z)
     for _, fid in ipairs(Spring.GetUnitsInCylinder(x, z, M.REPAIR_RADIUS, myTeamID) or {}) do
         if fid ~= uid and not Spring.GetUnitIsBeingBuilt(fid) then
             local hp, maxHP = Spring.GetUnitHealth(fid)
-            if hp and maxHP and maxHP > 0 and hp / maxHP < M.REPAIR_BELOW then
-                local defID = Spring.GetUnitDefID(fid)
+            local defID = Spring.GetUnitDefID(fid)
+            if hp and maxHP and maxHP > 0 and hp / maxHP < M.REPAIR_BELOW
+               and (M.REPAIR_AIR or not UQ.is_air(defID)) then
                 local missing = (1 - hp / maxHP) * UQ.metal_cost(defID)
                 if UQ.is_mobile(defID) then missing = missing * 3 end
                 if missing > bestScore then best, bestScore = fid, missing end
@@ -166,11 +169,12 @@ local function FirstSafe(frame, list)
     return nil
 end
 
-local function BestWreck(frame, uid, x, z)
+local function BestWreck(frame, uid, x, z, busy, noResurrect)
     if not Spring.GetFeaturesInCylinder then return nil end
+    busy = busy or busyWreck
     local rez, rec = {}, {}
     for _, fid in ipairs(Spring.GetFeaturesInCylinder(x, z, M.WRECK_RADIUS) or {}) do
-        if not busyWreck[fid] or busyWreck[fid] == uid then
+        if not busy[fid] or busy[fid] == uid then
             local fx, _, fz = Spring.GetFeaturePosition(fid)
             if fx then
                 local name = Spring.GetFeatureResurrect and Spring.GetFeatureResurrect(fid)
@@ -187,7 +191,7 @@ local function BestWreck(frame, uid, x, z)
             end
         end
     end
-    local fid = FirstSafe(frame, rez)
+    local fid = not noResurrect and FirstSafe(frame, rez) or nil
     if fid then return fid, CMD_RESURRECT end
     fid = FirstSafe(frame, rec)
     if fid then return fid, CMD_RECLAIM end
@@ -197,6 +201,20 @@ end
 local function Claim(frame, uid, spec)
     ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, spec, frame)
 end
+
+-- For rez_broker.lua (which owns the orders instead of M.Update): the crew, and the two finders.  `busy` = { [featureID] = unitID }
+-- is the broker's own reservation table (BestWreck skips a wreck another bot holds).
+function M.Members()
+    local ids = {}
+    for uid in pairs(crew) do
+        if Spring.GetUnitDefID(uid) then ids[#ids + 1] = uid else M.Remove(uid) end
+    end
+    table.sort(ids)
+    return ids
+end
+function M.RefreshNanos(frame) RefreshNanos(frame) end
+function M.DamagedFriend(uid, x, z) return DamagedFriend(uid, x, z) end
+function M.BestWreck(frame, uid, x, z, busy, noResurrect) return BestWreck(frame, uid, x, z, busy, noResurrect) end
 
 -- One pass.  (frontX, frontZ) is where the army's front is; nil means stay home.
 function M.Update(frame, frontX, frontZ)
@@ -234,20 +252,24 @@ function M.Update(frame, frontX, frontZ)
                 local rx, rz = M.HealPoint(x, z, uid)
                 Claim(frame, uid, { role = "REZ", cmd = CMD_MOVE, x = rx or hx, z = rz or hz })
             else
-                local friend = DamagedFriend(uid, x, z)
+                local fid, cmd, friend
+                if M.RECLAIM_FIRST then
+                    fid, cmd = BestWreck(frame, uid, x, z)
+                    if not fid then friend = DamagedFriend(uid, x, z) end
+                else
+                    friend = DamagedFriend(uid, x, z)
+                    if not friend then fid, cmd = BestWreck(frame, uid, x, z) end
+                end
                 if friend then
                     Claim(frame, uid, { role = "REZ", cmd = CMD_REPAIR, targetID = friend })
+                elseif fid then
+                    busyWreck[fid] = uid
+                    Claim(frame, uid, { role = "REZ", cmd = cmd, targetID = fid + maxUnits })
                 else
-                    local fid, cmd = BestWreck(frame, uid, x, z)
-                    if fid then
-                        busyWreck[fid] = uid
-                        Claim(frame, uid, { role = "REZ", cmd = cmd, targetID = fid + maxUnits })
-                    else
-                        local k = (i - 1) - (#ids - 1) / 2
-                        local wx, wz = MM.Clamp(tx + px * k * M.TRAIL_SPREAD,
-                                                tz + pz * k * M.TRAIL_SPREAD, 200)
-                        Claim(frame, uid, { role = "REZ", cmd = CMD_MOVE, x = wx, z = wz })
-                    end
+                    local k = (i - 1) - (#ids - 1) / 2
+                    local wx, wz = MM.Clamp(tx + px * k * M.TRAIL_SPREAD,
+                                            tz + pz * k * M.TRAIL_SPREAD, 200)
+                    Claim(frame, uid, { role = "REZ", cmd = CMD_MOVE, x = wx, z = wz })
                 end
             end
         end

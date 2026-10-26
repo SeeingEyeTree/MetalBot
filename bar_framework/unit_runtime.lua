@@ -9,7 +9,9 @@
 -- WG is passed in for the same reason as lab_rules.lua (a VFS.Include'd file does not see the widget's own WG; in
 -- --server single that is a per-team shim).  Overrides (K): MECH = { <keys of the MECH table below> }, BOMB_RUN = { <bomb_run.lua
 -- CFG keys> }, ENDGAME = { <endgame.lua M.* settings, e.g. STRIKE_MIN_VALUE> }, STUN_KILL = { <see UpdateStunKill> } or true.
--- Install(widget, WG, {}) is CORE's unit controller.
+-- REZ_BROKER = false | { <rez_broker.lua CFG keys> } (default ON: rez_broker.lua owns the rez bots' orders instead of rez_crew.Update).
+-- SCOUT_NET = { <scout_net.lua CFG keys> } (default CREEP = true: a map-wide grid of parked scouts for vision; SCOUT_NET = { CREEP = false } opts out).
+-- Install(widget, WG, {}) is the plain unit controller.
 -- Everything inside Install is CORE's unit_controller.lua, edited only where marked "unit_runtime".
 --
 -- Stance plan fields read here (2026-10-25, AIR_TIMING):
@@ -68,10 +70,24 @@ function M.ArmyMode(cur, x, o)
     return "defend", ratio
 end
 
-M.OPTIONS = { MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true }
+M.OPTIONS = { HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true }
 
 function M.Install(widget, WG, K)
 K = K or {}
+-- On by default for every CORE variant (user 2026-10-25); a bot opts out with REZ_BROKER = false / SCOUT_NET = { CREEP = false }.
+if K.REZ_BROKER == nil then K.REZ_BROKER = true end
+-- HOME_DEFENCE (user 2026-10-26, the _Opal_ game): early Grunts stay close to the base.  R = ground units answer intruders only inside R of the base
+-- and are released past R + SLACK (raid_response HOME_R); POST_R = how far out the home guard posts are; LEASH = a guard farther than that from its
+-- post walks back (MOVE) before it fights again; GROUP_UNDER = fewer ground guards than this share one post; EARLY_UNTIL / EARLY_MAX = every
+-- ground unit built before that frame stays home as a guard (up to EARLY_MAX).  false = the old behaviour.
+if K.HOME_DEFENCE == nil then K.HOME_DEFENCE = { R = 700, SLACK = 150, POST_R = 550, LEASH = 250, GROUP_UNDER = 6, EARLY_UNTIL = 5 * 60 * 30, EARLY_MAX = 10 } end
+if K.STUN_KILL == nil then K.STUN_KILL = true end     -- user 2026-10-26: on for every CORE variant (STUN_KILL = false opts out)
+do
+    local sn = {}
+    for k, v in pairs(K.SCOUT_NET or {}) do sn[k] = v end
+    if sn.CREEP == nil then sn.CREEP = true end
+    K.SCOUT_NET = sn
+end
 for k in pairs(K) do
     if not M.OPTIONS[k] then Spring.Echo("[CFG] unit_runtime: option '" .. tostring(k) .. "' is not an option (typo?)") end
 end
@@ -185,6 +201,7 @@ local EI   = nil   -- bar_framework/enemy_intel.lua
 local SN   = nil   -- bar_framework/scout_net.lua (after FIND: group watch, sacrifice runs, perimeter, sweep; the scouting API)
 local RG   = nil   -- bar_framework/raid_group.lua
 local RC   = nil   -- bar_framework/rez_crew.lua
+local RB   = nil   -- bar_framework/rez_broker.lua (K.REZ_BROKER: the one owner of rez-bot orders; rez_crew keeps the finders)
 local EG   = nil   -- bar_framework/endgame.lua
 local LF   = nil   -- bar_framework/line_fight.lua: NOT loaded in LINE_CLICK (every use is guarded)
 local CA   = nil   -- bar_framework/click_army.lua (stage / dive / fall, hurt squads, bombers)
@@ -937,9 +954,10 @@ local function AssignScouts(frame)
     if frame % NET.LOG_PERIOD == 0 and not finding then
         local st, w = SN.Stats(), SN.Want()
         Spring.Echo(string.format(
-            "[SN] %d:%02d scouts=%d/%d radars=%d/%d hawks=%d groups=%d watch=%d posts=%d lost=%d hurt=%d sac sent=%d lost=%d served=%d",
+            "[SN] %d:%02d scouts=%d/%d radars=%d/%d hawks=%d groups=%d watch=%d posts=%d lost=%d hurt=%d sac sent=%d lost=%d served=%d creep=%d/%d radar=%d/%d lost=%d backed=%d",
             math.floor(frame / 1800), math.floor(frame / 30) % 60, #scouts, w.scouts, #radars, w.radars, #hawks,
-            st.groups, st.watchers, st.posts, st.lost, st.hurt, st.sacSent, st.sacLost, st.served))
+            st.groups, st.watchers, st.posts, st.lost, st.hurt, st.sacSent, st.sacLost, st.served,
+            w.nCreep or 0, st.creepPosts or 0, w.nCreepRadar or 0, st.creepRadarPosts or 0, st.creepLost or 0, st.creepRetreats or 0))
     end
 end
 
@@ -1145,16 +1163,51 @@ local function UpdateHomeGuard(frame)
     if MM and MM.Ready() then ax, az = MM.Axis() end
     local centre = math.atan2(az, ax)
     table.sort(ground)   -- stable post assignment
+    local HC = K.HOME_DEFENCE
     local posts = math.max(1, math.min(3, #ground))
+    if HC and #ground < (HC.GROUP_UNDER or 6) then posts = 1 end     -- a small garrison stands together
+    local postR = HC and HC.POST_R or HOME_GUARD_RADIUS
     for i, uid in ipairs(ground) do
         local k = (i - 1) % posts
         local t = (posts == 1) and 0 or (k / (posts - 1)) * 2 - 1
         local a = centre + t * HOME_GUARD_ARC
-        local x, z = baseX + math.cos(a) * HOME_GUARD_RADIUS, baseZ + math.sin(a) * HOME_GUARD_RADIUS
+        local x, z = baseX + math.cos(a) * postR, baseZ + math.sin(a) * postR
         if MM then x, z = MM.Clamp(x, z, MAP_MARGIN) end
+        if HC and posts == 1 then            -- a small garrison stands in a loose cluster around the post, not on one point
+            local oa, orr = i * 2.4, 40 + 35 * math.floor((i - 1) / 5)
+            x, z = x + math.cos(oa) * orr, z + math.sin(oa) * orr
+        end
+        -- a guard that has wandered past the leash walks back to its post (it fights again once it is home); the walk is its own role so
+        -- the claim is re-issued, and raid_response does not pick a returning unit
+        local role, cmd = "HOME_GUARD", CMD_FIGHT
+        if HC and HC.LEASH then
+            local ux, _, uz = spGetUnitPosition(uid)
+            local r = ARMY.RoleOf(uid)
+            local far = ux and (ux - x) ^ 2 + (uz - z) ^ 2 > HC.LEASH ^ 2
+            local home = ux and (ux - x) ^ 2 + (uz - z) ^ 2 <= (HC.LEASH * 0.7) ^ 2
+            if far and (r == "HOME_RETURN" or r == "HOME_GUARD" or r == nil) and not responding[uid] then role, cmd = "HOME_RETURN", CMD_MOVE
+            elseif r == "HOME_RETURN" and not home then role, cmd = "HOME_RETURN", CMD_MOVE end
+        end
         ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, {
-            role = "HOME_GUARD", cmd = CMD_FIGHT, x = x, z = z, minHold = LINE_MIN_HOLD,
+            role = role, cmd = cmd, x = x, z = z, minHold = LINE_MIN_HOLD,
         }, frame)
+    end
+
+    if HC and #ground > 0 and frame % 300 == 0 then
+        local far, ret, n = 0, 0, 0
+        for _, uid in ipairs(ground) do
+            local ux, _, uz = spGetUnitPosition(uid)
+            if ux then
+                n = n + 1
+                far = math.max(far, math.sqrt((ux - baseX) ^ 2 + (uz - baseZ) ^ 2))
+                if ARMY.RoleOf(uid) == "HOME_RETURN" then ret = ret + 1 end
+            end
+        end
+        local nm, nc = 0, 0
+        for _ in pairs(musterPool) do nm = nm + 1 end
+        for _ in pairs(combatUnits) do nc = nc + 1 end
+        Spring.Echo(string.format("[HG] %d:%02d %d ground home guards, farthest %.0f from base (post %.0f, R %s), %d walking back; muster %d, combat %d",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, n, far, postR, tostring(HC.R), ret, nm, nc))
     end
 
     local cx, cz = baseX, baseZ
@@ -1273,7 +1326,7 @@ local function UpdateMechRoles(frame)
         local recruited = RG.Update(frame, combatUnits)
         for uid in pairs(recruited or {}) do musterPool[uid] = nil end
     end
-    if RC then RC.Update(frame, fx, fz) end
+    if RB then RB.Update(frame, fx, fz) elseif RC then RC.Update(frame, fx, fz) end
     UpdateRadarPlanes(frame, fx, fz)
 end
 
@@ -1340,23 +1393,39 @@ end
 -- unit_runtime (K.STUN_KILL, AIR_TIMING; user 2026-10-25: "when an enemy unit gets stunned nothing goes to kill it"): a visible enemy
 -- that is stunned (Spring.GetUnitIsStunned) gets up to PER_TARGET of the nearest free armed ground units within RANGE on ATTACK (RESPOND
 -- priority) until it dies or wakes.  Units busy intercepting, raiding, retreating or answering an air raid are left alone.  "[STUN]" rows.
-local STUN = { PER_TARGET = 4, RANGE = 1500, MAX_TARGETS = 6, LOG_EVERY = 300, on = {}, lastLog = -1e9, kills = 0 }   -- on[target] = { uid ... }
+local STUN = { PER_TARGET = 4, RANGE = 1500, MAX_TARGETS = 6, GRACE = 150, seen = {}, LOG_EVERY = 300, on = {}, lastLog = -1e9, kills = 0 }   -- on[target] = { uid ... }
 local STUN_BUSY = { RETREAT = true, RAID = true, MD_RESPOND = true, RESPOND = true, AIR_DEF = true, BOMBRUN = true, STRIKE = true,
                     AIRWING = true, STUN_KILL = true }
 local function UpdateStunKill(frame)
     if not (K.STUN_KILL and ARMY and TM and Spring.GetUnitIsStunned) then return end
     local cfg = type(K.STUN_KILL) == "table" and K.STUN_KILL or {}
     local per, range, maxT = cfg.PER_TARGET or STUN.PER_TARGET, cfg.RANGE or STUN.RANGE, cfg.MAX_TARGETS or STUN.MAX_TARGETS
-    -- targets: fresh enemy contacts that are stunned now
-    local targets = {}
+    -- targets: fresh enemy contacts that are stunned now.  A target STAYS a target for GRACE frames after it was last seen stunned
+    -- (the stun wearing off, or the contact dropping out of sight for a moment, used to release the whole crew and re-pick the
+    -- same target a tick later: the units flip-flopped instead of finishing the kill).  It ends when the target dies or the grace runs out.
+    local grace = cfg.GRACE or STUN.GRACE
+    local seen = STUN.seen
     for id, c in pairs(TM.Contacts()) do
         if c.defID and frame - (c.frame or -1e9) <= 30 and not c.air then
             local _, stunned = Spring.GetUnitIsStunned(id)
-            if stunned then targets[#targets + 1] = { id = id, x = c.x, z = c.z } end
+            if stunned then seen[id] = { frame = frame, x = c.x, z = c.z } end
         end
     end
-    local live = {}
-    for _, t in ipairs(targets) do live[t.id] = t end
+    local targets, live = {}, {}
+    for id, e in pairs(seen) do
+        if frame - e.frame <= grace and (spGetUnitDefID(id) or frame - e.frame <= 30) then
+            local t = { id = id, x = e.x, z = e.z, crew = STUN.on[id] and #STUN.on[id] or 0 }
+            targets[#targets + 1] = t
+            live[id] = t
+        else
+            seen[id] = nil
+        end
+    end
+    -- crewed targets first (never evicted by the MAX_TARGETS cap), then the rest in a fixed order
+    table.sort(targets, function(a, b)
+        if (a.crew > 0) ~= (b.crew > 0) then return a.crew > 0 end
+        return a.id < b.id
+    end)
     for tid, list in pairs(STUN.on) do                            -- dead or awake: hand the units back
         if not live[tid] then
             if not spGetUnitDefID(tid) then STUN.kills = STUN.kills + 1 end
@@ -1502,6 +1571,7 @@ local function PublishState(frame)
     mb.threats = threats
     if EI then mb.intel = EI.Summary(frame) end
     mb.scoutWant = ScoutWant(frame)
+    mb.bombScoutRoom = (BR and brUsed and BR.ScoutRoom) and BR.ScoutRoom() or 0     -- air scouts the bombing runs still want (lab_rules)
     mb.ringRadarWant = (SN and SP and SP.Mode() ~= "find") and SN.Want().radars or 0
     mb.callScouts = CA and CA.ScoutDemand() or 0    -- LINE_CLICK: Hawks the labs should keep for the groups
     local n, armyV = 0, 0
@@ -1628,7 +1698,7 @@ function widget:Initialize()
     if EI then EI.Init{ UQ = UQ, MM = MM, allyID = myAllyID } end
     SN = EI and Load("scout_net")
     if SN then
-        SN.Init{ MM = MM, UQ = UQ, EI = EI, allyID = myAllyID }
+        SN.Init{ MM = MM, UQ = UQ, EI = EI, allyID = myAllyID, cfg = K.SCOUT_NET }
         if WG then WG.ScoutNet = SN end
     end
     -- LINE_CLICK: raid_group's capped raiders are replaced by click_army's dives (same job, one owner).
@@ -1636,6 +1706,8 @@ function widget:Initialize()
     RC = Load("rez_crew")
     if RC then RC.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY,
                         teamID = myTeamID, allyID = myAllyID } end
+    RB = (RC and K.REZ_BROKER) and Load("rez_broker") or nil
+    if RB then RB.Init{ RC = RC, MM = MM, ARMY = ARMY, cfg = type(K.REZ_BROKER) == "table" and K.REZ_BROKER or nil } end
     EG = EI and Load("endgame")
     if EG then EG.Init{ EI = EI, MM = MM, UQ = UQ, ARMY = ARMY, TM = TM, teamID = myTeamID, cfg = K.ENDGAME } end
     LF = nil
@@ -1652,7 +1724,7 @@ function widget:Initialize()
     do
         local RRm = Load("raid_response")
         if RRm and ARMY and UQ then
-            RESP = RRm.New{ cfg = Load("bot_config").Preset("raid_response", "RAID"), label = "RAID_BOT",
+            RESP = RRm.New{ cfg = Load("bot_config").Preset("raid_response", "RAID", K.HOME_DEFENCE and { HOME_R = K.HOME_DEFENCE.R, HOME_SLACK = K.HOME_DEFENCE.SLACK } or nil), label = "RAID_BOT",
                             ARMY = ARMY, UQ = UQ, TM = TM, CA = CA,
                             combatUnits = combatUnits, musterPool = musterPool, responding = responding,
                             teamID = myTeamID, allyID = myAllyID, isCommander = IsCommander, lineAdvAt = LineAdvAt,
@@ -1670,7 +1742,7 @@ function widget:Initialize()
                         cfg = K.AIR_WING, label = "unit_runtime" } end
     -- unit_runtime: bomb_run for stances whose plan has bomb_run (claims at RAID priority, above endgame's BOMBER_WAIT parking)
     BR = EI and Load("bomb_run")
-    if BR then BR.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, bombers = bombers, combat = combatUnits, guards = homeGuards,
+    if BR then BR.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, bombers = bombers, combat = combatUnits, guards = homeGuards, scouts = scoutUnits,
                         cfg = K.BOMB_RUN, label = "unit_runtime" } end
     SF = nil        -- RAID_BOT: no slow group
     -- STANCE_BOT: behaviours the stance assigns (stances/<name>.lua: behaviors / cfg per unit).  The kite replaces
@@ -1764,7 +1836,10 @@ end
 local function ReleaseSurplusGuards(frame)
     if not (UQ and ARMY) then return end
     local home, all = CountHome(IsGroundDef)
-    local surplus = home - GroundGarrison(all)
+    local keep = GroundGarrison(all)
+    local HC = K.HOME_DEFENCE
+    if HC and HC.EARLY_UNTIL and frame < HC.EARLY_UNTIL then keep = math.max(keep, HC.EARLY_MAX or 10) end   -- early units stay home
+    local surplus = home - keep
     if surplus <= 0 then return end
     local ids = {}
     for uid, defID in pairs(combatUnits) do
@@ -1791,8 +1866,9 @@ end
 -- groups the shadows keep in view and go back to their posts.  Off for every other stance.
 -- unit_runtime (2026-10-25): plan army = "defend" (and "hold", whose parked ring is gone) defends with the blobs and pushes with
 -- click_army's raid groups while our ground army outweighs the scouted enemy's by plan.push.ratio (see the header).
--- The ground army's own trade over the last GROUND_TRADE_S seconds: enemy units our armed ground units killed (attacker type), and
--- our armed ground units the enemy killed (2026-10-25: click_army's group trade read 300k killed for 156k lost while 380 Tigers lost 159k
+-- The OUT army's own trade (2026-10-26: the units in click_army groups and the committed ones -- not the blobs defending the base, whose
+-- losses to raids recalled a push that was 3.2x the enemy), since the current push / raid began, within GROUND_TRADE_S seconds: what
+-- those units killed (attacker id) and lost (2026-10-25: click_army's group trade read 300k killed for 156k lost while 380 Tigers lost 159k
 -- and killed 57k, so the pull-back never fired).
 local GROUND_TRADE_S = 150
 local gtrade = {}            -- { f, killed, lost }
@@ -1801,10 +1877,13 @@ local function IsGroundArmy(defID)
     return d ~= nil and not d.canFly and not d.isBuilder and (d.speed or 0) > 0 and d.weapons ~= nil and #d.weapons > 0
 end
 local function NoteGroundTrade(frame, killed, lost) gtrade[#gtrade + 1] = { f = frame, killed = killed, lost = lost } end
-local function GroundTrade(frame)
+local function GroundTrade(frame, since)
     local k, l, keep = 0, 0, {}
     for _, e in ipairs(gtrade) do
-        if frame - e.f <= GROUND_TRADE_S * 30 then keep[#keep + 1] = e; k, l = k + e.killed, l + e.lost end
+        if frame - e.f <= GROUND_TRADE_S * 30 then
+            keep[#keep + 1] = e
+            if not since or e.f >= since then k, l = k + e.killed, l + e.lost end
+        end
     end
     gtrade = keep
     return { killed = k, lost = l, ratio = l > 0 and k / l or (k > 0 and 99 or 1) }
@@ -1816,8 +1895,26 @@ local function ArmyProduction()
     return (tonumber(inc) or 0) * (tonumber(share) or 0)
 end
 
-local push = { on = false, mode = "defend", since = nil, ratio = nil, lastRaidF = 0, logF = -1e9, caDef = nil, peak = nil, backF = -1e9 }
+local push                -- below
 local function DefendPlan(plan) return plan ~= nil and (plan.army == "defend" or plan.army == "hold") end
+-- click_army's settings for the current army mode: the slow group, the raid-group cap and SIDE_R while pushing, production-sized launches
+-- and batch reinforcements while out.  Called from UpdatePush (so a new mode has them on the tick it starts) and before CA.Update.
+local function ApplyCAPush(plan)
+    if not (CA and CA.CFG) then return end
+    if CA.SetSlowSpeed then CA.SetSlowSpeed(DefendPlan(plan) and ((plan.push and plan.push.slow) or 50) or 0) end
+    push.caGroups = push.caGroups or CA.CFG.MAX_GROUPS
+    local pushing = DefendPlan(plan) and push.mode == "push"
+    CA.CFG.MAX_GROUPS = pushing and ((plan.push and plan.push.raid_groups) or 2) or push.caGroups
+    CA.CFG.SIDE_R = pushing and ((plan.push and plan.push.side_r) or 2500) or nil
+    -- out (push / raid): a group launches with at least prod_s seconds of army production, and reinforcements gather and go in batches of
+    -- that size (user 2026-10-25: "it never waited to group up ... most alive units were reinforcing")
+    local out = DefendPlan(plan) and push.mode ~= "defend"
+    CA.CFG.LAUNCH_PROD_S = out and ((plan.push and plan.push.prod_s) or 20) or nil
+    CA.CFG.BATCH_REINFORCE = out
+    if CA.SetProduction then CA.SetProduction(push.prod or 0) end
+end
+
+push = { on = false, mode = "defend", since = nil, ratio = nil, lastRaidF = 0, logF = -1e9, caDef = nil, peak = nil, backF = -1e9 }
 local function UpdatePush(frame)
     local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
     if not DefendPlan(plan) then push.on, push.mode, push.since = false, "defend", nil; return end
@@ -1832,7 +1929,9 @@ local function UpdatePush(frame)
     if raidV >= (o.back_value or 600) then push.lastRaidF = frame end
     local quietS = (frame - push.lastRaidF) / 30
     if push.mode ~= "defend" then push.peak = math.max(push.peak or 0, own) else push.peak = nil end
-    local trade = GroundTrade(frame)
+    if push.mode ~= "defend" and not push.startF then push.startF = frame end
+    if push.mode == "defend" then push.startF = nil end
+    local trade = GroundTrade(frame, push.startF)
     local caT = CA and CA.TradeSummary and CA.TradeSummary(frame) or nil
     trade.badEnds = caT and caT.badEnds or 0
     local prod = ArmyProduction()
@@ -1853,7 +1952,7 @@ local function UpdatePush(frame)
     if frame - push.since >= need then
         local from = push.mode
         push.mode, push.on, push.since = want, want ~= "defend", nil
-        if want == "defend" then push.backF = frame end
+        if want == "defend" then push.backF = frame; push.startF = nil else push.startF = push.startF or frame end
         Spring.Echo(string.format("[UnitCtrl] %d:%02d army plan %s -> %s (%s): own ground %.0f (peak %.0f) vs enemy %.0f (ratio %s), trade %s, quiet %ds, raid on us %.0f",
             math.floor(frame / 1800), math.floor(frame / 30) % 60, from:upper(), want:upper(), why or "-", own, push.peak or own, enemy,
             ratio and string.format("%.2f", ratio) or "?",
@@ -1864,6 +1963,7 @@ local function UpdatePush(frame)
         push.caDef = push.caDef or CA.CFG.TARGET_DEF_MAX
         CA.CFG.TARGET_DEF_MAX = (push.mode == "raid") and push.caDef * (o.quiet_def or 0.5) or push.caDef
     end
+    ApplyCAPush(plan)                       -- the new mode's click_army settings from its first tick
 end
 
 local function ManeuverPlan()
@@ -1880,9 +1980,12 @@ local function EnsureMD()
     -- unit_runtime: the plan army "defend" plays long-range support as support (maneuver_defence SUPPORT_ROLE) unless its stance says not
     local cfg = {}
     if DefendPlan(plan) then cfg.SUPPORT_ROLE, cfg.MAX_GROUP_SPEED = true, 150 end
+    -- HOME_DEFENCE (user 2026-10-26: the scouts were ignored by a minimum threat): every threat, however small, gets a unit
+    if K.HOME_DEFENCE then cfg.MIN_UNIT_V, cfg.MIN_THREAT, cfg.SCOUT_V, cfg.MIN_RESPONDERS = 1, 1, 0, 1 end
     for k, v in pairs((plan and plan.maneuver) or {}) do cfg[k] = v end
     MD = MDm.New{ ARMY = ARMY, teamID = myTeamID, mapX = Game.mapSizeX or 8192, mapZ = Game.mapSizeZ or 8192,
-                  enemyBase = EnemyBase, contacts = function() return TM.Contacts() end, cfg = cfg }
+                  enemyBase = EnemyBase, contacts = function() return TM.Contacts() end, cfg = cfg,
+                  blipValue = EI and EI.BlipValue or nil }
     return MD
 end
 
@@ -1913,6 +2016,50 @@ end
 -- ground combat unit, blob unit and shadow is forgotten by every controller and registered again exactly as a new unit would be
 -- (UnitFinished), so the new stance's plan and behaviours take them -- blobs <-> click_army groups, a Rascal that shadowed becomes
 -- a scout, a unit that gains a behaviour gets it.  Other stance changes (raid_open -> hold ...) are left as they were.
+-- unit_runtime (user 2026-10-25: "the pull back should only apply to reinforcing units ... if a unit is attacking eco it should just keep
+-- going, it is unlikely to make it out anyway"): on a pull-back (push / raid -> defend), a unit whose click_army group is ATTACKING the base
+-- (state attack, a target -- eco / build power / the commander -- and the unit within COMMIT_R of it; not escaping) is COMMITTED: it is not
+-- handed home, it FIGHTs at its target (RAID priority), and when that is gone it takes the nearest enemy eco within COMMIT_NEXT_R.
+-- With nothing left it is registered again like a new unit.  Units fighting the army, walking, reinforcing go home as before.
+local COMMIT = { R = 2000, NEXT_R = 3000, units = {} }        -- units[uid] = { defID, tx, tz, tid }
+local function CommittedNow(uid)
+    if not (CA and CA.GroupOf) then return nil end
+    local g = CA.GroupOf(uid)
+    if not (g and g.state == "attack" and g.target and g.engage ~= "escape") then return nil end
+    local x, _, z = spGetUnitPosition(uid)
+    if not x then return nil end
+    local t = g.target
+    if (x - t.x) ^ 2 + (z - t.z) ^ 2 > COMMIT.R * COMMIT.R then return nil end
+    return { tx = t.x, tz = t.z, tid = t.uid }
+end
+local function UpdateCommitted(frame)
+    if not next(COMMIT.units) or not ARMY then return end
+    local targets = EI and EI.RaidTargets and EI.RaidTargets(frame) or {}
+    for uid, c in pairs(COMMIT.units) do
+        local x, _, z = spGetUnitPosition(uid)
+        if not x then
+            COMMIT.units[uid] = nil
+        else
+            if c.tid and not spGetUnitDefID(c.tid) and (x - c.tx) ^ 2 + (z - c.tz) ^ 2 < 250 * 250 then c.tid = nil end
+            if not c.tid or not spGetUnitDefID(c.tid) then          -- the target is gone: the nearest enemy eco near it
+                local best, bd
+                for _, t in ipairs(targets) do
+                    local d = (t.x - x) ^ 2 + (t.z - z) ^ 2
+                    if d <= COMMIT.NEXT_R * COMMIT.NEXT_R and (not bd or d < bd) then best, bd = t, d end
+                end
+                if best then c.tx, c.tz, c.tid = best.x, best.z, best.uid else c.tid = nil end
+            end
+            if c.tid then
+                ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "COMMITTED", cmd = CMD_FIGHT, x = c.tx, z = c.tz }, frame)
+            else                                                     -- nothing left to hit: back to the army like a new unit
+                COMMIT.units[uid] = nil
+                if ARMY.RoleOf(uid) == "COMMITTED" then ARMY.Release(uid) end
+                widget:UnitFinished(uid, c.defID, myTeamID)
+            end
+        end
+    end
+end
+
 local lastStance, lastManeuver = nil, false
 local function StanceHandover(frame)
     local name = WG and WG.Strategy and WG.Strategy.Name and WG.Strategy:Name()
@@ -1938,6 +2085,25 @@ local function StanceHandover(frame)
         for uid, defID in pairs(list) do if spGetUnitDefID(uid) then ids[#ids + 1] = { uid = uid, sp = (UnitDefs[defID] or {}).speed or 0 } end end
         table.sort(ids, function(a, b) if a.sp ~= b.sp then return a.sp < b.sp end return a.uid < b.uid end)
         for i = 1, math.floor(#ids * keep) do garrison[ids[i].uid] = true end
+    end
+    -- a pull-back (out -> the maneuver blobs): units attacking the base stay committed (COMMIT above)
+    local nCommit = 0
+    if now and not was and DefendPlan(WG.Strategy:Plan()) then
+        for uid, defID in pairs(list) do
+            local c = spGetUnitDefID(uid) and CommittedNow(uid)
+            if c then
+                c.defID = defID
+                COMMIT.units[uid] = c
+                list[uid] = nil
+                combatUnits[uid], musterPool[uid] = nil, nil
+                ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "COMMITTED", cmd = CMD_FIGHT, x = c.tx, z = c.tz }, frame)
+                nCommit = nCommit + 1
+            end
+        end
+        if nCommit > 0 then
+            Spring.Echo(string.format("[UnitCtrl] %d:%02d pull-back: %d units attacking the base keep going (committed)",
+                math.floor(frame / 1800), math.floor(frame / 30) % 60, nCommit))
+        end
     end
     local n = 0
     for uid, defID in pairs(list) do
@@ -1967,6 +2133,9 @@ local function StaysHome(unitDefID)
     if IsGroundDef(unitDefID) then
         -- The new unit is not in combatUnits yet, hence the +1.
         local home, all = CountHome(IsGroundDef)
+        -- HOME_DEFENCE: every early ground unit stays home (up to EARLY_MAX): they are the defence, not an attack group
+        local HC = K.HOME_DEFENCE
+        if HC and HC.EARLY_UNTIL and Spring.GetGameFrame() < HC.EARLY_UNTIL and home < (HC.EARLY_MAX or 10) then return true end
         return home < GroundGarrison(all + 1)
     end
     local count = CountHome
@@ -2085,9 +2254,10 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
         local f = Spring.GetGameFrame()
         local d = UnitDefs[unitDefID]
         local v = d and ((d.metalCost or 0) + (d.energyCost or 0) / 70) or 0
+        local function Out(uid) return uid ~= nil and (COMMIT.units[uid] ~= nil or (CA ~= nil and CA.InGroup ~= nil and CA.InGroup(uid))) end
         if teamID == myTeamID then
-            if IsGroundArmy(unitDefID) and attackerTeam and attackerTeam ~= myTeamID then NoteGroundTrade(f, 0, v) end
-        elseif attackerTeam == myTeamID and IsGroundArmy(attackerDefID) then
+            if IsGroundArmy(unitDefID) and attackerTeam and attackerTeam ~= myTeamID and Out(unitID) then NoteGroundTrade(f, 0, v) end
+        elseif attackerTeam == myTeamID and IsGroundArmy(attackerDefID) and Out(attackerID) then
             NoteGroundTrade(f, v, 0)
         end
     end
@@ -2239,6 +2409,7 @@ function widget:GameFrame(frame)
             EchoThreat(frame)
             if TL then TL.Frame(frame) end
             PublishState(frame)
+            if WG and WG.MetalBot then WG.MetalBot.pushMode = push.mode end     -- fsm signal push_mode
         end
     end
     if EI and frame % MECH.INTEL_PERIOD == 0 then EI.Scan(frame) end
@@ -2282,6 +2453,7 @@ function widget:GameFrame(frame)
         if AW and not brAir and not (EG and EG.Hunting()) then AW.Update(frame) end    -- before CA: its fighters are claimed first
         UpdatePush(frame)
         StanceHandover(frame)
+        UpdateCommitted(frame)
         if ManeuverPlan() then
             -- maneuver plan: the blobs, not click_army, are the ground army
             if MD then
@@ -2305,18 +2477,7 @@ function widget:GameFrame(frame)
             end
             -- a "defend" PUSH = the main push (the slow group: Mammoths, Sheldons, Banishers ... below plan.push.slow) and
             -- plan.push.raid_groups fast groups (default 2) that go for the sides (SIDE_R) while the main push draws the enemy army
-            if CA.CFG then
-                push.caGroups = push.caGroups or CA.CFG.MAX_GROUPS
-                local pushing = DefendPlan(plan) and push.mode == "push"
-                CA.CFG.MAX_GROUPS = pushing and ((plan.push and plan.push.raid_groups) or 2) or push.caGroups
-                CA.CFG.SIDE_R = pushing and ((plan.push and plan.push.side_r) or 2500) or nil
-                -- out (push / raid): a group launches with at least prod_s seconds of army production, and reinforcements gather and go
-                -- in batches of that size (user 2026-10-25: "it never waited to group up ... most alive units were reinforcing")
-                local out = DefendPlan(plan) and push.mode ~= "defend"
-                CA.CFG.LAUNCH_PROD_S = out and ((plan.push and plan.push.prod_s) or 20) or nil
-                CA.CFG.BATCH_REINFORCE = out
-                if CA.SetProduction then CA.SetProduction(push.prod or 0) end
-            end
+            ApplyCAPush(plan)
             CA.SetMode("raid", frame)
             CA.Update(frame)
             if push.mode == "raid" and MD then         -- the garrison keeps its posts while the rest raids

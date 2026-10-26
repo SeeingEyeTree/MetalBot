@@ -284,6 +284,25 @@ do
     check(math.abs(ps:Share() - 0.65) < 1e-9, "plan.share lifts the share (" .. ps:Share() .. ")")
 end
 
+
+-- user 2026-10-26: match_enemy `unscouted` share and game_plan `scout` (start on hold, decide raid / hold from the located enemy's army)
+do
+    local SHm = VFS.Include("LuaUI/Widgets/bar_framework/strategy_hooks.lua")
+    local h2 = SHm.match_enemy({ unscouted = 0.35, log = false })
+    check(math.abs(h2({ frame = 600, located = false, metal = { income = 20, fill = 0.1 }, energy = { fill = 0.1 }, urgency = "none", threats = {} }) - 0.35) < 1e-9,
+          "unscouted: share 0.35 before the enemy is located")
+    local sh = h2({ frame = 600, located = true, armyValue = 500, enemyGround = 100, enemyAir = 0, metal = { income = 20, fill = 0.1 }, energy = { fill = 0.1 }, urgency = "none", threats = {} })
+    check(sh < 0.35, "unscouted: the old curve applies once located (" .. sh .. ")")
+    local gp = SHm.game_plan{ raid = "raid_open", hold = "hold", start_hold = true, scout = { min_stay = 900 } }
+    check(gp({ frame = 100, located = false }) == "hold", "game_plan: starts on hold")
+    check(gp({ frame = 200, located = true, armyValue = 0, enemyGround = 0, enemyAir = 0 }) == "hold", "game_plan: no decision while nothing is known")
+    check(gp({ frame = 300, located = true, armyValue = 800, enemyGround = 100, enemyAir = 0 }) == "raid_open", "game_plan: weak enemy -> raid")
+    check(gp({ frame = 500, located = true, armyValue = 800, enemyGround = 3000, enemyAir = 0 }) == "raid_open", "game_plan: no flip inside min_stay")
+    check(gp({ frame = 1300, located = true, armyValue = 800, enemyGround = 3000, enemyAir = 0 }) == "hold", "game_plan: strong enemy -> hold")
+    local gp2 = SHm.game_plan{ raid = "raid_open", hold = "hold", start_hold = true, scout = {} }
+    check(gp2({ frame = 300, located = true, armyValue = 800, enemyGround = 4500, enemyAir = 0 }) == "hold", "game_plan: strong enemy at first sight -> hold")
+end
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

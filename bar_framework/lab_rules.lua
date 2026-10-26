@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_FLOOR_BASE", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR" }
 
@@ -84,6 +84,8 @@ local DECOY_MIN        = O("DECOY_MIN", 8)
 local DECOY_PER_LAB    = O("DECOY_PER_LAB", 32)
 local DECOY_ORDER_TTL  = O("DECOY_ORDER_TTL", 3600)
 
+local SCOUT_AHEAD  = O("SCOUT_AHEAD", true)       -- a busy lab gets a scout inserted ahead of its queue when scouts are short (the empty-queue rule alone never fired)
+local AIR_SCOUTS_EARLY = O("AIR_SCOUTS_EARLY", 0)   -- user 2026-10-26: the first 3 scouts are air scouts (much faster), at the highest lab priority; 0 = off
 local SCOUT_TARGET = O("SCOUT_TARGET", 2)       -- until the unit controller publishes scoutWant
 
 -- Army composition, kept deliberately simple.  Internal names, checked against the
@@ -120,7 +122,7 @@ local NOT_SCOUTS = { [ROLES.Get("radar_plane")] = true, armawac = true }
 -- mb.ringRadarWant (income based, published by the unit controller), so the army still gets the lab.
 local RR = {
     MIN_RADIUS = 1400,
-    GAP        = 45 * 30,
+    GAP        = 20 * 30,       -- frames between ring radar orders (creep wants several; was 45 s)
     MIN_METAL  = 150,       -- do not order while the bank is below this
     last       = -1e9,      -- frame of the last order
     room       = 0,         -- want - have, refreshed each lab tick
@@ -251,6 +253,7 @@ local REZ_START_FRAME = O("REZ_START_FRAME", 5 * 60 * 30)  -- none before this: 
 local REZ_BASE = O("REZ_BASE", 2)
 local REZ_PER_ARMY = O("REZ_PER_ARMY", 15)
 local REZ_MAX = O("REZ_MAX", 8)
+local REZ_LAB_DEPTH = O("REZ_LAB_DEPTH", 2)   -- the line's rez lab (WG.RezLab, line_transition/rez_lab.lua) keeps this many rez bots queued
 local RADAR_TARGET = O("RADAR_TARGET", 1)
 local RADAR_TARGET_LATE = O("RADAR_TARGET_LATE", 2)
 -- RAID_BOT (user 2026-10-13): a standing pool of Hawks (corawac) ready for any scout call; the scout lab puts one AHEAD of
@@ -600,10 +603,20 @@ end
 local BUDGET_FREE_FILL = O("BUDGET_FREE_FILL", 0.5)
 local BUDGET_CAP_SECONDS = O("BUDGET_CAP_SECONDS", 20)          -- the bucket never holds more than this many seconds of army income
 local budget = { v = 0, frame = nil, free = false }
-local function BudgetUpdate(frame, share, income, metalFill)
+local BUDGET_FREE_BANK = O("BUDGET_FREE_BANK", 1e12)           -- user 2026-10-26 (a 2k bank with idle labs): a bank this big (and >= BUDGET_FREE_FRAC of storage) also lifts it (CORE: 800; default off)
+local SPINE_CON_FIRST = O("SPINE_CON_FIRST", false)     -- the spine's first ground con goes ahead of the defence picks (CORE: true)
+local BUDGET_FREE_FRAC = O("BUDGET_FREE_FRAC", 0.15)
+local function BudgetUpdate(frame, share, income, metalFill, metalCur, metalStorage)
     local last = budget.frame
     budget.frame = frame
     budget.free = metalFill >= BUDGET_FREE_FILL
+        or ((metalCur or 0) >= BUDGET_FREE_BANK and metalFill >= BUDGET_FREE_FRAC)
+    if (metalCur or 0) >= BUDGET_FREE_BANK and frame - (budget.logF or -1e9) >= 900 then
+        budget.logF = frame
+        Spring.Echo(string.format("[FLOAT] %d:%02d metal bank %.0f (%.0f%% of storage), share %.2f, army budget %.0f, budget %s, energy fill %.0f%%",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, metalCur, 100 * metalFill, share, budget.v,
+            budget.free and "lifted" or "limiting", 100 * (budget.eFill or 0)))
+    end
     if not last then return end
     local rate = income * share
     budget.v = math.min(budget.v + rate * (frame - last) / 30, math.max(400, rate * BUDGET_CAP_SECONDS))
@@ -809,6 +822,12 @@ local function UnitValue(defID)
 end
 
 -- With `valued`, the total value (UnitValue) instead of the count.
+local firstConAt = {}      -- [labID] = frame of the last spine-con-first order (one at a time, 20 s apart)
+local function frame_now_ok(frame, labID)
+    if firstConAt[labID] and (frame or 0) - firstConAt[labID] < 600 then return false end
+    firstConAt[labID] = frame
+    return true
+end
 local function Have(kind, frame, valued)
     for i = #ordered, 1, -1 do
         if frame - ordered[i].frame > ORDER_TTL then table.remove(ordered, i) end
@@ -889,6 +908,11 @@ local function SinkLabs()          -- the finished sink labs, in id order
     return out
 end
 local function IsSinkLab(id) return CH.SinkLabs(WG)[id] ~= nil end
+-- The rez lab's id while it stands (published by line_transition/rez_lab.lua as WG.RezLab = { id }), else nil.
+local function RezLabID()
+    local r = WG and WG.RezLab
+    return (r and r.id and spGetUnitDefID(r.id)) and r.id or nil
+end
 -- the line's decoy labs (line_decoy.lua: T2 bot labs on the line, 8 decoys assist each), alive, in id order
 local function LineLabs()
     local out, seen = {}, {}
@@ -1020,6 +1044,12 @@ local function Describe(labID, labDefID, frame)
     if lab.skip then return lab end
     lab.held = CH.TileLabHeld(WG, labID)      -- owes the macro's air cons (or is the starter lab): the air-rush flush leaves it alone
     if SINK_ON and IsSinkLab(labID) then lab.isSink = true; return lab end    -- no picks: only the "sink" want applies
+    -- the line's rez lab: ONE want ("rez-lab") owns its queue (lab.only), so no floor / scout / radar / army rule can fill it
+    if RezLabID() == labID then
+        local p = GetArmyPicks(labDefID)
+        lab.isRezLab, lab.only, lab.rezDef = true, "rez-lab", p and p.rez
+        return lab
+    end
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
     -- in (or ahead of) either queue then.
     local airConsFirst = CH.TileLabHeld(WG, labID)
@@ -1150,6 +1180,23 @@ RegisterWants = function()
              if d then C.rushRoom = C.rushRoom - UnitValue(d) end
              return d
          end }
+    -- air scouts for the bombing runs (bomb_run's wave scouts): one at a time, ahead of a busy air lab
+    add{ name = "bomb-scout", prio = 73, mode = "ahead", why = "bomb-scout",
+         applies = function(lab) return (C.bombScoutRoom or 0) > 0 and not lab.held and not lab.isSink and LabCanBuild(lab.defID, ROLES.Get("scout_air")) end,
+         pick = function()
+             local ud = UnitDefNames[ROLES.Get("scout_air")]
+             if ud and (C.bombScoutRoom or 0) > 0 then C.bombScoutRoom = C.bombScoutRoom - 1; return ud.id end
+         end }
+    -- user 2026-10-26 (slimegirl game: "no scout"): the first AIR_SCOUTS_EARLY scouts are air scouts, ahead of any queue in any lab that can build one
+    -- (outranks the air-con queue, the floors and the army).  C.scoutsHave counts scouts alive, building and ordered (Have), so labs do not over-order.
+    add{ name = "air-scout-early", prio = 140, mode = "ahead", why = "air-scout",
+         applies = function(lab)
+             return AIR_SCOUTS_EARLY > 0 and C.scoutsHave < AIR_SCOUTS_EARLY and not lab.isSink and LabCanBuild(lab.defID, ROLES.Get("scout_air"))
+         end,
+         pick = function()
+             local ud = UnitDefNames[ROLES.Get("scout_air")]
+             if ud and C.scoutsHave < AIR_SCOUTS_EARLY then return ud.id end
+         end }
     add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
          applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
          pick = function(lab)
@@ -1173,6 +1220,17 @@ RegisterWants = function()
          end,
          pick = function() return UnitDefNames[ROLES.Get("savior")].id end }
     -- Keep the queue QUEUE_DEPTH deep: what the spine asks for next, then (T2) the stance's units.
+    -- user 2026-10-26: the spine's FIRST ground con goes ahead of the defence picks.  Rush / floor defenders kept the vehicle plant's queue full for
+    -- minutes (con at 5:00 instead of 3:35), and the spine's own want only tops up a SHORT queue, so no lab could be placed without a con.
+    add{ name = "spine-con-first", prio = 126, mode = "ahead", why = "spine-con", note = false, ignorePending = true, noPending = true,
+         applies = function(lab)
+             local SP = C.SP
+             return SPINE_CON_FIRST and lab.isSpine and lab.t1Spine and SP and SP.FirstConWanted and SP.FirstConWanted(lab.id) and frame_now_ok(C.frame, lab.id)
+         end,
+         pick = function(lab)
+             local d = C.SP.NextOrder(lab.id, lab.defID)
+             if d and UnitDefs[d] and UnitDefs[d].isBuilder and UnitDefs[d].canMove then return d end
+         end }
     add{ name = "spine", prio = 125, mode = "topup", grace = SPINE_ORDER_GRACE, note = false, log = false,
          depth = function() return C.SP.CFG.QUEUE_DEPTH end,
          applies = function(lab) return lab.isSpine end,
@@ -1230,7 +1288,12 @@ RegisterWants = function()
          end }
     add{ name = "plan-bomber", prio = 65, mode = "empty", applies = picks,
          pick = function(lab) if C.planBomberRoom > 0 and not C.stalled and lab.picks.bomber then return lab.picks.bomber end end }
-    add{ name = "rez", prio = 60, mode = "empty", applies = picks,
+    -- the rez lab makes rez bots and nothing else ("rez-lab" owns it); every other lab only makes them while there is no rez lab
+    add{ name = "rez-lab", prio = 200, mode = "topup", why = "rez", depth = function() return REZ_LAB_DEPTH end,
+         applies = function(lab) return lab.isRezLab and lab.rezDef ~= nil end,
+         pick = function(lab) if C.rezRoom > 0 then return lab.rezDef end end }
+    add{ name = "rez", prio = 60, mode = "empty",
+         applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
          pick = function(lab) if C.rezRoom > 0 and lab.picks.rez then return lab.picks.rez end end }
     -- LINE_CLICK scout calls: one T2 air lab keeps the radar plane plus one Hawk per call the attack groups have out
     add{ name = "radar-plane", prio = 55, mode = "empty", applies = picks,
@@ -1241,6 +1304,11 @@ RegisterWants = function()
          end }
     add{ name = "scout", prio = 50, mode = "empty", applies = picks,
          pick = function(lab) if lab.canScout then return CheapestScout(lab.cache.scouts) end end }
+    -- the same scout, ahead of a BUSY queue (one insert, then the broker waits for it to start): a lab that is always working never
+    -- reached the empty-queue rule above, so the scout net (creep, perimeter, watch) was never filled
+    add{ name = "scout-ahead", prio = 49, aheadPrio = 74, mode = "ahead", why = "scout",
+         applies = function(lab) return SCOUT_AHEAD and lab.picks and lab.canScout and not lab.empty end,
+         pick = function(lab) return CheapestScout(lab.cache.scouts) end }
     -- a slow trickle of ring radar units from any lab that can build one; a lab with no army picks can still make it
     add{ name = "ring-radar", prio = 45, mode = "ahead", noPending = true, log = RingLog, onOrder = RingOrdered,
          applies = function(lab) return not lab.isSpine and not lab.isSink and (lab.empty or not lab.picks) end,
@@ -1334,7 +1402,8 @@ function widget:GameFrame(frame)
     local mFill = metalStorage > 0 and metalCur / metalStorage or 0
     local eFill = (okE and type(energyCur) == "number" and type(energyStorage) == "number" and energyStorage > 0)
                   and energyCur / energyStorage or 0
-    BudgetUpdate(frame, (C.SP and C.SP.Share and C.SP.Share()) or 0, metalIncome, mFill)
+    budget.eFill = eFill
+    BudgetUpdate(frame, (C.SP and C.SP.Share and C.SP.Share()) or 0, metalIncome, mFill, metalCur, metalStorage)
     if mFill >= DRAGON_FLOAT_ON and eFill >= DRAGON_FLOAT_ON then dragonFloat = true
     elseif mFill < DRAGON_FLOAT_OFF or eFill < DRAGON_FLOAT_OFF then dragonFloat = false end
     -- User 2026-10-14: with a good economy and both banks floating, Dragons outrank the Wasp raid answer in the T2 air lab.
@@ -1395,6 +1464,7 @@ function widget:GameFrame(frame)
     C.rezRoom       = frame < REZ_START_FRAME and 0
                       or math.min(REZ_MAX, REZ_BASE + math.floor(((mb and mb.armyCount) or 0) / REZ_PER_ARMY)) - Have("rez", frame)
     C.airAlarm      = (mb and mb.airAlarm and frame - mb.airAlarm.frame <= AIR_ALARM_TTL) and true or false
+    C.bombScoutRoom = (mb and mb.bombScoutRoom) or 0          -- air scouts the bombing runs want (bomb_run WAVE_SCOUTS_MAX)
     -- air defence (AA_FLOOR_* / AIR_RUSH above): the rush's id while a large raid is on, and how many ground AA the floor still wants
     local ar = mb and mb.airRaid
     C.airRush = (AIR_RUSH and ar and ar.rush and ar.since) or nil

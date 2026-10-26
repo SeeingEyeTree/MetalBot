@@ -216,6 +216,223 @@ local w1 = SN.Want()
 check(w1.scouts > w0.scouts, "income raises the scout count (" .. w0.scouts .. " -> " .. w1.scouts .. ")")
 check(w1.radars > 0, "...and the radar count (" .. w1.radars .. ")")
 
+-- 9. Creep is opt-in -------------------------------------------------------------------------------
+SN.CFG.CREEP = false
+frame = frame + 100; W.frame = frame
+claims = SN.Step(frame, { scouts = many, radars = {}, hawks = {} }, { income = 500 })
+check(SN.Want().nCreep == nil or SN.Want().nCreep == 0, "creep off: no creep scouts asked for")
+
+-- 10. Creep GROWS: posts adjacent to the creep, toward the enemy, one step at a time; never on or behind the enemy -----------------
+local function FreshCreep()
+    SN.Init{ MM = MM, UQ = UQ, EI = EI, allyID = 0 }
+    SN.SetStructures(pts)
+    SN.CFG.CREEP = true
+end
+local function CreepClaims(cl, units)
+    local out = {}
+    for _, uid in ipairs(units) do
+        local c = cl[uid]
+        if c and c.slot and c.slot >= 3500 then out[#out + 1] = { uid = uid, c = c } end
+    end
+    return out
+end
+local function MaxR(list, cx0, cz0)
+    local m = 0
+    for _, e in ipairs(list) do m = math.max(m, Dist(e.c.x, e.c.z, cx0, cz0)) end
+    return m
+end
+FreshCreep()
+local sc = {}
+for i = 1, 40 do sc[i] = S.Spawn("corfav", 0, homeX + i * 20, homeZ + 300, { silent = true }) end
+local cx0, cz0 = SN.Centre()
+frame = frame + 1000; W.frame = frame
+claims = SN.Step(frame, { scouts = sc, radars = {}, hawks = {} }, { income = 500 })
+local c1 = CreepClaims(claims, sc)
+check(#c1 >= 4, "creep: scouts take creep posts (" .. #c1 .. ")")
+local plan = SN.CreepPlan("scout")
+check(#plan.frontier + #plan.held > 4, "creep: a frontier exists (" .. #plan.frontier .. " open, " .. #plan.held .. " held)")
+local r1 = MaxR(c1, cx0, cz0)
+check(r1 < 3600, string.format("creep: the first posts hug the base, no jump ahead (%.0f from its centre)", r1))
+local bearing = math.atan2(foeZ - cz0, foeX - cx0)
+local f1 = plan.frontier[1] or plan.held[1]
+local fa = math.abs((math.atan2(f1.z - cz0, f1.x - cx0) - bearing + math.pi) % (2 * math.pi) - math.pi)
+check(fa < 1.2, string.format("creep: the best frontier post is on the enemy's side (%.2f rad off its bearing)", fa))
+-- units arrive; the next pass grows the net outward
+local rr = r1
+for step = 1, 6 do
+    Teleport(claims)
+    frame = frame + 120; W.frame = frame
+    claims = SN.Step(frame, { scouts = sc, radars = {}, hawks = {} }, { income = 500 })
+    rr = math.max(rr, MaxR(CreepClaims(claims, sc), cx0, cz0))
+end
+check(rr > r1 + 400, string.format("creep: it spreads outward as units arrive (%.0f -> %.0f)", r1, rr))
+-- every creep claim touches the creep: within ~2 post spacings of another held/occupied post or the base
+local grown = CreepClaims(claims, sc)
+local lone = 0
+for _, e in ipairs(grown) do
+    local near = Dist(e.c.x, e.c.z, cx0, cz0) < 2500
+    for _, o in ipairs(grown) do
+        if o ~= e and Dist(e.c.x, e.c.z, o.c.x, o.c.z) < 1500 then near = true; break end
+    end
+    if not near then lone = lone + 1 end
+end
+check(lone == 0, "creep: no post stands alone, away from the rest of the net (" .. lone .. ")")
+
+-- the enemy is on the way: no post on or behind it
+S.Spawn("corgator", 1, 6000, 6000, { silent = true })
+for i = 1, 6 do S.Spawn("correap", 1, 6000 + i * 60, 6000, { silent = true }) end
+for i = 1, 6 do S.Spawn("corgator", 1, 6000 + i * 60, 6100, { silent = true }) end
+local function Behind(x, z, fxx, fzz)
+    local px, pz = x - cx0, z - cz0
+    local fx2, fz2 = fxx - cx0, fzz - cz0
+    local rp, rf = math.sqrt(px * px + pz * pz), math.sqrt(fx2 * fx2 + fz2 * fz2)
+    if rp <= rf - SN.CFG.CREEP_FRONT_MARGIN then return false end
+    if (px * fx2 + pz * fz2) / rf <= 0 then return false end
+    return math.abs(px * fz2 - pz * fx2) / rf <= SN.CFG.CREEP_FRONT_WIDTH
+end
+local behind = 0
+for step = 1, 14 do
+    Teleport(claims)
+    frame = frame + 120; W.frame = frame
+    EI.Scan(frame)
+    claims = SN.Step(frame, { scouts = sc, radars = {}, hawks = {} }, { income = 500 })
+end
+for _, e in ipairs(CreepClaims(claims, sc)) do
+    if Behind(e.c.x, e.c.z, 6000, 6000) or Behind(e.c.x, e.c.z, foeX, foeZ) then behind = behind + 1 end
+end
+check(#CreepClaims(claims, sc) >= 4, "creep: still growing with the enemy on the map")
+check(behind == 0, "creep: no post on or behind the enemy group or its base (" .. behind .. ")")
+
+-- 11. A loss pulls the creep back: the front moves to where the unit died, the posts there and behind go ----------------------------
+FreshCreep()
+for id in pairs(W.units) do if W.units[id].team == 1 then W.units[id] = nil end end
+EI.Init{ UQ = UQ, MM = MM, allyID = 0 }
+frame = frame + 3000; W.frame = frame
+claims = SN.Step(frame, { scouts = sc, radars = {}, hawks = {} }, { income = 500 })
+for step = 1, 10 do
+    Teleport(claims)
+    frame = frame + 120; W.frame = frame
+    claims = SN.Step(frame, { scouts = sc, radars = {}, hawks = {} }, { income = 500 })
+end
+local cl = CreepClaims(claims, sc)
+local lead
+for _, e in ipairs(cl) do
+    if not lead or Dist(e.c.x, e.c.z, foeX, foeZ) < Dist(lead.c.x, lead.c.z, foeX, foeZ) then lead = e end
+end
+check(lead ~= nil, "creep loss: a unit holds the outermost post")
+if lead then
+    local lx, lz = lead.c.x, lead.c.z
+    local rest = {}
+    for _, u in ipairs(sc) do if u ~= lead.uid then rest[#rest + 1] = u end end
+    SN.OnLost(lead.uid, lx, lz, frame)
+    for step = 1, 4 do
+        Teleport(claims)
+        frame = frame + 120; W.frame = frame
+        claims = SN.Step(frame, { scouts = rest, radars = {}, hawks = {} }, { income = 500 })
+    end
+    local back, stillThere = 0, 0
+    for _, e in ipairs(CreepClaims(claims, rest)) do
+        if Dist(e.c.x, e.c.z, lx, lz) < 300 then stillThere = stillThere + 1 end
+        local rl = Dist(lx, lz, cx0, cz0)
+        local px, pz = e.c.x - cx0, e.c.z - cz0
+        local fx2, fz2 = lx - cx0, lz - cz0
+        local rp = math.sqrt(px * px + pz * pz)
+        if rp > rl - SN.CFG.CREEP_FRONT_MARGIN and (px * fx2 + pz * fz2) / rl > 0
+           and math.abs(px * fz2 - pz * fx2) / rl <= SN.CFG.CREEP_FRONT_WIDTH then back = back + 1 end
+    end
+    check(stillThere == 0, "creep loss: nobody goes back to the post that cost a unit")
+    check(back == 0, "creep loss: no post on or behind where the unit died (" .. back .. ")")
+    check((SN.Stats().fronts or 0) >= 2, "creep loss: the death is a front point (" .. tostring(SN.Stats().fronts) .. " fronts)")
+end
+
+-- 11b. Radar units take posts on their own wider grid; scouts skip what they cover ------------------------------------------------------
+FreshCreep()
+local sc2 = {}
+for i = 1, 40 do sc2[i] = S.Spawn("corfav", 0, homeX + i * 20, homeZ + 300, { silent = true }) end
+local rrd = {}
+for i = 1, 10 do rrd[i] = S.Spawn("testradarbot", 0, homeX + i * 25, homeZ + 400, { silent = true }) end
+frame = frame + 3000; W.frame = frame
+claims = SN.Step(frame, { scouts = sc2, radars = rrd, hawks = {} }, { income = 500 })
+for step = 1, 8 do
+    Teleport(claims)
+    frame = frame + 120; W.frame = frame
+    claims = SN.Step(frame, { scouts = sc2, radars = rrd, hawks = {} }, { income = 500 })
+end
+local rCreep, radarPts = 0, {}
+for _, e in ipairs(CreepClaims(claims, rrd)) do rCreep = rCreep + 1; radarPts[#radarPts + 1] = e.c end
+check(rCreep >= 1, "creep radar: radar units take creep posts (" .. rCreep .. ")")
+check((SN.Want().nCreepRadar or 0) > 0, "creep radar: the labs are asked for radar units for the posts (" .. tostring(SN.Want().nCreepRadar) .. ")")
+local covered = 0
+for _, e in ipairs(CreepClaims(claims, sc2)) do
+    for _, rp in ipairs(radarPts) do
+        if Dist(e.c.x, e.c.z, rp.x, rp.z) < 2000 * SN.CFG.CREEP_RADAR_COVER - 1 then covered = covered + 1; break end
+    end
+end
+check(covered == 0, "creep radar: no scout post inside a held radar post's cover (" .. covered .. ")")
+SN.CFG.CREEP = false
+
+
+-- 12. Creep guard: a unit that sees an enemy backs off WHILE WALKING to its post (urgent RETREAT claim, no post hold) ---------------
+local function GuardCase(kind, units, who)
+    SN.Init{ MM = MM, UQ = UQ, EI = EI, allyID = 0 }
+    SN.SetStructures(pts)
+    SN.CFG.CREEP = true
+    EI.Init{ UQ = UQ, MM = MM, allyID = 0 }
+    for id in pairs(W.units) do if W.units[id].team == 1 then W.units[id] = nil end end
+    frame = frame + 3000; W.frame = frame
+    local function Step(f)
+        local pk = { scouts = {}, radars = {}, hawks = {} }
+        pk[kind .. "s"] = units
+        return SN.Step(f, pk, { income = 500 })
+    end
+    Step(frame); frame = frame + 10; W.frame = frame
+    local cl = Step(frame)
+    local held
+    for _, uid in ipairs(units) do
+        local c = cl[uid]
+        if c and c.slot and c.slot >= 3500 and (not held or c.slot < held.c.slot) then held = { uid = uid, c = c } end
+    end
+    check(held ~= nil, who .. ": a unit holds a creep post")
+    if not held then return end
+    -- it is WALKING: halfway between home and its post
+    local u = W.units[held.uid]
+    u.x, u.z = (homeX + held.c.x) / 2, (homeZ + held.c.z) / 2
+    local ex, ez = u.x + 350, u.z + 200            -- an armed enemy within a few hundred elmos of the unit (inside its vision)
+    local foe = S.Spawn("corgator", 1, ex, ez, { silent = true })
+    frame = frame + 60; W.frame = frame
+    EI.Scan(frame)
+    local d0 = Dist(u.x, u.z, ex, ez)
+    cl = Step(frame)
+    local c2 = cl[held.uid]
+    check(c2 ~= nil and c2.role == "RETREAT", who .. ": a walking unit with an enemy in its vision gets a RETREAT claim (" .. tostring(c2 and c2.role) .. ")")
+    check(c2 ~= nil and c2.urgent == true, who .. ": the retreat claim is urgent (no order rate limit / unit clock)")
+    check(c2 ~= nil and Dist(c2.x, c2.z, ex, ez) > d0 + 300, who .. ": it backs away from the enemy")
+    check(c2 ~= nil and c2.minHold == nil, who .. ": no post hold on the retreat")
+    check((SN.Stats().creepRetreats or 0) >= 1, who .. ": the retreat is counted")
+    -- enemy still there next pass: still retreating, from where it stands
+    u.x, u.z = c2.x, c2.z
+    frame = frame + 60; W.frame = frame
+    EI.Scan(frame)
+    cl = Step(frame)
+    check(cl[held.uid] and cl[held.uid].role == "RETREAT", who .. ": it keeps retreating while the enemy is in view / recent")
+    -- the enemy is gone and its record is stale: the unit is back on a post, not the one that led it into the enemy
+    W.units[foe] = nil
+    frame = frame + 1500; W.frame = frame
+    EI.Scan(frame)
+    cl = Step(frame)
+    local c3 = cl[held.uid]
+    check(c3 == nil or c3.role ~= "RETREAT", who .. ": once clear it is no longer sent back (it takes a post if one is open, else it waits where it is)")
+    -- a unit with no creep job (a plain sweeper) is not touched by the guard
+    SN.CFG.CREEP = false
+end
+local g1 = {}
+for i = 1, 10 do g1[i] = S.Spawn("testradarbot", 0, homeX + i * 25, homeZ + 400, { silent = true }) end
+GuardCase("radar", g1, "creep guard radar")
+local g2 = {}
+for i = 1, 40 do g2[i] = S.Spawn("corfav", 0, homeX + i * 20, homeZ + 300, { silent = true }) end
+GuardCase("scout", g2, "creep guard scout")
+SN.CFG.CREEP = false
+
 check(#W.errors == 0, "no Lua errors: " .. (W.errors[1] or ""))
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

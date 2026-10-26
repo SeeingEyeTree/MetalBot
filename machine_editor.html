@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machine Editor</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2128;--border:#30363d;--text:#c9d1d9;--dim:#8b949e;--blue:#1f6feb;--green:#2ea043;--amber:#d29922;--red:#f85149;--purple:#a371f7}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:12px "Segoe UI",system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+button,input,select,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:4px 8px}
+button{cursor:pointer}button:hover{border-color:var(--dim)}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+button.success{background:var(--green);border-color:var(--green);color:#fff}
+button.danger{color:var(--red)}
+button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+button.sm{padding:1px 6px;font-size:11px}
+#toolbar{display:flex;gap:6px;align-items:center;padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap}
+#toolbar .sp{flex:1}
+#fname{color:var(--dim)}
+#main{flex:1;display:flex;min-height:0}
+#left{width:300px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel)}
+#center{flex:1;position:relative;min-width:300px;overflow:hidden}
+#right{width:380px;border-left:1px solid var(--border);background:var(--panel);overflow:auto;padding:10px}
+.tabs{display:flex;border-bottom:1px solid var(--border)}
+.tabs button{flex:1;border:0;border-radius:0;background:none;padding:6px}
+.tabs button.on{background:var(--panel2);box-shadow:inset 0 -2px var(--blue);color:var(--text)}
+#lbody{flex:1;overflow:auto;padding:6px}
+.card{padding:6px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;margin-bottom:6px;cursor:grab}
+.card:hover{border-color:var(--blue)}
+.card b{display:block}
+.card .intent{color:var(--dim);font-size:11px;max-height:3.2em;overflow:hidden}
+.mini{display:flex;height:6px;border-radius:2px;overflow:hidden;margin:3px 0;background:#0006}
+.mini div{height:100%}
+.chip{display:inline-block;padding:0 6px;border-radius:8px;font-size:10px;background:#0006;border:1px solid var(--border);margin-right:3px;color:var(--dim)}
+.dim{color:var(--dim);font-size:11px}
+h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+h3:first-child{margin-top:0}
+label{display:block;margin:6px 0 2px;color:var(--dim)}
+input[type=text],input[type=number],select,textarea{width:100%}
+textarea{min-height:60px;resize:vertical}
+#svg{width:100%;height:100%;display:block;background:radial-gradient(#21262d 1px,transparent 1px) 0 0/22px 22px}
+.node rect.body{fill:var(--panel2);stroke:var(--border);stroke-width:1.5}
+.node.sel rect.body{stroke:var(--blue);stroke-width:2.5}
+.node.cur rect.body{stroke:var(--amber);stroke-width:3}
+.node.bad rect.body{stroke:var(--red)}
+.node text{fill:var(--text);pointer-events:none}
+.node .sub{fill:var(--dim);font-size:10px}
+.node .handle{fill:var(--blue);stroke:#fff;stroke-width:1.5;cursor:crosshair}
+.node .start{fill:var(--green);font-size:9px;font-weight:700}
+.edge path{fill:none;stroke:#6e7681;stroke-width:2}
+.edge.sel path{stroke:var(--blue);stroke-width:3}
+.edge.hit path{stroke:var(--amber);stroke-width:3.5}
+.edge.any path{stroke-dasharray:6 4;stroke:var(--purple)}
+path.hitarea{stroke:transparent!important;stroke-width:14!important;stroke-dasharray:none!important;cursor:pointer;fill:none}
+.edge text{fill:var(--text);font-size:10px;pointer-events:none}
+.edge rect.lbl{fill:var(--panel);stroke:var(--border);rx:3}
+.edge.sel rect.lbl{stroke:var(--blue)}
+#always{position:absolute;left:8px;right:8px;top:6px;display:flex;gap:4px;flex-wrap:wrap;pointer-events:none}
+#always .chip{pointer-events:auto;border-style:dashed;cursor:pointer;background:var(--panel)}
+#hint{position:absolute;left:10px;bottom:8px;color:var(--dim);font-size:11px;pointer-events:none}
+.group{border-left:2px solid var(--blue);padding:4px 0 4px 8px;margin:4px 0}
+.group.foc{border-left-color:var(--amber)}
+.group .gh{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.leaf{display:grid;grid-template-columns:1.6fr 54px 1fr auto auto;gap:4px;align-items:center;margin:3px 0}
+.leaf.bool{grid-template-columns:1.6fr 1fr auto auto}
+.sig{padding:3px 6px;border-bottom:1px solid var(--border);cursor:pointer}
+.sig:hover{background:var(--panel2)}
+.sig b{color:var(--text)}
+.sig.cross b{color:var(--purple)}
+#sigs{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:4px;margin-top:4px}
+.prob{padding:3px 6px;border-bottom:1px solid var(--border);cursor:pointer}
+.prob.e{color:var(--red)}.prob.w{color:var(--amber)}
+.rule{padding:6px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;margin-bottom:6px}
+.rule b{display:block}
+.rule .k{color:var(--dim)}
+#modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:10}
+#modal .box{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:12px;width:min(820px,92vw);max-height:88vh;overflow:auto}
+#modal textarea{min-height:140px;font-family:Consolas,monospace;font-size:11px}
+#toast{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--border);padding:6px 12px;border-radius:4px;display:none;z-index:20}
+</style>
+<script src="machine_editor/lua_table.js"></script>
+<script src="stance_editor/machine_index.js" onerror="window.MACHINE_INDEX=null"></script>
+</head>
+<body>
+<div id="toolbar">
+  <b>Machine Editor</b>
+  <button id="bNew">New</button>
+  <button id="bOpen">Open .lua</button>
+  <button id="bSave" class="success">Save</button>
+  <button id="bSaveAs">Save as…</button>
+  <span id="fname"></span>
+  <span class="sp"></span>
+  <button id="bUndo">Undo</button><button id="bRedo">Redo</button>
+  <button id="bLayout">Auto-layout</button>
+  <button id="bFit">Fit</button>
+  <button id="bValidate">Validate</button>
+  <button id="bReplay">Replay log</button>
+  <button id="bHelp">?</button>
+</div>
+<div id="main">
+  <div id="left">
+    <div class="tabs"><button id="tStance" class="on">Stance machine</button><button id="tShare">Army-share machine</button></div>
+    <div class="tabs"><button id="lPal" class="on">Palette</button><button id="lRules">Built-in rules</button></div>
+    <div id="lbody"></div>
+  </div>
+  <div id="center">
+    <svg id="svg"><defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#6e7681"/></marker>
+      <marker id="arrS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#1f6feb"/></marker>
+      <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#a371f7"/></marker>
+    </defs><g id="vp"><g id="edges"></g><g id="nodes"></g><g id="labels"></g><g id="tmp"></g></g></svg>
+    <div id="always"></div>
+    <div id="hint">drag a stance in · drag from a node's blue dot to another node to add a transition · click an arrow to edit its conditions · wheel zooms, drag empty space pans</div>
+  </div>
+  <div id="right"></div>
+</div>
+<div id="modal"><div class="box" id="mbox"></div></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
+  return e;
+};
+const NS = "http://www.w3.org/2000/svg";
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+// ------------------------------------------------------------------ data
+let IDX = window.MACHINE_INDEX || { stances: [], signals: [], builtin_rules: [], units: {} };
+const SIG = () => Object.fromEntries(IDX.signals.map((s) => [s.name, s]));
+const STANCE = () => Object.fromEntries(IDX.stances.map((s) => [s.name, s]));
+const HOOKS = { match_enemy: { ratio: 1.1, expect: 0.5, unscouted: 0.35, floor: 0.2 }, v16_share: { floor: 0.2 } };
+const KEYS = { stance: "stance_machine", share: "share_machine" };
+
+function blank() {
+  return { name: "new_machine", version: 1,
+    stance_machine: { initial: null, nodes: {}, edges: [], any_edges: [] },
+    share_machine: { initial: null, nodes: {}, edges: [], any_edges: [] } };
+}
+let D = { header: "", spec: blank() };
+let tab = "stance";
+let sel = null;                 // { kind: "node", id } | { kind: "edge", list, i } | { kind: "any" }
+let view = { x: 40, y: 40, k: 1 };
+let fileHandle = null, fileName = "";
+let undo = [], redo = [];
+let hl = null;                  // replay highlight { node, list, i }
+let focusPath = [];             // condition builder: the group new conditions go into
+let ctree = null;               // the selected edge's condition, as an editable tree
+
+const M = () => {
+  const m = D.spec[KEYS[tab]] || (D.spec[KEYS[tab]] = { initial: null, nodes: {}, edges: [], any_edges: [] });
+  if (Array.isArray(m.nodes)) m.nodes = {};
+  m.edges = m.edges || []; m.any_edges = m.any_edges || [];
+  return m;
+};
+const fix = () => { for (const k of ["stance_machine", "share_machine"]) { const m = D.spec[k]; if (m) { if (Array.isArray(m.nodes)) m.nodes = {}; m.edges = m.edges || []; m.any_edges = m.any_edges || []; } } };
+
+function snap() { undo.push(JSON.stringify(D.spec)); if (undo.length > 100) undo.shift(); redo = []; }
+function restore(s) { D.spec = JSON.parse(s); fix(); sel = null; ctree = null; renderAll(); persist(); }
+function persist() { try { localStorage.setItem("machineEditor", JSON.stringify({ D, tab, fileName })); } catch (e) { /* private window */ } }
+function toast(t) { const e = $("#toast"); e.textContent = t; e.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => (e.style.display = "none"), 2600); }
+
+// ------------------------------------------------------------------ conditions: spec <-> editable tree
+function toTree(c) {
+  if (!c) return { type: "group", mode: "all", neg: false, kids: [] };
+  if (c.not) { const t = toTree(c.not); t.neg = !t.neg; return t; }
+  if (c.all || c.any) return { type: "group", mode: c.all ? "all" : "any", neg: false, kids: (c.all || c.any).map(toTree) };
+  return { type: "leaf", sig: c.sig, op: c.op || "", val: c.val, neg: false };
+}
+function fromTree(t) {
+  let c;
+  if (t.type === "group") {
+    const kids = t.kids.map(fromTree);
+    if (!kids.length) return null;
+    c = (kids.length === 1 && !t.neg) ? kids[0] : { [t.mode]: kids };
+    if (kids.length === 1 && t.neg) c = { not: kids[0] };
+    else if (t.neg) c = { not: c };
+    return c;
+  }
+  c = { sig: t.sig }; if (t.op) { c.op = t.op; c.val = t.val; }
+  return t.neg ? { not: c } : c;
+}
+function condText(c) {
+  if (!c) return "always";
+  if (c.all || c.any) { const p = (c.all || c.any).map(condText); const s = p.join(c.all ? " AND " : " OR "); return p.length > 1 ? "(" + s + ")" : s; }
+  if (c.not) return "NOT " + condText(c.not);
+  return c.op ? `${c.sig} ${c.op} ${c.val}` : c.sig;
+}
+function getAt(path) { let t = ctree; for (const i of path) t = t.kids[i]; return t; }
+
+// ------------------------------------------------------------------ selection helpers
+const edgeOf = (s) => (s.list === "any_edges" ? M().any_edges[s.i] : M().edges[s.i]);
+function selEdge() { return sel && sel.kind === "edge" ? edgeOf(sel) : null; }
+function select(s) {
+  sel = s; ctree = null; focusPath = [];
+  const e = selEdge(); if (e) ctree = toTree(e.when);
+  renderCanvas(); renderRight();
+}
+function commitCond() { const e = selEdge(); if (!e) return; const c = fromTree(ctree); if (c) e.when = c; else delete e.when; renderCanvas(); persist(); }
+
+// ------------------------------------------------------------------ geometry / canvas
+const NW = 210;
+function nodeH(nd) { return tab === "stance" ? 88 : 66; }
+const ANYPOS = () => { const m = M(); if (!m.any_pos) m.any_pos = { x: -40, y: -10 }; return m.any_pos; };
+function anyRect() { const p = ANYPOS(); return { x: p.x, y: p.y, w: 110, h: 34 }; }
+function rectOf(id) {
+  if (id === "*") return anyRect();
+  const nd = M().nodes[id]; if (!nd) return null;
+  return { x: nd.x || 0, y: nd.y || 0, w: NW, h: nodeH(nd) };
+}
+const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+function clip(r, from, to) {
+  const c = center(r), dx = to.x - c.x, dy = to.y - c.y;
+  const sx = dx === 0 ? Infinity : (r.w / 2 + 4) / Math.abs(dx), sy = dy === 0 ? Infinity : (r.h / 2 + 4) / Math.abs(dy);
+  const s = Math.min(sx, sy);
+  return { x: c.x + dx * s, y: c.y + dy * s };
+}
+function colorFor(name) { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360; return `hsl(${h} 55% 52%)`; }
+const ARMY = { raid: "#f85149", hold: "#58a6ff", defend: "#3fb950", perimeter: "#d29922", maneuver: "#a371f7" };
+
+function renderCanvas() {
+  const m = M();
+  $("#vp").setAttribute("transform", `translate(${view.x} ${view.y}) scale(${view.k})`);
+  const S = STANCE();
+  let eh = "", nh = "", lh = "";
+  // pair offsets so parallel / opposite edges do not overlap
+  const pairs = {};
+  const all = [];
+  m.edges.forEach((e, i) => all.push({ e, i, list: "edges", from: e.from }));
+  m.any_edges.forEach((e, i) => all.push({ e, i, list: "any_edges", from: "*" }));
+  for (const a of all) { const k = [a.from, a.e.to].sort().join("|"); (pairs[k] = pairs[k] || []).push(a); }
+  for (const a of all) {
+    const R1 = rectOf(a.from), R2 = rectOf(a.e.to);
+    if (!R1 || !R2) continue;
+    const k = [a.from, a.e.to].sort().join("|"), grp = pairs[k], idx = grp.indexOf(a);
+    const off = (idx - (grp.length - 1) / 2) * 46 + (a.from > a.e.to && grp.length > 1 ? 0 : 0);
+    const c1 = center(R1), c2 = center(R2);
+    const mx = (c1.x + c2.x) / 2, my = (c1.y + c2.y) / 2;
+    const dx = c2.x - c1.x, dy = c2.y - c1.y, len = Math.hypot(dx, dy) || 1;
+    const sign = a.from < a.e.to ? 1 : -1;
+    const cp = { x: mx + (-dy / len) * off * sign + (grp.length === 1 ? 0 : 0), y: my + (dx / len) * off * sign };
+    const p1 = clip(R1, c1, cp), p2 = clip(R2, c2, cp);
+    const lx = 0.25 * p1.x + 0.5 * cp.x + 0.25 * p2.x, ly = 0.25 * p1.y + 0.5 * cp.y + 0.25 * p2.y;
+    const txt = condText(a.e.when), meta = [a.e.hold_s ? `hold ${a.e.hold_s}s` : "", a.e.min_stay_s ? `stay ${a.e.min_stay_s}s` : "", a.e.prio ? `p${a.e.prio}` : ""].filter(Boolean).join(" ");
+    const label = (txt.length > 36 ? txt.slice(0, 35) + "…" : txt) + (meta ? "  · " + meta : "");
+    const w = label.length * 5.3 + 10;
+    const isSel = sel && sel.kind === "edge" && sel.list === a.list && sel.i === a.i;
+    const isHit = hl && hl.list === a.list && hl.i === a.i;
+    const d = `M${p1.x},${p1.y} Q${cp.x},${cp.y} ${p2.x},${p2.y}`;
+    const cls = `edge ${a.list === "any_edges" ? "any" : ""} ${isSel ? "sel" : ""} ${isHit ? "hit" : ""}`;
+    eh += `<g class="${cls}" data-list="${a.list}" data-i="${a.i}"><path d="${d}" marker-end="url(#${isSel ? "arrS" : a.list === "any_edges" ? "arrA" : "arr"})"/><path class="hitarea" d="${d}"/></g>`;
+    lh += `<g class="${cls}" data-list="${a.list}" data-i="${a.i}" style="cursor:pointer"><rect class="lbl" x="${lx - w / 2}" y="${ly - 9}" width="${w}" height="18"/><text x="${lx}" y="${ly + 4}" text-anchor="middle">${esc(label)}</text></g>`;
+  }
+  for (const [id, nd] of Object.entries(m.nodes)) {
+    const r = rectOf(id);
+    const st = tab === "stance" ? S[nd.stance] : null;
+    const bad = tab === "stance" && !st && IDX.stances.length;
+    const isSel = sel && sel.kind === "node" && sel.id === id;
+    let body = `<text x="10" y="18" font-weight="700" font-size="13">${esc(id)}</text>`;
+    if (tab === "stance") {
+      body += `<text class="sub" x="10" y="33">${esc(nd.stance === id ? "" : nd.stance || "?")}${bad ? " — stance not found" : ""}</text>`;
+      if (st) {
+        let x = 10; const tot = st.units.reduce((a, u) => a + (u.share || 0), 0) || 1;
+        for (const u of st.units) { const w = (u.share / tot) * (NW - 20); body += `<rect x="${x}" y="42" width="${Math.max(w - 1, 0)}" height="8" fill="${colorFor(u.n)}"><title>${esc(IDX.units[u.n] || u.n)} ${(100 * u.share).toFixed(0)}%</title></rect>`; x += w; }
+        const army = st.plan && st.plan.army;
+        body += `<text class="sub" x="10" y="68">${army ? `<tspan fill="${ARMY[army] || "#8b949e"}">● ${esc(army)}</tspan>  ` : ""}share ${esc(st.share || "?")}%${st.plan && st.plan.share ? " floor " + Math.round(st.plan.share * 100) + "%" : ""}</text>`;
+      }
+    } else if (nd.hook) {
+      body += `<text class="sub" x="10" y="33">hook: ${esc(nd.hook)}</text>`;
+      body += `<text class="sub" x="10" y="50">${esc(Object.entries(nd.cfg || {}).map(([k, v]) => k + "=" + v).join(" ").slice(0, 36))}</text>`;
+    } else {
+      const sh = nd.share || 0;
+      body += `<text class="sub" x="10" y="33">fixed ${Math.round(sh * 100)}%${nd.ramp_s ? " · ramp " + nd.ramp_s + "s" : ""}</text>`;
+      body += `<rect x="10" y="42" width="${NW - 20}" height="8" fill="#0006"/><rect x="10" y="42" width="${(NW - 20) * Math.min(1, sh)}" height="8" fill="#58a6ff"/>`;
+    }
+    const isStart = m.initial === id;
+    nh += `<g class="node ${isSel ? "sel" : ""} ${bad ? "bad" : ""} ${hl && hl.node === id ? "cur" : ""}" data-id="${esc(id)}" transform="translate(${r.x} ${r.y})">
+      <rect class="body" width="${r.w}" height="${r.h}" rx="6"/>${body}${isStart ? `<text class="start" x="${NW - 38}" y="14">START</text>` : ""}
+      <circle class="handle" cx="${r.w}" cy="${r.h / 2}" r="7"/></g>`;
+  }
+  // the "from any state" pseudo node
+  if (m.any_edges.length || (sel && sel.kind === "any")) {
+    const r = anyRect(), isSel = sel && sel.kind === "any";
+    nh += `<g class="node ${isSel ? "sel" : ""}" data-id="*" transform="translate(${r.x} ${r.y})"><rect class="body" width="${r.w}" height="${r.h}" rx="17" style="stroke-dasharray:5 3"/>
+      <text x="${r.w / 2}" y="21" text-anchor="middle" style="fill:#a371f7">from any state</text><circle class="handle" cx="${r.w}" cy="${r.h / 2}" r="7"/></g>`;
+  }
+  $("#edges").innerHTML = eh; $("#nodes").innerHTML = nh; $("#labels").innerHTML = lh;
+}
+
+// pointer handling
+let drag = null;
+function toWorld(ev) { const r = $("#svg").getBoundingClientRect(); return { x: (ev.clientX - r.left - view.x) / view.k, y: (ev.clientY - r.top - view.y) / view.k }; }
+$("#svg").addEventListener("mousedown", (ev) => {
+  const g = ev.target.closest(".node"), eg = ev.target.closest(".edge");
+  if (g && ev.target.classList.contains("handle")) {
+    drag = { kind: "link", from: g.dataset.id }; ev.preventDefault(); return;
+  }
+  if (g) {
+    const id = g.dataset.id, w = toWorld(ev);
+    if (id === "*") { select({ kind: "any" }); const p = ANYPOS(); drag = { kind: "move", id, dx: w.x - p.x, dy: w.y - p.y, snapped: false }; }
+    else { select({ kind: "node", id }); const nd = M().nodes[id]; drag = { kind: "move", id, dx: w.x - (nd.x || 0), dy: w.y - (nd.y || 0), snapped: false }; }
+    ev.preventDefault(); return;
+  }
+  if (eg) { select({ kind: "edge", list: eg.dataset.list, i: +eg.dataset.i }); return; }
+  select(null);
+  drag = { kind: "pan", sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y };
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!drag) return;
+  if (drag.kind === "pan") { view.x = drag.vx + ev.clientX - drag.sx; view.y = drag.vy + ev.clientY - drag.sy; renderCanvas(); }
+  else if (drag.kind === "move") {
+    if (!drag.snapped) { snap(); drag.snapped = true; }
+    const w = toWorld(ev), x = Math.round((w.x - drag.dx) / 10) * 10, y = Math.round((w.y - drag.dy) / 10) * 10;
+    if (drag.id === "*") Object.assign(ANYPOS(), { x, y }); else Object.assign(M().nodes[drag.id], { x, y });
+    renderCanvas();
+  } else if (drag.kind === "link") {
+    const r = rectOf(drag.from), p = center(r), w = toWorld(ev);
+    $("#tmp").innerHTML = `<line x1="${r.x + r.w}" y1="${p.y}" x2="${w.x}" y2="${w.y}" stroke="#1f6feb" stroke-width="2.5" stroke-dasharray="5 4"/>`;
+  }
+});
+window.addEventListener("mouseup", (ev) => {
+  if (!drag) return;
+  if (drag.kind === "link") {
+    $("#tmp").innerHTML = "";
+    const g = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".node");
+    if (g && g.dataset.id !== "*" && g.dataset.id !== drag.from) addEdge(drag.from, g.dataset.id);
+  }
+  if (drag.kind === "move") persist();
+  drag = null;
+});
+$("#svg").addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const r = $("#svg").getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+  const k = Math.max(0.25, Math.min(2.5, view.k * (ev.deltaY < 0 ? 1.1 : 1 / 1.1)));
+  view.x = px - (px - view.x) * (k / view.k); view.y = py - (py - view.y) * (k / view.k); view.k = k;
+  renderCanvas();
+}, { passive: false });
+$("#svg").addEventListener("dragover", (ev) => ev.preventDefault());
+$("#svg").addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const t = ev.dataTransfer.getData("text/plain"), w = toWorld(ev);
+  if (t) addNodeFromPalette(t, Math.round((w.x - NW / 2) / 10) * 10, Math.round((w.y - 30) / 10) * 10);
+});
+window.addEventListener("keydown", (ev) => {
+  if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+  if (ev.key === "Delete" || ev.key === "Backspace") deleteSel();
+  if (ev.ctrlKey && ev.key === "z") { ev.preventDefault(); doUndo(); }
+  if (ev.ctrlKey && (ev.key === "y" || ev.key === "Y")) { ev.preventDefault(); doRedo(); }
+  if (ev.ctrlKey && ev.key === "s") { ev.preventDefault(); save(false); }
+});
+
+// ------------------------------------------------------------------ mutations
+function uniqueId(base) { const m = M(); let id = base, n = 2; while (m.nodes[id]) id = base + "_" + n++; return id; }
+function addNodeFromPalette(token, x, y) {
+  snap();
+  const m = M();
+  let id, nd;
+  if (token.startsWith("stance:")) { const name = token.slice(7); id = uniqueId(name); nd = { stance: name, x, y }; }
+  else if (token === "share:fixed") { id = uniqueId("share"); nd = { share: 0.3, x, y }; }
+  else if (token.startsWith("hook:")) { const h = token.slice(5); id = uniqueId(h); nd = { hook: h, cfg: clone(HOOKS[h] || {}), x, y }; }
+  else return;
+  m.nodes[id] = nd;
+  if (!m.initial) m.initial = id;
+  select({ kind: "node", id }); renderLeft(); persist();
+}
+function addEdge(from, to) {
+  snap();
+  const m = M(), e = { from, to };
+  if (from === "*") { delete e.from; m.any_edges.push(e); select({ kind: "edge", list: "any_edges", i: m.any_edges.length - 1 }); }
+  else { m.edges.push(e); select({ kind: "edge", list: "edges", i: m.edges.length - 1 }); }
+  persist();
+}
+function deleteSel() {
+  if (!sel) return;
+  snap();
+  const m = M();
+  if (sel.kind === "node") {
+    delete m.nodes[sel.id];
+    m.edges = m.edges.filter((e) => e.from !== sel.id && e.to !== sel.id);
+    m.any_edges = m.any_edges.filter((e) => e.to !== sel.id);
+    if (m.initial === sel.id) m.initial = Object.keys(m.nodes)[0] || null;
+  } else if (sel.kind === "edge") (sel.list === "any_edges" ? m.any_edges : m.edges).splice(sel.i, 1);
+  select(null); renderLeft(); persist();
+}
+function renameNode(old, nu) {
+  nu = nu.trim(); const m = M();
+  if (!nu || nu === old || m.nodes[nu]) { renderRight(); return; }
+  snap();
+  const nodes = {}; for (const [k, v] of Object.entries(m.nodes)) nodes[k === old ? nu : k] = v;
+  m.nodes = nodes;
+  for (const e of m.edges) { if (e.from === old) e.from = nu; if (e.to === old) e.to = nu; }
+  for (const e of m.any_edges) if (e.to === old) e.to = nu;
+  if (m.initial === old) m.initial = nu;
+  sel = { kind: "node", id: nu }; renderAll(); persist();
+}
+function autoLayout() {
+  snap();
+  const m = M(), ids = Object.keys(m.nodes), depth = {};
+  const start = m.initial && m.nodes[m.initial] ? m.initial : ids[0];
+  if (!start) return;
+  const q = [start]; depth[start] = 0;
+  while (q.length) { const n = q.shift(); for (const e of m.edges) if (e.from === n && !(e.to in depth)) { depth[e.to] = depth[n] + 1; q.push(e.to); } }
+  for (const e of m.any_edges) if (!(e.to in depth)) { depth[e.to] = 1; q.push(e.to); }
+  while (q.length) { const n = q.shift(); for (const e of m.edges) if (e.from === n && !(e.to in depth)) { depth[e.to] = depth[n] + 1; q.push(e.to); } }
+  let extra = 0; const maxd = Math.max(0, ...Object.values(depth));
+  for (const id of ids) if (!(id in depth)) depth[id] = maxd + 1 + (extra++ % 2);
+  const cols = {}; for (const id of ids) (cols[depth[id]] = cols[depth[id]] || []).push(id);
+  for (const [d, list] of Object.entries(cols)) list.forEach((id, j) => { m.nodes[id].x = 140 + d * 520; m.nodes[id].y = 70 + j * 170; });
+  ANYPOS().x = 140; ANYPOS().y = 70 + Math.max(...Object.values(cols).map((l) => l.length)) * 170;
+  fitView(); renderAll(); persist();
+}
+function fitView() {
+  const m = M(), ids = Object.keys(m.nodes);
+  if (!ids.length) { view = { x: 40, y: 60, k: 1 }; return; }
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  if (m.any_edges.length) ids.push('*');
+  for (const id of ids) { const r = rectOf(id); x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); }
+  const b = $("#center").getBoundingClientRect(), k = Math.min(1.2, (b.width - 80) / (x1 - x0 + 1), (b.height - 120) / (y1 - y0 + 1));
+  view.k = Math.max(0.3, k); view.x = 40 - x0 * view.k; view.y = 60 - y0 * view.k + 20;
+}
+function doUndo() { if (!undo.length) return; redo.push(JSON.stringify(D.spec)); restore(undo.pop()); }
+function doRedo() { if (!redo.length) return; undo.push(JSON.stringify(D.spec)); restore(redo.pop()); }
+
+// ------------------------------------------------------------------ left panel
+let lmode = "pal";
+function renderLeft() {
+  const b = $("#lbody"); b.innerHTML = "";
+  $("#tStance").classList.toggle("on", tab === "stance"); $("#tShare").classList.toggle("on", tab === "share");
+  $("#lPal").classList.toggle("on", lmode === "pal"); $("#lRules").classList.toggle("on", lmode === "rules");
+  if (lmode === "rules") { renderRules(b); return; }
+  if (tab === "stance") {
+    const q = el("input", { type: "text", placeholder: "filter stances…" }); b.append(q);
+    const list = el("div"); b.append(list);
+    const draw = () => {
+      list.innerHTML = "";
+      const used = new Set(Object.values(M().nodes).map((n) => n.stance));
+      for (const s of IDX.stances.filter((s) => (s.name + " " + s.intent).toLowerCase().includes(q.value.toLowerCase()))) {
+        const tot = s.units.reduce((a, u) => a + (u.share || 0), 0) || 1;
+        const card = el("div", { class: "card", draggable: true,
+          ondragstart: (ev) => ev.dataTransfer.setData("text/plain", "stance:" + s.name),
+          ondblclick: () => addNodeFromPalette("stance:" + s.name, 100 + Object.keys(M().nodes).length * 30, 100 + Object.keys(M().nodes).length * 30) },
+          el("b", {}, s.name, used.has(s.name) ? el("span", { class: "chip", style: "margin-left:6px;color:var(--green)" }, "in use") : null),
+          el("div", { class: "mini", html: false }, ...s.units.map((u) => el("div", { style: `width:${100 * u.share / tot}%;background:${colorFor(u.n)}`, title: u.n }))),
+          el("div", {}, s.plan && s.plan.army ? el("span", { class: "chip", style: `color:${ARMY[s.plan.army] || ""}` }, s.plan.army) : null, el("span", { class: "chip" }, "share " + (s.share || "?") + "%")),
+          el("div", { class: "intent" }, s.intent));
+        list.append(card);
+      }
+      if (!IDX.stances.length) list.append(el("div", { class: "dim" }, "No stance list. Run `python fsm_index.py` in the repo, then reload."));
+    };
+    q.addEventListener("input", draw); draw();
+    b.append(el("div", { class: "dim", style: "margin-top:6px" }, "Drag a stance onto the canvas (or double-click it). The same stance can be used by several nodes."));
+  } else {
+    b.append(el("h3", {}, "Share nodes"));
+    const mk = (tok, title, sub) => el("div", { class: "card", draggable: true, ondragstart: (ev) => ev.dataTransfer.setData("text/plain", tok),
+      ondblclick: () => addNodeFromPalette(tok, 100 + Object.keys(M().nodes).length * 30, 100 + Object.keys(M().nodes).length * 30) }, el("b", {}, title), el("div", { class: "intent" }, sub));
+    b.append(mk("share:fixed", "Fixed share", "A constant fraction of income goes to army (0–100%), optionally eased in over ramp_s seconds."),
+      mk("hook:match_enemy", "match_enemy", "Keep our army value up with the scouted enemy's (strategy_hooks.match_enemy). Options: ratio, expect, unscouted, floor…"),
+      mk("hook:v16_share", "v16_share", "v16's threat-lifted share rule (floor, start, hold…)."));
+    b.append(el("div", { class: "dim", style: "margin-top:6px" }, "Edges can read the stance machine through the signals `stance`, `stance_army`, `stance_age_s`, so the share can depend on the stance. The stance machine can read `share`, `share_node`."));
+  }
+}
+function renderRules(b) {
+  b.append(el("div", { class: "dim" }, "Always on, whatever the machines say (read-only). Edit the numbers in code; see `machines/builtin_rules.lua`."));
+  for (const r of IDX.builtin_rules) {
+    b.append(el("div", { class: "rule" }, el("b", {}, r.name), el("div", {}, el("span", { class: "k" }, "when: "), r.trigger), el("div", {}, el("span", { class: "k" }, "then: "), r.reaction),
+      el("div", { class: "dim" }, "where: " + r.where), el("div", { class: "dim" }, "tune: " + (r.tunables || "")), r.signal ? el("div", {}, el("span", { class: "chip" }, "signal: " + r.signal)) : null));
+  }
+}
+function renderAlways() {
+  const a = $("#always"); a.innerHTML = "";
+  a.append(el("span", { class: "dim", style: "padding-top:1px" }, "always on:"));
+  for (const r of IDX.builtin_rules) a.append(el("span", { class: "chip", title: r.trigger + "\n→ " + r.reaction, onclick: () => { lmode = "rules"; renderLeft(); } }, r.name));
+}
+
+// ------------------------------------------------------------------ right panel (inspector)
+function renderRight() {
+  const R = $("#right"); R.innerHTML = "";
+  const m = M();
+  if (!sel) {
+    R.append(el("h3", {}, "Machine"), el("label", {}, "name"), el("input", { type: "text", value: D.spec.name || "", onchange: (ev) => { snap(); D.spec.name = ev.target.value; persist(); } }));
+    R.append(el("div", { class: "dim", style: "margin-top:8px" }, `${tab === "stance" ? "Stance" : "Army-share"} machine: ${Object.keys(m.nodes).length} nodes, ${m.edges.length} edges, ${m.any_edges.length} from-any edges.`));
+    R.append(el("div", { style: "margin-top:8px" }, el("button", { onclick: () => { select({ kind: "any" }); } }, "Show 'from any state' node")));
+    R.append(el("div", { class: "dim", style: "margin-top:8px" }, "Click a node or arrow to edit it. Priorities: of several transitions whose conditions hold, the highest prio fires (ties: the first). 'hold_s' = the condition must stay true that long; 'min_stay_s' = minimum time in the node."));
+    renderProblems(R);
+    return;
+  }
+  if (sel.kind === "any") {
+    R.append(el("h3", {}, "From any state"), el("div", { class: "dim" }, "Drag from this node's blue dot to a node: that transition can fire from every node (e.g. the unit cap filling -> late stance). Checked each second like the others."),
+      el("div", { style: "margin-top:8px" }, el("button", { onclick: () => { select(null); } }, "Close")));
+    return;
+  }
+  if (sel.kind === "node") {
+    const nd = m.nodes[sel.id]; if (!nd) return;
+    R.append(el("h3", {}, "Node"));
+    R.append(el("label", {}, "id"), el("input", { type: "text", value: sel.id, onchange: (ev) => renameNode(sel.id, ev.target.value) }));
+    R.append(el("label", {}, el("input", { type: "checkbox", checked: m.initial === sel.id, onchange: (ev) => { snap(); if (ev.target.checked) m.initial = sel.id; renderAll(); persist(); } }), " initial state (START)"));
+    if (tab === "stance") {
+      const sl = el("select", { onchange: (ev) => { snap(); nd.stance = ev.target.value; renderAll(); persist(); } });
+      if (!STANCE()[nd.stance]) sl.append(el("option", { value: nd.stance, selected: true }, (nd.stance || "?") + " (not found)"));
+      for (const s of IDX.stances) sl.append(el("option", { value: s.name, selected: s.name === nd.stance }, s.name));
+      R.append(el("label", {}, "stance"), sl);
+      const st = STANCE()[nd.stance];
+      if (st) {
+        R.append(el("div", { class: "dim", style: "margin:6px 0" }, st.intent));
+        R.append(el("div", {}, ...Object.entries(st.plan || {}).map(([k, v]) => el("span", { class: "chip" }, k + "=" + (typeof v === "object" ? JSON.stringify(v) : v)))));
+        const tot = st.units.reduce((a, u) => a + (u.share || 0), 0) || 1;
+        for (const u of st.units) R.append(el("div", { style: "display:flex;gap:6px;align-items:center;margin-top:3px" },
+          el("span", { style: `width:10px;height:10px;background:${colorFor(u.n)};border-radius:2px;flex:none` }),
+          el("span", { style: "flex:1" }, IDX.units[u.n] || u.n), el("span", { class: "dim" }, Math.round(100 * u.share / tot) + "%"),
+          u.behaviors ? el("span", { class: "chip" }, u.behaviors.join(",")) : null));
+      }
+    } else if (nd.hook) {
+      const sl = el("select", { onchange: (ev) => { snap(); nd.hook = ev.target.value; nd.cfg = clone(HOOKS[nd.hook] || {}); renderAll(); persist(); } });
+      for (const h of Object.keys(HOOKS)) sl.append(el("option", { value: h, selected: h === nd.hook }, h));
+      R.append(el("label", {}, "share hook"), sl);
+      R.append(el("label", {}, "options (key=value per line)"));
+      R.append(el("textarea", { onchange: (ev) => { snap(); nd.cfg = {}; for (const ln of ev.target.value.split("\n")) { const mm = /^\s*(\w+)\s*=\s*(.+?)\s*$/.exec(ln); if (mm) nd.cfg[mm[1]] = isNaN(+mm[2]) ? mm[2] : +mm[2]; } renderCanvas(); persist(); } },
+        Object.entries(nd.cfg || {}).map(([k, v]) => k + "=" + v).join("\n")));
+      R.append(el("div", { class: "dim" }, "Options are the hook's own (strategy_hooks.lua): " + Object.keys(HOOKS[nd.hook] || {}).join(", ") + " …"));
+    } else {
+      R.append(el("label", {}, "army share: " + Math.round((nd.share || 0) * 100) + "%"));
+      R.append(el("input", { type: "range", min: 0, max: 100, value: Math.round((nd.share || 0) * 100), oninput: (ev) => { nd.share = ev.target.value / 100; renderCanvas(); }, onchange: () => { persist(); renderRight(); } }));
+    }
+    if (tab === "share") {
+      R.append(el("label", {}, "ramp_s (seconds to move to this share, 0 = jump)"));
+      R.append(el("input", { type: "number", min: 0, value: nd.ramp_s || 0, onchange: (ev) => { snap(); if (+ev.target.value > 0) nd.ramp_s = +ev.target.value; else delete nd.ramp_s; renderCanvas(); persist(); } }));
+    }
+    R.append(el("div", { style: "margin-top:10px" }, el("button", { class: "danger", onclick: deleteSel }, "Delete node")));
+    const outs = m.edges.filter((e) => e.from === sel.id);
+    R.append(el("h3", {}, "Leaves to"), ...(outs.length ? outs.map((e) => el("div", { class: "prob", onclick: () => select({ kind: "edge", list: "edges", i: m.edges.indexOf(e) }) }, "→ " + e.to + ": " + condText(e.when))) : [el("div", { class: "dim" }, "no exits")]));
+    return;
+  }
+  // edge
+  const e = selEdge(); if (!e) return;
+  R.append(el("h3", {}, sel.list === "any_edges" ? "Transition (from any state)" : "Transition"));
+  R.append(el("div", {}, el("b", {}, sel.list === "any_edges" ? "any" : e.from), "  →  ", el("b", {}, e.to)));
+  const num = (label, key, tip) => { R.append(el("label", { title: tip }, label)); R.append(el("input", { type: "number", min: 0, value: e[key] || 0, onchange: (ev) => { snap(); if (+ev.target.value) e[key] = +ev.target.value; else delete e[key]; renderCanvas(); persist(); } })); };
+  num("prio (higher wins when several can fire)", "prio");
+  num("hold_s (condition must stay true this long)", "hold_s");
+  num("min_stay_s (not before this long in the node)", "min_stay_s");
+  R.append(el("label", {}, "note"), el("input", { type: "text", value: e.note || "", onchange: (ev) => { snap(); if (ev.target.value) e.note = ev.target.value; else delete e.note; persist(); } }));
+  R.append(el("h3", {}, "Condition — when"));
+  const box = el("div"); R.append(box);
+  const drawCond = () => { box.innerHTML = ""; box.append(condUI(ctree, [])); };
+  R.drawCond = drawCond; window.__drawCond = drawCond; drawCond();
+  R.append(el("div", { class: "dim" }, "Groups: ALL = every condition, ANY = at least one, tick NOT to negate a group. A condition on an unknown value is false. Click a group's header to choose where signals from the list go."));
+  R.append(el("h3", {}, "Signals (click to add to the highlighted group)"));
+  const q = el("input", { type: "text", placeholder: "filter signals…" }); R.append(q);
+  const list = el("div", { id: "sigs" }); R.append(list);
+  const dr = () => {
+    list.innerHTML = "";
+    for (const s of IDX.signals.filter((s) => (s.name + s.doc).toLowerCase().includes(q.value.toLowerCase())))
+      list.append(el("div", { class: "sig" + (s.cross ? " cross" : ""), onclick: () => addLeaf(s.name) }, el("b", {}, s.name), el("span", { class: "chip", style: "margin-left:6px" }, s.type + (s.unit ? " " + s.unit : "")), s.cross ? el("span", { class: "chip" }, "other machine") : null, el("div", { class: "dim" }, s.doc)));
+  };
+  q.addEventListener("input", dr); dr();
+  R.append(el("div", { style: "margin-top:10px" }, el("button", { class: "danger", onclick: deleteSel }, "Delete transition")));
+}
+function addLeaf(name) {
+  if (!ctree) return;
+  snap();
+  const sg = SIG()[name] || { type: "number" };
+  const g = getAt(focusPath);
+  const grp = g.type === "group" ? g : ctree;
+  grp.kids.push({ type: "leaf", sig: name, op: sg.type === "bool" ? "" : sg.type === "string" ? "==" : ">", val: sg.type === "string" ? "" : 0, neg: false });
+  commitCond(); window.__drawCond && window.__drawCond();
+}
+function condUI(t, path) {
+  if (t.type === "leaf") {
+    const sg = SIG()[t.sig] || { type: "number" }, isBool = sg.type === "bool";
+    const parent = getAt(path.slice(0, -1));
+    const sigSel = el("select", { onchange: (ev) => { snap(); t.sig = ev.target.value; const ns = SIG()[t.sig]; if (ns.type === "bool") { t.op = ""; delete t.val; } else if (!t.op) { t.op = ns.type === "string" ? "==" : ">"; t.val = ns.type === "string" ? "" : 0; } commitCond(); window.__drawCond(); } });
+    if (!SIG()[t.sig]) sigSel.append(el("option", { value: t.sig, selected: true }, t.sig + " (unknown)"));
+    for (const s of IDX.signals) sigSel.append(el("option", { value: s.name, selected: s.name === t.sig }, s.name));
+    const del = el("button", { class: "sm danger", title: "remove", onclick: () => { snap(); parent.kids.splice(path[path.length - 1], 1); commitCond(); window.__drawCond(); } }, "✕");
+    if (isBool) {
+      const tf = el("select", { onchange: (ev) => { snap(); t.neg = ev.target.value === "false"; commitCond(); } }, el("option", { value: "true", selected: !t.neg }, "is true"), el("option", { value: "false", selected: t.neg }, "is false"));
+      return el("div", { class: "leaf bool" }, sigSel, tf, del, el("span"));
+    }
+    const ops = sg.type === "string" ? ["==", "!="] : [">", ">=", "<", "<=", "==", "!="];
+    const opSel = el("select", { onchange: (ev) => { snap(); t.op = ev.target.value; commitCond(); } }, ...ops.map((o) => el("option", { value: o, selected: o === t.op }, o)));
+    const val = el("input", { type: sg.type === "string" ? "text" : "number", step: "any", value: t.val ?? "", onchange: (ev) => { snap(); t.val = sg.type === "string" ? ev.target.value : parseFloat(ev.target.value); commitCond(); } });
+    const neg = el("label", { style: "margin:0;display:flex;align-items:center;gap:2px", title: "negate" }, el("input", { type: "checkbox", checked: t.neg, onchange: (ev) => { snap(); t.neg = ev.target.checked; commitCond(); } }), "NOT");
+    return el("div", { class: "leaf" }, sigSel, opSel, val, neg, del);
+  }
+  const foc = JSON.stringify(path) === JSON.stringify(focusPath);
+  const head = el("div", { class: "gh" },
+    el("select", { onchange: (ev) => { snap(); t.mode = ev.target.value; commitCond(); } }, el("option", { value: "all", selected: t.mode === "all" }, "ALL of"), el("option", { value: "any", selected: t.mode === "any" }, "ANY of")),
+    el("label", { style: "margin:0;display:flex;align-items:center;gap:2px" }, el("input", { type: "checkbox", checked: t.neg, onchange: (ev) => { snap(); t.neg = ev.target.checked; commitCond(); } }), "NOT"),
+    el("button", { class: "sm", onclick: () => { focusPath = path; window.__drawCond(); } }, foc ? "● adding here" : "add here"),
+    el("button", { class: "sm", onclick: () => { snap(); t.kids.push({ type: "group", mode: "any", neg: false, kids: [] }); focusPath = path.concat([t.kids.length - 1]); window.__drawCond(); } }, "+ group"),
+    path.length ? el("button", { class: "sm danger", onclick: () => { snap(); getAt(path.slice(0, -1)).kids.splice(path[path.length - 1], 1); focusPath = []; commitCond(); window.__drawCond(); } }, "✕") : null);
+  const g = el("div", { class: "group" + (foc ? " foc" : "") }, head, ...t.kids.map((k, i) => condUI(k, path.concat([i]))));
+  if (!t.kids.length) g.append(el("div", { class: "dim" }, path.length ? "empty group (ignored)" : "no condition: always true. Click a signal below."));
+  return g;
+}
+
+// ------------------------------------------------------------------ validation
+function problems() {
+  const out = [], S = SIG(), ST = STANCE();
+  for (const key of ["stance", "share"]) {
+    const m = D.spec[KEYS[key]]; if (!m) continue;
+    const L = (s) => `${key}: ${s}`;
+    if (!m.initial || !m.nodes[m.initial]) out.push({ lv: "e", t: L("no valid initial node"), key });
+    for (const [id, nd] of Object.entries(m.nodes)) {
+      if (key === "stance" && IDX.stances.length && !ST[nd.stance]) out.push({ lv: "e", t: L(`node ${id}: stance '${nd.stance}' not found`), key, node: id });
+      if (key === "share" && nd.share == null && !nd.hook) out.push({ lv: "e", t: L(`node ${id}: no share and no hook`), key, node: id });
+      if (key === "share" && nd.hook && !HOOKS[nd.hook]) out.push({ lv: "e", t: L(`node ${id}: unknown hook ${nd.hook}`), key, node: id });
+      if (!m.edges.some((e) => e.from === id) && Object.keys(m.nodes).length > 1) out.push({ lv: "w", t: L(`node ${id} has no exit (stays forever once entered)`), key, node: id });
+    }
+    const chk = (e, list, i) => {
+      if (!m.nodes[e.to]) out.push({ lv: "e", t: L(`${list}[${i + 1}] goes to missing node '${e.to}'`), key, list, i });
+      if (list === "edges" && !m.nodes[e.from]) out.push({ lv: "e", t: L(`${list}[${i + 1}] comes from missing node '${e.from}'`), key, list, i });
+      const walk = (c) => { if (!c) return; if (c.all || c.any) (c.all || c.any).forEach(walk); else if (c.not) walk(c.not); else if (c.sig && !S[c.sig] && IDX.signals.length) out.push({ lv: "e", t: L(`${list}[${i + 1}]: unknown signal '${c.sig}'`), key, list, i }); };
+      walk(e.when);
+      if (!e.when) out.push({ lv: "w", t: L(`${list}[${i + 1}] has no condition (fires immediately)`), key, list, i });
+    };
+    m.edges.forEach((e, i) => chk(e, "edges", i)); m.any_edges.forEach((e, i) => chk(e, "any_edges", i));
+    for (const id of Object.keys(m.nodes)) { const es = m.edges.filter((e) => e.from === id); const seen = {}; for (const e of es) { const p = e.prio || 0; if (seen[p]) out.push({ lv: "w", t: L(`node ${id}: two exits share prio ${p} (the first listed wins)`), key, node: id }); seen[p] = 1; } }
+    if (m.initial && m.nodes[m.initial]) {
+      const seen = new Set([m.initial]), q = [m.initial]; for (const e of m.any_edges) if (!seen.has(e.to)) { seen.add(e.to); q.push(e.to); }
+      while (q.length) { const n = q.pop(); for (const e of m.edges) if (e.from === n && !seen.has(e.to)) { seen.add(e.to); q.push(e.to); } }
+      for (const id of Object.keys(m.nodes)) if (!seen.has(id)) out.push({ lv: "w", t: L(`node ${id} is unreachable`), key, node: id });
+    }
+  }
+  return out;
+}
+function renderProblems(R) {
+  const ps = problems();
+  R.append(el("h3", {}, "Checks"));
+  if (!ps.length) R.append(el("div", { class: "dim", style: "color:var(--green)" }, "No problems found."));
+  for (const p of ps) R.append(el("div", { class: "prob " + p.lv, onclick: () => { if (p.key !== tab) setTab(p.key); if (p.node) select({ kind: "node", id: p.node }); else if (p.list) select({ kind: "edge", list: p.list, i: p.i }); } }, (p.lv === "e" ? "✖ " : "⚠ ") + p.t));
+}
+
+// ------------------------------------------------------------------ files
+async function openFile() {
+  try {
+    if (window.showOpenFilePicker) {
+      const [h] = await showOpenFilePicker({ types: [{ description: "Lua machine", accept: { "text/x-lua": [".lua"] } }] });
+      const f = await h.getFile(); load(await f.text(), f.name, h);
+    } else {
+      const inp = el("input", { type: "file", accept: ".lua", onchange: async () => { const f = inp.files[0]; if (f) load(await f.text(), f.name, null); } }); inp.click();
+    }
+  } catch (e) { if (e.name !== "AbortError") toast("Open failed: " + e.message); }
+}
+function load(text, name, handle) {
+  try {
+    const { header, value } = LuaTable.parseLua(text);
+    if (!value || typeof value !== "object") throw new Error("file does not return a table");
+    snap(); D = { header, spec: value }; fix();
+    if (!D.spec.stance_machine) D.spec.stance_machine = blank().stance_machine;
+    if (!D.spec.share_machine) D.spec.share_machine = blank().share_machine;
+    fileHandle = handle; fileName = name; sel = null; ctree = null; hl = null;
+    layoutMissing(); fitView(); renderAll(); persist(); toast("Opened " + name);
+  } catch (e) { toast("Could not read " + name + ": " + e.message); }
+}
+function layoutMissing() {
+  for (const key of ["stance_machine", "share_machine"]) {
+    const m = D.spec[key]; let i = 0;
+    for (const nd of Object.values(m.nodes)) { if (nd.x == null) { nd.x = 100 + (i % 3) * 300; nd.y = 100 + Math.floor(i / 3) * 150; } i++; }
+  }
+}
+async function save(as) {
+  const text = LuaTable.serializeLua(D.spec, D.header);
+  try {
+    if (window.showSaveFilePicker) {
+      if (as || !fileHandle) fileHandle = await showSaveFilePicker({ suggestedName: (D.spec.name || "machine") + ".lua", types: [{ description: "Lua machine", accept: { "text/x-lua": [".lua"] } }] });
+      const w = await fileHandle.createWritable(); await w.write(text); await w.close();
+      fileName = fileHandle.name; renderFile(); toast("Saved " + fileName + " (put it in machines/ and run deploy)");
+    } else {
+      const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "text/plain" })), download: (D.spec.name || "machine") + ".lua" }); a.click();
+      toast("Downloaded — move it into machines/");
+    }
+  } catch (e) { if (e.name !== "AbortError") toast("Save failed: " + e.message); }
+  persist();
+}
+function renderFile() { $("#fname").textContent = fileName || "(unsaved)"; }
+
+// ------------------------------------------------------------------ replay
+function modal(html, nodes) { const b = $("#mbox"); b.innerHTML = html || ""; if (nodes) b.append(...nodes); $("#modal").style.display = "flex"; }
+$("#modal").addEventListener("mousedown", (ev) => { if (ev.target.id === "modal") { $("#modal").style.display = "none"; } });
+function replay() {
+  const ta = el("textarea", { placeholder: "paste the game log (or just its [FSM] lines)…" });
+  const out = el("div");
+  const go = () => {
+    out.innerHTML = "";
+    const ev = [];
+    for (const ln of ta.value.split("\n")) {
+      const mm = /\[FSM\]\s+(stance|share)\s+(\d+:\d+)\s+(\S+)\s+->\s+(\S+)\s+\|\s+(edge|any_edge)\s+(\d+)\s+\|\s*(.*)/.exec(ln);
+      if (mm) ev.push({ machine: mm[1], t: mm[2], from: mm[3], to: mm[4], list: mm[5] === "edge" ? "edges" : "any_edges", i: +mm[6] - 1, why: mm[7] });
+    }
+    if (!ev.length) { out.append(el("div", { class: "dim" }, "No [FSM] transition rows found. (Rows look like `[FSM] stance 4:01 hold -> raid | edge 1 | …`.)")); return; }
+    out.append(el("div", { class: "dim" }, ev.length + " transitions. Click one to show it on the graph."));
+    for (const e of ev) out.append(el("div", { class: "prob", onclick: () => { if (e.machine !== tab) setTab(e.machine); hl = { node: e.to, list: e.list, i: e.i }; renderCanvas(); $("#modal").style.display = "none"; toast(`${e.t} ${e.from} → ${e.to}`); } }, `${e.t}  [${e.machine}] ${e.from} → ${e.to}   ${e.why}`));
+  };
+  modal("<h3>Replay a game log</h3>", [ta, el("div", { style: "margin:6px 0" }, el("button", { class: "primary", onclick: go }, "Read log"), " ", el("button", { onclick: () => { hl = null; renderCanvas(); } }, "Clear highlight")), out]);
+}
+function help() {
+  modal(`<h3>Machine Editor</h3><div style="line-height:1.55">
+  <p>A <b>machine</b> decides <i>when</i> the bot changes. The <b>stance machine</b> picks the active stance (unit mix + army behaviour); the <b>army-share machine</b> picks how much of income goes to army. Both run once a second in CORE.</p>
+  <p>Drag stances in from the left. Drag from a node's blue dot to another node to make a transition; click the arrow and build its condition from signals with AND / OR / NOT. The machines read each other through signals (<code>stance</code>, <code>share</code> …), so the share can depend on the stance.</p>
+  <p>Files are plain Lua in <code>machines/</code>; CORE loads <code>CFG.MACHINE</code> (<code>candidates/CORE/macro_controller.lua</code>). Run <code>python fsm_index.py</code> after adding stances or signals; <code>python fsm_index.py --check</code> validates machine files. Game logs show transitions as <code>[FSM] stance m:ss a -> b | edge N | values</code>.</p>
+  <p>Keys: Del removes the selection · Ctrl+Z / Ctrl+Y undo / redo · Ctrl+S saves · wheel zooms · drag background pans.</p></div>`);
+}
+
+// ------------------------------------------------------------------ wiring
+function setTab(t) { tab = t; sel = null; ctree = null; hl = null; renderAll(); fitView(); renderCanvas(); persist(); }
+function renderAll() { renderLeft(); renderCanvas(); renderRight(); renderAlways(); renderFile(); }
+$("#tStance").onclick = () => setTab("stance"); $("#tShare").onclick = () => setTab("share");
+$("#lPal").onclick = () => { lmode = "pal"; renderLeft(); }; $("#lRules").onclick = () => { lmode = "rules"; renderLeft(); };
+$("#bNew").onclick = () => { if (!confirm("Start a new empty machine? (Undo can bring the old one back.)")) return; snap(); D = { header: "", spec: blank() }; fileHandle = null; fileName = ""; sel = null; renderAll(); persist(); };
+$("#bOpen").onclick = openFile; $("#bSave").onclick = () => save(false); $("#bSaveAs").onclick = () => save(true);
+$("#bUndo").onclick = doUndo; $("#bRedo").onclick = doRedo; $("#bLayout").onclick = autoLayout;
+$("#bFit").onclick = () => { fitView(); renderCanvas(); };
+$("#bValidate").onclick = () => { select(null); toast(problems().length + " finding(s) — see the right panel"); };
+$("#bReplay").onclick = replay; $("#bHelp").onclick = help;
+
+(function init() {
+  try { const s = JSON.parse(localStorage.getItem("machineEditor") || "null"); if (s && s.D && s.D.spec) { D = s.D; tab = s.tab || "stance"; fileName = s.fileName || ""; fix(); } } catch (e) { /* ignore */ }
+  if (!IDX.stances.length) toast("No machine_index.js — run `python fsm_index.py` in the repo and reload (stance and signal lists are empty)");
+  renderAll(); fitView(); renderCanvas();
+  if (!Object.keys(M().nodes).length) toast("Open machines/core_default.lua to start from CORE's rules");
+})();
+</script>
+</body>
+</html>

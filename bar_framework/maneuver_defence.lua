@@ -45,6 +45,9 @@ M.CFG = {
     BLIP_VALUE     = 60,       -- a radar dot (no unit type known) counts as this much: two dots make a group, one does not
     MIN_UNIT_V     = 50,       -- a contact (or radar dot) worth less than this is not counted at all (typed contacts under 80 are dropped first: scouts)
     MIN_THREAT     = 100,      -- a group worth less than this is ignored
+    SCOUT_V        = 80,       -- typed contacts worth less than this (scouts) are dropped; 0 = keep them (HOME_DEFENCE: every threat gets a unit)
+    MIN_RESPONDERS = 0,        -- >0: every group (however small, even outmatched up to SMALL_V) gets at least this many responders
+    SMALL_V        = 300,      -- an outmatched group worth no more than this still gets MIN_RESPONDERS (it is not "outmatched": a few scouts)
     STAY_S         = 30,       -- a group standing still this long OUTSIDE the ring is no raid: its responders go home (and it is ignored until it moves)
     OUT_EXTRA      = 800,      -- a responder further than R + WATCH + this from every structure is released
     CLOSE          = 500,      -- within this of the group the responders stand in front of it (MOVE, not FIGHT)
@@ -262,11 +265,16 @@ local function Threats(md, frame)
             local v
             if c.defID then
                 if (c.v or 0) > 0 then v = Value(c.defID) end
-                if v and v < 80 then v = nil end                  -- scouts and other cheap units are no threat
+                if v and v < K.SCOUT_V then v = nil end               -- scouts and other cheap units are no threat (unless SCOUT_V is 0)
             elseif K.BLIP_VALUE > 0 then                          -- a radar dot: no unit type, so a flat value; flying ones are not ours to meet
                 local _, by = Spring.GetUnitPosition(id)
                 local flying = by and Spring.GetGroundHeight and by > (Spring.GetGroundHeight(c.x, c.z) or 0) + 60
-                if not flying then v = K.BLIP_VALUE end
+                if not flying then
+                    v = K.BLIP_VALUE
+                    -- o.blipValue (unit_runtime: enemy_intel.BlipValue): the dot's value from the enemy comp seen and its speed
+                    local bv = o.blipValue and o.blipValue(id)
+                    if bv and bv > 0 then v = bv end
+                end
             end
             if v and v >= K.MIN_UNIT_V then items[#items + 1] = { x = c.x, z = c.z, v = v } end
         end
@@ -368,7 +376,7 @@ local function Dispatch(md, frame)
     for _, cl in ipairs(md.clusters) do
         local need = K.NEED_MULT * cl.v
         local sent = sentOn[cl.id] or 0
-        local tooFast = K.MAX_GROUP_SPEED and (cl.speed or 0) > K.MAX_GROUP_SPEED
+        local tooFast = K.MAX_GROUP_SPEED and (cl.speed or 0) > K.MAX_GROUP_SPEED and not (K.MIN_RESPONDERS > 0 and cl.v <= K.SMALL_V)
         if sent < need and not md.ignore[cl.id] and not tooFast then
             local cand = {}
             local floor = math.min(60, 0.7 * (cl.speed or 0))
@@ -385,6 +393,11 @@ local function Dispatch(md, frame)
             local allIn = false
             if sent + avail < need then
                 if cl.inside then allIn = true                 -- in the base and outmatched: everyone goes
+                elseif K.MIN_RESPONDERS > 0 and cl.v <= K.SMALL_V and #cand > 0 then
+                    -- a small group is never ignored: the nearest MIN_RESPONDERS go even if they are worth less than it
+                    local keep = {}
+                    for i = 1, math.min(K.MIN_RESPONDERS, #cand) do keep[i] = cand[i] end
+                    cand, allIn = keep, true
                 else
                     if not md.warned[cl.id] then
                         md.warned[cl.id] = true
@@ -396,7 +409,7 @@ local function Dispatch(md, frame)
             end
             local n, got = 0, 0
             for _, c in ipairs(cand) do
-                if not allIn and sent + got >= need then break end
+                if not allIn and sent + got >= need and not (K.MIN_RESPONDERS > 0 and n < K.MIN_RESPONDERS and sent == 0) then break end
                 md.responding[c.uid] = { state = "out", cid = cl.id, lastSeen = frame, lx = cl.x, lz = cl.z }
                 got, n = got + c.u.v, n + 1
             end

@@ -16,6 +16,17 @@
 -- This module issues no orders: Step returns {[unitID] = claim spec} for the caller to give to ARMY.Claim.
 -- API (also WG.ScoutNet): RequestScout, RequestSector, SacrificeScout, Repeat, CancelRequest, Picture, LastSeenNear,
 -- Want, Step, Observe, SetStructures, OnLost, OnHurt, Stats.  The FIND phase stays in scout_lanes.lua.
+-- CREEP (CFG.CREEP): standing vision that GROWS like zerg creep.  A grid of posts; the creep is the posts our units hold plus the ones
+-- already in our sight (the base, the army, a radar's cover).  A new unit takes a post ADJACENT to the creep, preferring the ones toward the
+-- enemy (and not too far out yet), so the net spreads outward one step at a time -- it never jumps ahead of itself or round the enemy.
+-- Ground RADAR units grow their own wider net as they are built (spacing = CREEP_RADAR_SPACING x radar range); scouts (spacing =
+-- CREEP_SPACING x sight) treat what a held radar post covers as creep already.
+-- PULL BACK: a FRONT point is the enemy's groups (remembered CREEP_FRONT_MEMORY), the enemy base, and every place a creep unit died or met
+-- an enemy; no post may stand on or behind a front (farther out along its bearing, CREEP_FRONT_WIDTH either side), so the creep contracts to
+-- our side.  A loss also pulls that bearing's limit in (CREEP_BACKOFF, creeping back out at CREEP_RECOVER) and the post is skipped a while.
+-- A creep unit with an armed enemy in its vision (+ margin) where it STANDS -- also while walking to a post -- gets an urgent RETREAT claim
+-- (no post hold, no order rate limit) and is kept out of the jobs for CREEP_RETREAT_HOLD.
+-- Posts under a known gun or beside the enemy base are never used.  Scouts left over after the posts still sweep.
 
 local M = {}
 
@@ -51,6 +62,36 @@ M.CFG = {
     DEFAULT_SIGHT     = 400,
     FOE_KEEPOUT       = 2600,    -- no perimeter post this close to the enemy base
     MAP_MARGIN        = 150,
+    -- creep (zerg-style standing vision, see the header)
+    CREEP             = false,
+    CREEP_SPACING     = 1.7,     -- scout post spacing = this x sight radius (1.41 leaves no gap between four posts; more trades gaps for reach)
+    CREEP_RADAR_SPACING = 1.6,   -- radar post spacing = this x radar range
+    CREEP_RADAR_COVER = 0.8,     -- a held radar post covers scout posts within this x its range
+    CREEP_MAX         = 40,      -- most scouts the creep may ask the labs for
+    CREEP_START_INC   = 40,      -- metal/s before the first creep scout; one more per CREEP_INC_PER
+    CREEP_INC_PER     = 8,
+    CREEP_RADAR_MAX   = 8,       -- most radar units the creep may ask for
+    CREEP_RADAR_START_INC = 150,
+    CREEP_RADAR_INC_PER = 100,
+    CREEP_SEED_MARGIN = 1000,    -- everything within this of our outermost structure is creep already (the net grows from there)
+    CREEP_LAYER_W     = 0.6,     -- frontier order = this x distance from our base + distance to the nearest enemy (lower first): 0 = straight
+                                 -- at the enemy, large = fill layer by layer
+    CREEP_FRONT_MEMORY = 5400,   -- an enemy group stays a front point this long after it was last seen (3 min)
+    CREEP_FRONT_MARGIN = 600,    -- no post this close to a front point's distance from our base, or beyond it ...
+    CREEP_FRONT_WIDTH = 1800,    -- ... within this many elmos either side of its bearing
+    CREEP_LOSS_FRONT  = 5400,    -- a creep unit lost here makes this a front point for this long (an enemy met: a third of it)
+    CREEP_FOE_KEEPOUT = 2200,    -- no post this close to the enemy base
+    CREEP_THREAT_PERIOD = 90,    -- frames between known-turret checks of the posts
+    CREEP_BACKOFF     = 900,     -- a loss pulls the limit this far inside where the unit died (hurt: half)
+    CREEP_RECOVER     = 4,       -- elmos per second the limit creeps back out
+    CREEP_FLOOR_MARGIN = 700,    -- the ring never comes in closer than our outermost structure + this
+    CREEP_RADAR_SIGHT = 700,     -- a radar unit's vision when none is built yet
+    CREEP_RADAR_DANGER = 400,    -- an enemy armed unit within a held radar post's vision + this sends the radar unit back
+    CREEP_SCOUT_DANGER = 150,    -- ... and within a held scout post's vision + this sends the scout back
+    CREEP_RETREAT_STEP = 1000,   -- a creep unit with an enemy in its vision backs off this far (away from the enemy, toward home)
+    CREEP_RETREAT_HOLD = 300,    -- ... and is kept out of the jobs this long (it is re-checked where it stands)
+    CREEP_COOLDOWN    = 2700,    -- a post that cost a unit is skipped this long (90 s), doubled per repeated loss
+    CREEP_COOLDOWN_MAX = 21600,
     -- sweep
     SWEEP_FRESH       = 1800,    -- a sector seen within this is not worth a trip
     SWEEP_STALE_CAP   = 5400,
@@ -77,7 +118,7 @@ M.CFG = {
 }
 
 local CMD_MOVE = 10
-local RANK_REQUEST, RANK_SACRIFICE, RANK_WATCH, RANK_PERIM = 1, 2, 3, 4
+local RANK_REQUEST, RANK_SACRIFICE, RANK_WATCH, RANK_PERIM, RANK_CREEP = 1, 2, 3, 4, 5
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -99,6 +140,12 @@ local cx, cz = nil, nil
 local hull, capR = {}, {}
 local lastRecover = 0
 local lastPicture = nil
+local creepSet = { scout = nil, radar = nil }   -- [kind] = { range, spacing, posts, at[i][j], plan = { frontier, held } }
+local frontMem, lossFronts = {}, {}           -- enemy groups remembered for the front line / { x, z, untilFrame }: where creep units were lost
+local retreat = {}                           -- [unitID] = { untilFrame, x, z }: creep units backing off an enemy
+local creepCap = {}                          -- [bearing bin] = farthest distance from our centre creep posts may stand at
+local creepDead = {}                         -- [postKey] = {untilFrame, n}: posts that cost a scout
+local creepThreat, creepThreatAt = {}, -1e9  -- [postKey] = true: a known gun covers it (refreshed every CREEP_THREAT_PERIOD)
 
 function M.Init(opts)
     MM, UQ, EI = opts.MM, opts.UQ, opts.EI
@@ -108,8 +155,10 @@ function M.Init(opts)
     requests, nextId, reqByKey, repeats = {}, 1, {}, {}
     tracked, nextGid, holder, heldBy, sweepOf = {}, 1, {}, {}, {}
     sacNext, lastRecover, lastPicture = 0, 0, nil
+    creepSet, creepDead, creepThreat, creepThreatAt, retreat = { scout = nil, radar = nil }, {}, {}, -1e9, {}
+    frontMem, lossFronts = {}, {}
     cx, cz = nil, nil
-    for b = 1, M.CFG.BINS do hull[b], capR[b] = 0, math.huge end
+    for b = 1, M.CFG.BINS do hull[b], capR[b], creepCap[b] = 0, math.huge, math.huge end
     stats = { lost = 0, hurt = 0, sacLost = 0, sacSent = 0, served = 0, watchers = 0, groups = 0, posts = 0 }
     want = { scouts = M.CFG.BASE_SCOUTS, radars = 0 }
 end
@@ -189,6 +238,7 @@ local function Recover(frame)
     if dt == 0 then return end
     for b = 1, M.CFG.BINS do
         if capR[b] < math.huge then capR[b] = capR[b] + M.CFG.RECOVER * dt / 30 end
+        if creepCap[b] < math.huge then creepCap[b] = creepCap[b] + M.CFG.CREEP_RECOVER * dt / 30 end
     end
 end
 
@@ -205,9 +255,43 @@ local function Cap(x, z, frame)
     end
 end
 
+-- A front point (a loss, an enemy met): no creep post may stand there or behind it for `ttl` frames.
+local function AddFront(x, z, frame, ttl)
+    if not x then return end
+    for _, f in ipairs(lossFronts) do
+        if Dist2(f.x, f.z, x, z) < 300 ^ 2 then f.untilFrame = math.max(f.untilFrame, frame + ttl); return end
+    end
+    lossFronts[#lossFronts + 1] = { x = x, z = z, untilFrame = frame + ttl }
+end
+
+-- The creep limit on this bearing comes in to (x, z)'s distance minus `back` (never inside the base's floor).
+local function CreepCap(x, z, back)
+    if not cx or not x then return end
+    local b = BinOf(x, z)
+    local r = math.sqrt(Dist2(x, z, cx, cz)) - back
+    for d = -1, 1 do
+        local k = (b - 1 + d) % M.CFG.BINS + 1
+        local floor = hull[k] + M.CFG.CREEP_FLOOR_MARGIN
+        creepCap[k] = math.min(creepCap[k], math.max(floor, r))
+    end
+end
+
+-- A creep unit died or was hurt: skip that post for a while (longer each time) and pull the ring on that bearing back.
+local function CreepHurt(key, frame, died, x, z)
+    local d = creepDead[key]
+    local n = (d and d.n or 0) + (died and 1 or 0)
+    local cd = math.min(M.CFG.CREEP_COOLDOWN * 2 ^ math.max(0, n - 1), M.CFG.CREEP_COOLDOWN_MAX)
+    creepDead[key] = { untilFrame = frame + (died and cd or cd / 3), n = n }
+    stats.creepLost = (stats.creepLost or 0) + (died and 1 or 0)
+    CreepCap(x, z, died and M.CFG.CREEP_BACKOFF or M.CFG.CREEP_BACKOFF / 2)
+    AddFront(x, z, frame, died and M.CFG.CREEP_LOSS_FRONT or M.CFG.CREEP_LOSS_FRONT / 3)
+end
+
 function M.OnLost(uid, x, z, frame)
     local key = heldBy[uid]
-    if key and (key:sub(1, 1) == "q") then
+    if key and key:sub(1, 2) == "cr" then
+        CreepHurt(key, frame or 0, true, x, z)      -- creep posts are far out by design: they pull their own limit in, not the perimeter's
+    elseif key and (key:sub(1, 1) == "q") then
         stats.sacLost = stats.sacLost + 1
     else
         stats.lost = stats.lost + 1
@@ -219,11 +303,13 @@ end
 function M.OnHurt(uid, x, z, frame)
     local key = heldBy[uid]
     if key and key:sub(1, 1) == "q" then return end
+    if key and key:sub(1, 2) == "cr" then CreepHurt(key, frame or 0, false, x, z); return end
     stats.hurt = stats.hurt + 1
     if x then Cap(x, z, frame or 0) end
 end
 
 function M.Forget(uid)
+    retreat[uid] = nil
     local key = heldBy[uid]
     if key then holder[key] = nil end
     heldBy[uid] = nil
@@ -274,6 +360,214 @@ local function RingPosts(extra, spacing, maxN)
     end
     table.sort(posts, function(p, q) if p.face ~= q.face then return p.face < q.face end return p.x < q.x end)
     return posts
+end
+
+-- ── Creep ─────────────────────────────────────────────────────────────────────
+-- Standing vision that GROWS like zerg creep: a grid of posts; the creep is the posts our units hold plus the ones already in our
+-- sight (the base, the army, a radar's cover); a new unit takes a post ADJACENT to the creep, preferring the ones toward the enemy,
+-- so the net spreads outward one step at a time and never jumps ahead or round the enemy.  Pull-back: a loss or an enemy in view
+-- adds a FRONT point there; no post may stand on or behind a front (beyond it along its bearing), so the creep contracts to our side.
+
+-- The armed enemy mobile units seen lately (the post check and the unit guard both use this list).
+local function CreepFoes(frame)
+    local foes = {}
+    if EI then
+        for _, rec in pairs(EI.Records()) do
+            if rec.c.armed and rec.c.mobile and frame - rec.frame <= EI.POSITION_FRESH then foes[#foes + 1] = rec end
+        end
+    end
+    return foes
+end
+
+local function CreepHull()
+    local m = 0
+    for b = 1, M.CFG.BINS do if hull[b] > m then m = hull[b] end end
+    return m
+end
+
+-- The post grid for one kind of unit ("scout" | "radar") with this sight / radar range.
+local function BuildGrid(kind, range, probeDef)
+    local c = M.CFG
+    local mx, mz = MM.MapSize()
+    if not mx then return nil end
+    local spacing = math.max(c.MIN_SPACING, (kind == "radar" and c.CREEP_RADAR_SPACING or c.CREEP_SPACING) * range)
+    local nx, nz = math.max(1, math.ceil(mx / spacing)), math.max(1, math.ceil(mz / spacing))
+    local tag = kind == "radar" and "r" or "s"
+    local posts, at = {}, {}
+    for i = 1, nx do
+        at[i] = {}
+        for j = 1, nz do
+            local x, z = Clamp((i - 0.5) * mx / nx, (j - 0.5) * mz / nz)
+            local pass = true
+            if probeDef and Spring.TestMoveOrder then
+                local okc, can = pcall(Spring.TestMoveOrder, probeDef, x, (Spring.GetGroundHeight and Spring.GetGroundHeight(x, z)) or 0, z)
+                if okc and can == false then pass = false end
+            end
+            if pass then
+                local p = { key = "cr" .. tag .. ":g" .. i .. "_" .. j, x = x, z = z, i = i, j = j }
+                posts[#posts + 1] = p
+                at[i][j] = p
+            end
+        end
+    end
+    return { kind = kind, range = range, spacing = spacing, posts = posts, at = at }
+end
+
+-- Where the enemy is, for the front line: the groups seen in the last CREEP_FRONT_MEMORY frames, the places units were lost or an
+-- enemy was met, and the enemy base.
+local function FrontPoints(frame, groups)
+    local c = M.CFG
+    for _, g in ipairs(groups or {}) do
+        if g.id and not g.air and g.value >= c.WATCH_MIN_VALUE then frontMem[g.id] = { x = g.x, z = g.z, seen = g.lastSeen } end
+    end
+    local out = {}
+    for id, f in pairs(frontMem) do
+        if frame - f.seen > c.CREEP_FRONT_MEMORY then frontMem[id] = nil else out[#out + 1] = f end
+    end
+    for i = #lossFronts, 1, -1 do
+        if frame >= lossFronts[i].untilFrame then table.remove(lossFronts, i) else out[#out + 1] = lossFronts[i] end
+    end
+    local fx, fz = MM.Foe()
+    if fx then out[#out + 1] = { x = fx, z = fz } end
+    return out
+end
+
+-- Is (x, z) on or behind a front point, as seen from our centre?  (Farther out than the point less `margin`, on its bearing within
+-- `width` sideways.)
+local function BehindFront(x, z, fronts, ox, oz, margin, width)
+    local px, pz = x - ox, z - oz
+    local rp = math.sqrt(px * px + pz * pz)
+    for _, f in ipairs(fronts) do
+        local fx, fz = f.x - ox, f.z - oz
+        local rf = math.sqrt(fx * fx + fz * fz)
+        if rf > 1 and rp > rf - margin then
+            if (px * fx + pz * fz) / rf > 0 and math.abs(px * fz - pz * fx) / rf <= width then return true end
+        end
+    end
+    return false
+end
+
+-- One kind's creep this pass.  Returns the jobs (posts held now, then the open frontier best first), the open frontier size and the
+-- number of held posts.  covered = { list, r } (scouts: what a held radar post covers is creep already).
+local function CreepPlan(kind, frame, range, perim, groups, probeDef, covered, vision, posOf, fronts)
+    local c = M.CFG
+    local set = creepSet[kind]
+    if not set or math.abs(set.range - range) > 1 then
+        set = BuildGrid(kind, range, probeDef)
+        creepSet[kind] = set
+        creepThreatAt = -1e9
+    end
+    if not set then return {}, 0, 0 end
+    set.vision = vision or set.vision or 0
+    if frame - creepThreatAt >= c.CREEP_THREAT_PERIOD then
+        local prev = creepThreat
+        creepThreatAt, creepThreat = frame, {}
+        if EI then
+            -- a post is unsafe when a known gun covers it or an armed enemy mobile unit seen lately is within its unit's vision + a margin
+            local foes = CreepFoes(frame)
+            for _, s2 in pairs(creepSet) do
+                local dr = (s2.vision or 0) + (s2.kind == "radar" and c.CREEP_RADAR_DANGER or c.CREEP_SCOUT_DANGER)
+                for _, p in ipairs(s2.posts) do
+                    local bad = EI.ThreatAt(frame, p.x, p.z, "ground") > 0
+                    if not bad then
+                        for _, f in ipairs(foes) do
+                            if Dist2(f.x, f.z, p.x, p.z) <= dr * dr then bad = true; break end
+                        end
+                    end
+                    if bad then
+                        creepThreat[p.key] = true
+                        -- a held post that has just turned unsafe: the creep pulls back from there
+                        if holder[p.key] and not prev[p.key] then
+                            CreepCap(p.x, p.z, c.CREEP_BACKOFF / 2)
+                            AddFront(p.x, p.z, frame, c.CREEP_LOSS_FRONT / 3)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local hx, hz = MM.Home()
+    local ox, oz = cx or hx, cz or hz
+    local fx, fz = MM.Foe()
+    local seedR = CreepHull() + c.CREEP_SEED_MARGIN + (kind == "radar" and 0.5 * set.spacing or 0)
+    local arriveR = math.min(0.4 * set.spacing, 500)
+
+    -- eligibility and occupancy: a post is OK to stand on when it is safe, ahead of nothing, inside the loss limit and not already
+    -- covered; it is OCCUPIED (creep) when a unit stands on it, it is in our sight, in the base, or a radar post covers it
+    for _, p in ipairs(set.posts) do
+        local d = creepDead[p.key]
+        local ok = not (d and frame < d.untilFrame) and not creepThreat[p.key]
+        if ok and fx and Dist2(p.x, p.z, fx, fz) < c.CREEP_FOE_KEEPOUT ^ 2 then ok = false end
+        if ok and cx then
+            local cap = creepCap[BinOf(p.x, p.z)]
+            if cap < math.huge and Dist2(p.x, p.z, cx, cz) > (cap + 0.3 * set.spacing) ^ 2 then ok = false end
+        end
+        if ok and BehindFront(p.x, p.z, fronts, ox, oz, c.CREEP_FRONT_MARGIN, c.CREEP_FRONT_WIDTH) then ok = false end
+        local cov = false
+        if covered then
+            for _, q in ipairs(covered.list) do
+                if Dist2(p.x, p.z, q.x, q.z) < covered.r ^ 2 then cov = true; break end
+            end
+        end
+        if cov then ok = false end
+        local who = holder[p.key]
+        local occ = cov
+        if ok and who then
+            local pu = posOf[who]
+            if pu and Dist2(pu[1], pu[2], p.x, p.z) <= arriveR ^ 2 then occ = true end      -- creep only counts once the unit is THERE
+        end
+        if not occ and not who then
+            if Dist2(p.x, p.z, ox, oz) <= seedR ^ 2 then occ = true
+            elseif Spring.IsPosInLos and allyID and Spring.IsPosInLos(p.x, 0, p.z, allyID) then occ = true
+            else
+                for _, q in ipairs(perim) do
+                    if Dist2(p.x, p.z, q.x, q.z) < (c.MIN_SPACING * 0.6) ^ 2 then occ = true; break end
+                end
+            end
+        end
+        p.ok, p.occ = ok, occ
+    end
+
+    -- the frontier: open posts next to the creep; best = toward the enemy, and not too far out yet
+    local targets = {}
+    if fx then targets[1] = { fx, fz } end
+    for _, g in ipairs(groups or {}) do
+        if g.value >= c.WATCH_MIN_VALUE and not g.air then targets[#targets + 1] = { g.x, g.z } end
+    end
+    local held, frontier = {}, {}
+    for _, p in ipairs(set.posts) do
+        if p.ok then
+            if holder[p.key] then
+                held[#held + 1] = p
+            elseif not p.occ then
+                local adj = false
+                for di = -1, 1 do
+                    local col = set.at[p.i + di]
+                    if col then
+                        for dj = -1, 1 do
+                            local q = (di ~= 0 or dj ~= 0) and col[p.j + dj] or nil
+                            if q and q.occ then adj = true; break end
+                        end
+                    end
+                    if adj then break end
+                end
+                if adj then
+                    local best = math.huge
+                    for _, t in ipairs(targets) do best = math.min(best, Dist2(p.x, p.z, t[1], t[2])) end
+                    p.score = c.CREEP_LAYER_W * math.sqrt(Dist2(p.x, p.z, ox, oz)) + (best < math.huge and math.sqrt(best) or 0)
+                    frontier[#frontier + 1] = p
+                end
+            end
+        end
+    end
+    table.sort(frontier, function(a, b) if a.score ~= b.score then return a.score < b.score end return a.key < b.key end)
+    table.sort(held, function(a, b) return a.key < b.key end)
+    local jobs = {}
+    for _, p in ipairs(held) do jobs[#jobs + 1] = p end
+    for _, p in ipairs(frontier) do jobs[#jobs + 1] = p end
+    set.plan = { frontier = frontier, held = held, frame = frame }
+    return jobs, #frontier, #held
 end
 
 -- ── Requests (the API) ────────────────────────────────────────────────────────
@@ -386,6 +680,18 @@ function M.Picture(frame)
     return pic
 end
 
+-- Debug / tests: this pass's creep of one kind ("scout" | "radar"): { frontier = {{key, x, z}, best first}, held = {...} }.
+function M.CreepPlan(kind)
+    local set = creepSet[kind]
+    local out = { frontier = {}, held = {} }
+    for _, p in ipairs(set and set.plan and set.plan.frontier or {}) do out.frontier[#out.frontier + 1] = { key = p.key, x = p.x, z = p.z } end
+    for _, p in ipairs(set and set.plan and set.plan.held or {}) do out.held[#out.held + 1] = { key = p.key, x = p.x, z = p.z } end
+    return out
+end
+
+-- Debug / tests: the creep limit (distance from our centre) on each bearing bin; math.huge = no loss there.
+function M.CreepCaps() return creepCap end
+
 function M.Want() return want end
 function M.Stats() return stats end
 function M.Tracked() return tracked end
@@ -452,6 +758,65 @@ local function StructureCounts()
     return counts
 end
 
+-- Creep units whose own position has an armed enemy within their vision (+ a margin), or a known gun over it, back off at once:
+-- the post they hold is skipped for a while and its bearing pulled in, and they get a RETREAT claim toward home (away from the enemy).
+-- Runs on the UNIT, so it works while the unit is still walking to its post.  Returns { [unitID] = claim spec }.
+local function CreepGuard(frame, pool, sight, posOf)
+    local c = M.CFG
+    local out = {}
+    for uid in pairs(retreat) do if not posOf[uid] then retreat[uid] = nil end end
+    local foes
+    local hx, hz = MM.Home()
+    for _, kind in ipairs({ "scout", "radar" }) do
+        for _, u in ipairs(pool[kind]) do
+            local key = heldBy[u.id]
+            local rt = retreat[u.id]
+            if (key and key:sub(1, 2) == "cr") or rt then
+                foes = foes or CreepFoes(frame)
+                local vis = SightOf(u.id)
+                if vis <= 0 then vis = (kind == "radar") and c.CREEP_RADAR_SIGHT or sight end
+                local dr = vis + (kind == "radar" and c.CREEP_RADAR_DANGER or c.CREEP_SCOUT_DANGER)
+                local near, nd = nil, dr * dr
+                for _, f in ipairs(foes) do
+                    local d = Dist2(f.x, f.z, u.x, u.z)
+                    if d <= nd then near, nd = f, d end
+                end
+                local gun = EI and EI.ThreatAt(frame, u.x, u.z, "ground") > 0
+                if near or gun then
+                    -- away from the enemy, blended with the way home
+                    local ax, az = 0, 0
+                    if near then
+                        ax, az = u.x - near.x, u.z - near.z
+                        local l = math.sqrt(ax * ax + az * az)
+                        if l > 1 then ax, az = ax / l, az / l else ax, az = 0, 0 end
+                    end
+                    local bx, bz = hx - u.x, hz - u.z
+                    local bl = math.sqrt(bx * bx + bz * bz)
+                    if bl > 1 then bx, bz = bx / bl, bz / bl else bx, bz = 0, 0 end
+                    local vx, vz = 0.6 * ax + 0.4 * bx, 0.6 * az + 0.4 * bz
+                    local vl = math.sqrt(vx * vx + vz * vz)
+                    if vl < 0.01 then vx, vz, vl = bx, bz, 1 end
+                    local tx, tz = Clamp(u.x + vx / vl * c.CREEP_RETREAT_STEP, u.z + vz / vl * c.CREEP_RETREAT_STEP)
+                    if near then AddFront(near.x, near.z, frame, c.CREEP_LOSS_FRONT / 3) end
+                    if key and key:sub(1, 2) == "cr" then
+                        CreepHurt(key, frame, false, u.x, u.z)     -- skip that post for a while and pull the bearing in
+                        M.Forget(u.id)
+                        stats.creepRetreats = (stats.creepRetreats or 0) + 1
+                    end
+                    retreat[u.id] = { untilFrame = frame + c.CREEP_RETREAT_HOLD, x = tx, z = tz }
+                    rt = retreat[u.id]
+                end
+                if rt and frame < rt.untilFrame then
+                    out[u.id] = { role = "RETREAT", cmd = CMD_MOVE, x = rt.x, z = rt.z, urgent = true, slot = 3001 }
+                elseif rt then
+                    retreat[u.id] = nil
+                end
+            end
+        end
+    end
+    return out
+end
+
 -- units = { scouts = {ids}, radars = {ids}, hawks = {ids} }; info = { income, hunting, commander = {x, z, frame} }
 -- Returns { [unitID] = { role, cmd, x, z, slot, minHold } }.
 function M.Step(frame, units, info)
@@ -484,6 +849,10 @@ function M.Step(frame, units, info)
     local sight = #sights > 0 and Median(sights) or 0
     if sight <= 0 then sight = c.DEFAULT_SIGHT end
     if radarR <= 0 then radarR = 1500 end
+
+    -- creep units that see an enemy back off first (and take no job this pass)
+    local retreating = {}
+    if c.CREEP then retreating = CreepGuard(frame, pool, sight, posOf) end
 
     -- groups
     local groups = GroupList(frame)
@@ -576,6 +945,31 @@ function M.Step(frame, units, info)
         stats.posts = #posts
         local rposts = RingPosts(c.PERIM_MARGIN + c.PERIM_RADAR_EXTRA, math.max(c.MIN_SPACING, 1.5 * radarR), c.PERIM_RADAR_MAX)
         for i, p in ipairs(rposts) do Job(jobs, "pr" .. i, RANK_PERIM, { "radar", "hawk" }, p.x, p.z, "RADAR", { airSafe = true }) end
+        -- creep: radar units grow the net on the wide radar grid, scouts on the fine grid (skipping what a held radar post covers);
+        -- both take posts ADJACENT to the creep, toward the enemy, never on or behind a front point; only as many units as the income
+        -- allows are asked for
+        if c.CREEP then
+            local inc = info.income or 0
+            local fronts = FrontPoints(frame, groups)
+            local probe = pool.scout[1] and Spring.GetUnitDefID(pool.scout[1].id) or nil
+            local rprobe = pool.radar[1] and Spring.GetUnitDefID(pool.radar[1].id) or nil
+            local rsight = pool.radar[1] and SightOf(pool.radar[1].id) or 0
+            if rsight <= 0 then rsight = c.CREEP_RADAR_SIGHT end
+            local rp, rFront, rHeld = CreepPlan("radar", frame, radarR, posts, groups, rprobe, nil, rsight, posOf, fronts)
+            for _, p in ipairs(rp) do Job(jobs, p.key, RANK_CREEP, { "radar" }, p.x, p.z, "RADAR") end
+            local cover = { list = {}, r = radarR * c.CREEP_RADAR_COVER }
+            for _, p in ipairs(creepSet.radar and creepSet.radar.posts or {}) do
+                if p.ok and p.occ and holder[p.key] then cover.list[#cover.list + 1] = p end
+            end
+            local cp, sFront, sHeld = CreepPlan("scout", frame, sight, posts, groups, probe, cover, sight, posOf, fronts)
+            for _, p in ipairs(cp) do Job(jobs, p.key, RANK_CREEP, { "scout" }, p.x, p.z, "SCOUT") end
+            local gate = math.max(0, math.min(c.CREEP_MAX, math.floor((inc - c.CREEP_START_INC) / c.CREEP_INC_PER) + 1))
+            want.nCreep = math.min(sHeld + sFront, gate)
+            local rgate = math.max(0, math.min(c.CREEP_RADAR_MAX, math.floor((inc - c.CREEP_RADAR_START_INC) / c.CREEP_RADAR_INC_PER) + 1))
+            want.nCreepRadar = math.min(rHeld + rFront, rgate)
+            stats.creepPosts, stats.creepRadarPosts = sFront, rFront
+            stats.fronts = #fronts
+        end
         stats.watchers = nWatchScout + nWatchRadar
         want.nWatchScout, want.nPostScout, want.nPostRadar, want.nWatchRadar = nWatchScout, #posts, #rposts, nWatchRadar
     end
@@ -588,6 +982,7 @@ function M.Step(frame, units, info)
 
     -- 1) holders keep their jobs
     local used = {}
+    for uid in pairs(retreating) do used[uid] = true end
     local jobByKey = {}
     for _, j in ipairs(jobs) do jobByKey[j.key] = j end
     for key, uid in pairs(holder) do
@@ -641,6 +1036,8 @@ function M.Step(frame, units, info)
             if pick then holder[j.key] = pick; heldBy[pick] = j.key; used[pick] = true end
         end
     end
+
+    for uid, spec in pairs(retreating) do claims[uid] = spec end
 
     -- claims for held jobs
     local slotN = 0
@@ -697,8 +1094,10 @@ function M.Step(frame, units, info)
         for _, r in pairs(requests) do if r.kind == "scout" or r.kind == "any" then nReq = nReq + 1 end end
         local demand = nWatchScout + (#groups > 0 and 1 or 0) + (stats.posts or 0) + nReq
         want.scouts = math.max(c.BASE_SCOUTS, math.min(demand, c.BASE_SCOUTS + gate))
+        if c.CREEP and want.nCreep then want.scouts = want.scouts + want.nCreep end
         local rgate = math.max(0, math.min(c.RADAR_MAX, math.floor((inc - c.RADAR_START_INC) / c.RADAR_INC_PER) + 1))
         want.radars = math.min(rgate, nWatchRadar + (want.nPostRadar or 0))
+        if c.CREEP and want.nCreepRadar then want.radars = want.radars + want.nCreepRadar end
     end
     lastPicture = nil
     return claims

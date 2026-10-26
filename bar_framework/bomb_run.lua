@@ -52,6 +52,14 @@ M.CFG = {
     ALL_FIGHTERS  = false,    -- (AIR_TIMING) a launch and a wave out take EVERY fighter as the escort -- home guards and air-raid
                               -- responders too (user 2026-10-25: "when a bombing run goes out all of the fighters should go with it");
                               -- they are released when the wave ends
+    -- Eyes for the bombers (AIR_TIMING, user 2026-10-26: "add a few air scouts into the bombing run and have a few fighters look for
+    -- targets if there are not many enemy fighters ... the scouts and fighters can find the best target for the bombers"):
+    WAVE_SCOUTS_MIN = 0,      -- a launch takes WAVE_SCOUTS_MIN..MAX air scouts (from the scout pool); they fly ahead, one over each of
+    WAVE_SCOUTS_MAX = 0,      -- the top bombing points, so the points are re-picked on fresh intel.  0 = no wave scouts.
+    SCOUT_LEAD      = 600,    -- ...this far past their point, on the far side from home
+    PRE_SCOUTS      = 0,      -- before a launch, this many of those scouts look over the enemy economy when the picture is thin
+    SPOT_FIGHTERS   = 0,      -- before a launch, this many fighters fly over the enemy economy to find targets ...
+    SPOT_AIR_MAX    = 600,    -- ...only while the enemy air we know of is worth less than this (not many enemy fighters)
     RALLY_FIGHTERS = true,    -- false (unit_runtime / AIR_TIMING): between waves the fighters are left to the air wing (hunts, cover);
                               -- a launch still takes every free fighter as the escort
 }
@@ -61,6 +69,7 @@ local CMD_MOVE, CMD_FIGHT, CMD_ATTACK = 10, 16, 20
 
 local MM, UQ, EI, ARMY
 local bombersSet, combat, guards
+local scoutsSet = {}          -- the unit controller's scout pool (air scouts go with the waves)
 local S = nil
 
 local function Alive(uid) return Spring.GetUnitDefID(uid) ~= nil end
@@ -83,6 +92,7 @@ M.NIL_OPTIONS = { "ECO_BONUS", "VALUE_WEIGHT" }   -- options whose default is ni
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     bombersSet, combat, guards = o.bombers, o.combat, o.guards or {}
+    scoutsSet = o.scouts or {}
     BC.Apply("bomb_run", CFG, o.cfg, o.label, M.NIL_OPTIONS)
     S = Fresh()
 end
@@ -97,7 +107,7 @@ local function Free(uid)
     -- BOMBER_WAIT: endgame.Strike parks every bomber behind the base (HOME_GUARD priority) until a commander is seen; a run
     -- (RAID priority) takes them from there.  Without it no bomber was ever free in a CORE game (2026-10-25).
     return role == nil or role == "BOMBRUN" or role == "AIRWING" or role == "LINE" or role == "MUSTER" or role == "HOME_GUARD" or role == "BLOB"
-        or role == "BOMBER_WAIT"
+        or role == "BOMBER_WAIT" or role == "BOMBRUN_EYES"
 end
 
 -- fighters, bombers: arrays of {uid, x, z, hp, v}
@@ -218,11 +228,57 @@ end
 
 local function Release(list)
     for _, u in ipairs(list) do
-        if ARMY.RoleOf(u.uid) == "BOMBRUN" then ARMY.Release(u.uid) end
+        local r = ARMY.RoleOf(u.uid)
+        if r == "BOMBRUN" or r == "BOMBRUN_EYES" then ARMY.Release(u.uid) end
+    end
+end
+
+-- Air scouts free for the wave (the scout pool: unarmed scouting aircraft; scout_net / the scout planner give them up to RAID priority).
+local SCOUT_FROM = { SCOUT = true, SCOUT_CALL = true, BOMBRUN_EYES = true }
+local function AirScouts()
+    local out = {}
+    for uid, defID in pairs(scoutsSet or {}) do
+        if Alive(uid) and UQ.is_air(defID) then
+            local r = ARMY.RoleOf(uid)
+            if r == nil or SCOUT_FROM[r] then
+                local x, _, z = Spring.GetUnitPosition(uid)
+                if x then out[#out + 1] = { uid = uid, x = x, z = z } end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.uid < b.uid end)
+    return out
+end
+
+-- Send a list of eyes (scouts / spotting fighters) over the points, one per point, SCOUT_LEAD past it (away from home).
+local function SendEyes(frame, list, pts)
+    if #list == 0 then return end
+    local hx, hz = MM.Home()
+    for i, u in ipairs(list) do
+        local p = pts and pts[(i - 1) % math.max(#pts, 1) + 1]
+        local x, z
+        if p then
+            local dx, dz = p.x - hx, p.z - hz
+            local d = math.max(1, math.sqrt(dx * dx + dz * dz))
+            x, z = p.x + dx / d * CFG.SCOUT_LEAD, p.z + dz / d * CFG.SCOUT_LEAD
+        else
+            x, z = MM.Foe()
+        end
+        x, z = MM.Clamp(x, z, CFG.MARGIN)
+        ARMY.Claim(ARMY.PRIO.RAID, u.uid, { role = "BOMBRUN_EYES", cmd = CMD_MOVE, x = x, z = z, opts = {} }, frame)
+    end
+end
+function M.ScoutRoom() return S and S.scoutRoom or 0 end
+
+local function ReleaseScouts()
+    if not (S and S.wave and S.wave.scouts) then return end
+    for uid in pairs(S.wave.scouts) do
+        if ARMY.RoleOf(uid) == "BOMBRUN_EYES" then ARMY.Release(uid) end
     end
 end
 
 local function EndWave(frame, why, fighters, bombers)
+    ReleaseScouts()
     Log(frame, "wave %d ends after %ds (%s): %d bombers + %d fighters left", S.waves, math.floor((frame - S.t0) / 30), why,
         #bombers, #fighters)
     S.mode, S.t0, S.lastEnd, S.assign, S.noPts = "return", frame, frame, {}, nil
@@ -292,6 +348,11 @@ function M.Update(frame, plan)
         S.points = pts
         local lead = pts[1]
         for _, f in ipairs(fighters) do Claim(frame, f.uid, CMD_FIGHT, lead.x, lead.z) end
+        if wave.scouts then                                   -- the wave's scouts keep the points in sight
+            local eyes = {}
+            for uid in pairs(wave.scouts) do if Alive(uid) then eyes[#eyes + 1] = { uid = uid } end end
+            SendEyes(frame, eyes, pts)
+        end
         if frame >= (S.nextLog or 0) then
             S.nextLog = frame + 600
             Log(frame, "wave %d: %d bombers on %d points (best (%d,%d) damage %d aa %d), %d fighters | lost B %d F %d | killed %d (value %d)",
@@ -322,7 +383,32 @@ function M.Update(frame, plan)
             end
         end
     else
-        Release(fighters)
+        -- SPOT_FIGHTERS: a few fighters look over the enemy economy while enemy air is weak; the rest stay with the air wing
+        local spot = {}
+        if CFG.SPOT_FIGHTERS > 0 and (EI.AirValue and EI.AirValue(frame) or 0) < CFG.SPOT_AIR_MAX then
+            for i = 1, math.min(CFG.SPOT_FIGHTERS, #fighters) do spot[#spot + 1] = fighters[i] end
+        end
+        local spotSet = {}
+        for _, f in ipairs(spot) do spotSet[f.uid] = true end
+        local rest = {}
+        for _, f in ipairs(fighters) do if not spotSet[f.uid] then rest[#rest + 1] = f end end
+        Release(rest)
+        SendEyes(frame, spot, pts)
+    end
+    -- the wave scouts: how many more the labs should make, and PRE_SCOUTS of them looking ahead while the picture is thin
+    local scouts = AirScouts()
+    S.scoutRoom = (CFG.WAVE_SCOUTS_MAX > 0) and math.max(0, CFG.WAVE_SCOUTS_MAX - #scouts) or 0
+    do
+        local dmgK = 0
+        for _, p in ipairs(pts) do dmgK = dmgK + p.damage end
+        local pre = {}
+        if CFG.PRE_SCOUTS > 0 and dmgK < CFG.MIN_LAUNCH_DAMAGE * 3 then
+            for i = 1, math.min(CFG.PRE_SCOUTS, #scouts) do pre[#pre + 1] = scouts[i] end
+        end
+        SendEyes(frame, pre, pts)
+        for i = #pre + 1, #scouts do
+            if ARMY.RoleOf(scouts[i].uid) == "BOMBRUN_EYES" then ARMY.Release(scouts[i].uid) end
+        end
     end
 
     local need = (S.waves == 0) and CFG.LAUNCH_MIN or CFG.RELAUNCH_MIN
@@ -346,10 +432,23 @@ function M.Update(frame, plan)
         if plan.launch then S.launched = true end
         local members = {}
         for _, b in ipairs(bombers) do members[b.uid] = true end
-        S.mode, S.t0, S.wave = "strike", frame, { startValue = fv + bv, bombers = #bombers, fighters = #fighters, members = members }
+        local waveScouts = nil
+        if CFG.WAVE_SCOUTS_MAX > 0 then
+            local sc = AirScouts()
+            if #sc >= CFG.WAVE_SCOUTS_MIN then
+                waveScouts = {}
+                local take = {}
+                for i = 1, math.min(CFG.WAVE_SCOUTS_MAX, #sc) do waveScouts[sc[i].uid] = true; take[#take + 1] = sc[i] end
+                SendEyes(frame, take, pts)
+            end
+        end
+        S.mode, S.t0, S.wave = "strike", frame, { startValue = fv + bv, bombers = #bombers, fighters = #fighters, members = members,
+                                                  scouts = waveScouts }
         S.nextLog = 0
-        Log(frame, "LAUNCH wave %d%s: %d bombers (%d value) + %d fighters; %d bombing points, best (%d,%d) damage %d aa %d",
-            S.waves, now and " (launch now)" or "", #bombers, bv, #fighters, #pts, pts[1].x, pts[1].z, pts[1].damage, pts[1].aa)
+        local nSc = 0
+        for _ in pairs(waveScouts or {}) do nSc = nSc + 1 end
+        Log(frame, "LAUNCH wave %d%s: %d bombers (%d value) + %d fighters + %d scouts; %d bombing points, best (%d,%d) damage %d aa %d",
+            S.waves, now and " (launch now)" or "", #bombers, bv, #fighters, nSc, #pts, pts[1].x, pts[1].z, pts[1].damage, pts[1].aa)
         for _, f in ipairs(fighters) do Claim(frame, f.uid, CMD_FIGHT, pts[1].x, pts[1].z) end
         local who = Assign(bombers, pts)
         for _, b in ipairs(bombers) do

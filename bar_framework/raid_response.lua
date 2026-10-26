@@ -27,14 +27,16 @@
 --   KEEP_MULT        (nil = off) as raiders die, release responders down to KEEP_MULT x the raid's value (furthest first, one stays)
 --   CHANNEL_VALUE    size the response by the value in the raid's channel (a ground raid does not count air), not its total cost
 --   REASSIGN_STANCE  a responder that stops responding gets its stance behaviours back
+--   HOME_R           (nil = off; preset HOME) ground units answer only intruders within HOME_R of the base and are released once the group (or
+--                    they) are more than HOME_R + HOME_SLACK out: early home guards stay at home and do not chase scouts (user 2026-10-26)
 
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")
 
 local RR = {}
 
 RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIUS = 700, KEEP = 1500,
-           KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false }
-RR.NIL_OPTIONS = { "KEEP_MULT" }
+           KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150 }
+RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R" }
 
 function RR.New(o)
     local C = {}
@@ -315,6 +317,13 @@ function RR.New(o)
         return (g.channel == "air") and (g.air or 0) or (g.gnd or 0)
     end
 
+    -- HOME_R: a ground unit stays inside the radius around the base (air units are not bound)
+    local function OutsideHome(defID, x, z, extra)
+        if not C.HOME_R or not baseX or (UnitDefs[defID] or {}).canFly then return false end
+        local r = C.HOME_R + (extra or 0)
+        return (x - baseX) ^ 2 + (z - baseZ) ^ 2 > r * r
+    end
+
     local function DispatchResponses(frame)
         if not ARMY or not UQ then return end
         nodes, baseX, baseZ, advDir, perpDir = o.line()
@@ -332,6 +341,9 @@ function RR.New(o)
                 local d = (g.x - last.x) ^ 2 + (g.z - last.z) ^ 2
                 if d < bestD then best, bestD = g, d end
             end
+            if best and OutsideHome(combatUnits[uid], best.x, best.z, C.HOME_SLACK) then best = nil end       -- the raid moved out of the home radius
+            local ux0, _, uz0 = spGetUnitPosition(uid)
+            if best and ux0 and OutsideHome(combatUnits[uid], ux0, uz0, 2 * C.HOME_SLACK) then best = nil end   -- the unit itself got too far out
             if not best or not spGetUnitDefID(uid) or role == "RETREAT" then
                 if role == "RESPOND" then ARMY.Release(uid) end
                 responding[uid] = nil
@@ -403,7 +415,7 @@ function RR.New(o)
                 local cands = {}
                 for uid, defID in pairs(combatUnits) do
                     if spGetUnitDefID(uid) and not responding[uid] and not musterPool[uid]
-                       and CanAnswer(defID, g.channel) then
+                       and CanAnswer(defID, g.channel) and not OutsideHome(defID, g.x, g.z, 0) then
                         local role = ARMY.RoleOf(uid)
                         local ok = role == nil or role == "HOME_GUARD"
                         -- LINE_CLICK: only reinforcements (new units and the ones waiting at the stage), home

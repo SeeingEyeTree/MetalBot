@@ -41,6 +41,7 @@ LT.CFG = {
     EARLIEST_FRAME = 10 * 30,     -- the bank test is the real gate; this only waits for the outer con to exist
     CLAIM_WHEN_OPEN = 14,         -- hold the site once the lane has this few open slots (6 lab + 2 nano + spare)
     LOG_EVERY      = 450,
+    LAB_WATCHDOG   = 1800,        -- frames after the air lab job began before a standing lab finishes it (the job callback can be lost)
     GRIDS_OPENING  = 3,           -- grids "opening" at once; all there is while the line is unfinished
     GRIDS_OPENING_MAX = 8,        -- ceiling for the bank / fast triggers once the line is built (a 6:00 log had 13 open)
     GRID_BANK      = 500,
@@ -184,12 +185,23 @@ LT.CFG = {
     VP_DONE_FRAME = 3 * 60 * 30 + 30 * 30,
     VP_MARGIN     = 10 * 30,
     VP_COLS       = 2,
+    -- user 2026-10-26: the vehicle lab keeps its normal timing, but once its frame is placed every nano in reach builds it (NANO.PRIO.VP,
+    -- re-checked each second) and, if an enemy was seen, its first units are VP_FIRST x VP_FIRST_UNIT (ahead of the spine's con).  false = old.
+    VP_RUSH       = true,
+    VP_FIRST      = 2,
+    VP_FIRST_UNIT = ROLES.Get("raider_veh"),
     VP_NAME       = ROLES.Get("lab_t1_veh"),
     SPINE_GAP     = 0,            -- elmos between the line's outer edge and spine cell 1 (in front of the vehicle lab)
     VP_CONS       = 1,            -- ground cons the vehicle lab makes first: they build the spine (no air cons do)
     SPINE_EARLY_CONS = 1,         -- ground cons the spine may have (alive + ordered) until its cell 1 is built
     AIR_CON_AT_BACK = false,      -- true: an air con goes on the END of the air lab's queue, so a defence insert (Shuriken) ahead of it
                                   -- is built first; false: it is inserted ahead of the queue (after the unit in progress)
+    -- GRID_START (user 2026-10-26): a gentler start for the mex grids.  nil = the old start.  { cap = air cons allowed until the first grid's first
+    -- nano stands (2), eco = eco buildings the first grid places first, by need, nearest the air lab's nanos (4), nanos = nanos that follow (1) }.
+    -- No second grid opens until that nano stands, then the usual pace opens the next two; the early air con cap lifts then (not when the
+    -- lab nanos stand).  Pair with FAST_OPEN_CAP to keep the fast-income path from opening many grids at once.
+    GRID_BACKLOG  = nil,          -- number: open a new grid only while the open grids have fewer than this many eco items left (one more trigger next to the income / bank ones); GRID_BACKLOG_GAP frames apart (120)
+    GRID_START    = nil,       -- (wait = frames after the first grid starts at which the cap lifts even without its nano; nil = wait for the nano)
     AIR_CON_CAP_EARLY = 3,        -- air cons allowed (alive + ordered) until the air lab's two nanos stand (or, as a
     AIR_CON_CAP_UNTIL = 0.30,     -- fallback, the first grid is this share built)
     -- CON_HOLD (RAID_BOT): function() -> true while no air lab should make constructors (a ground raid on the base: the air
@@ -473,6 +485,7 @@ end
 local function UpdateWait(T, frame, res)
     local LC = T.LC
     if frame < T.CFG.EARLIEST_FRAME then return end
+    if T.waitUntil and frame < T.waitUntil then return end
     if T.site and not LC.LaneBuilder(T.crew, T.site.lane) then       -- its builder died: give the slots back
         for _, s in ipairs(T.site.slots) do s.state = "free" end
         for _, s in ipairs(T.site.nanos) do s.state = "free" end
@@ -610,7 +623,11 @@ local function UpdateGrids(T, frame, res)
             n = n + 1
             if it.status == "built" or it.status == "skipped" or it.built then done = done + 1 end
         end
-        if st.done or (n > 0 and done / n >= T.CFG.AIR_CON_CAP_UNTIL) then
+        local GS = T.CFG.GRID_START
+        if GS then
+            if st.done or #st.nanoUnitIDs >= (GS.nanos or 1) then LiftAirConCap(T, string.format("the first grid's first nano stands (%d eco before it)", GS.eco or 4))
+            elseif GS.wait and T.firstGridFrame and frame - T.firstGridFrame >= GS.wait then LiftAirConCap(T, string.format("the first grid had %ds and no nano yet", math.floor(GS.wait / 30))) end
+        elseif st.done or (n > 0 and done / n >= T.CFG.AIR_CON_CAP_UNTIL) then
             LiftAirConCap(T, string.format("first grid %d%% built", n > 0 and math.floor(100 * done / n) or 100))
         end
     end
@@ -877,8 +894,10 @@ function LT.OnJobStarted(T, j)
     local x, _, z = Spring.GetUnitPosition(j.unitID)
     if not x then return end
     local n = 0
+    local prio = (j.tag == "vp" and T.CFG.VP_RUSH and NANO.PRIO.VP) or NANO.PRIO.HANDOFF
+    if j.tag == "vp" then T.vpBuildID = j.unitID end
     for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do
-        if NANO.Assist(NANO.PRIO.HANDOFF, nid, j.unitID) then n = n + 1 end
+        if NANO.Assist(prio, nid, j.unitID) then n = n + 1 end
     end
     Spring.Echo(string.format("[LT] %s %s frame up: %d nano(s) assisting", Clock(T.frame), j.tag == "vp" and "vehicle lab" or "air lab", n))
 end
@@ -891,7 +910,9 @@ function LT.OnJobDone(T, j, state)
         if state ~= "done" then
             T.labTries = T.labTries + 1
             Spring.Echo(string.format("[LT] air lab job %s (try %d)", state, T.labTries))
-            T.phase = T.labTries >= 3 and "off" or "wait"
+            -- never "off": a bot with no air lab has no grids and the game is lost.  Try again, waiting longer after each failure.
+            T.phase = "wait"
+            T.waitUntil = T.frame + math.min(T.labTries, 4) * 600
             -- Give the slots back to the line; the next try picks a fresh site.
             for _, s in ipairs(T.site.slots) do s.state = "free" end
             for _, s in ipairs(T.site.nanos) do s.state = "free" end
@@ -909,7 +930,7 @@ function LT.OnJobDone(T, j, state)
         end
         if #T.site.nanos < 2 then Spring.Echo("[LT] only " .. #T.site.nanos .. " open slot(s) for lab nanos") end
         T.labNanosPending = #T.site.nanos
-        if T.labNanosPending == 0 then LiftAirConCap(T, "no lab nanos to wait for") end
+        if T.labNanosPending == 0 and not T.CFG.GRID_START then LiftAirConCap(T, "no lab nanos to wait for") end
         local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
         if T.airConDefID and lx then
             OpenFirstGrid(T, T.frame, lx, lz)
@@ -921,7 +942,7 @@ function LT.OnJobDone(T, j, state)
         Spring.Echo(string.format("[LT] %s lab nano %s", Clock(T.frame), state))
         if state == "done" and j.unitID then T.labNanoIDs[j.unitID] = true end
         T.labNanosPending = math.max(0, (T.labNanosPending or 1) - 1)
-        if T.labNanosPending == 0 then LiftAirConCap(T, "the air lab's nanos are up") end
+        if T.labNanosPending == 0 and not T.CFG.GRID_START then LiftAirConCap(T, "the air lab's nanos are up") end
     elseif j.tag == "vp" then
         if state ~= "done" then
             T.vpTries = T.vpTries + 1
@@ -930,7 +951,12 @@ function LT.OnJobDone(T, j, state)
             ReleaseVpSite(T)
             return
         end
-        T.vpID, T.vpPhase = j.unitID, "done"
+        T.vpID, T.vpPhase, T.vpBuildID = j.unitID, "done", nil
+        local gd = T.CFG.VP_RUSH and T.CFG.VP_FIRST_UNIT and UnitDefNames[T.CFG.VP_FIRST_UNIT]
+        if gd and T.threatFrame then
+            for _ = 1, T.CFG.VP_FIRST do LT.OrderCon(T.WG, j.unitID, gd.id, T.frame, true) end
+            Spring.Echo(string.format("[LT] %s vehicle lab: %d %s first (enemy about)", Clock(T.frame), T.CFG.VP_FIRST, gd.name))
+        end
         Spring.Echo(string.format("[LT] %s VEHICLE LAB finished (%d); %.0fs after it was queued", Clock(T.frame), j.unitID,
             (T.frame - (T.vpFrame or T.frame)) / 30))
         for _, s in ipairs(T.vpSite.nanos) do
@@ -943,6 +969,43 @@ function LT.OnJobDone(T, j, state)
     elseif j.tag == "vpnano" then
         Spring.Echo(string.format("[LT] %s vehicle lab nano %s", Clock(T.frame), state))
     end
+end
+
+-- ── Air-lab watchdog.  Everything after the air lab (the grids, the air cons) waits for the lab job's "done" callback.  In a real
+-- game (2026-10-26) the lab stood and was producing at 4:08 but the callback never came: the phase stayed "lab", 0 grids, for the whole game.
+-- If a finished lab of the air-lab type stands at the site WATCHDOG_FRAMES after the job began, finish the job ourselves. ──
+local function UpdateLabWatchdog(T, frame)
+    if T.phase ~= "lab" or not T.labFrame or not T.site or frame % 60 ~= 0 then return end
+    if frame - T.labFrame < (T.CFG.LAB_WATCHDOG or 1800) then return end
+    local s1 = T.site.slots and T.site.slots[1]
+    if not (s1 and T.labDefID) then return end
+    for _, uid in ipairs(Spring.GetTeamUnitsByDefs(T.teamID, { T.labDefID }) or {}) do
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if x and (x - s1.wx) ^ 2 + (z - s1.wz) ^ 2 <= 400 * 400 and not Spring.GetUnitIsBeingBuilt(uid) then
+            Spring.Echo(string.format("[LT] %s WATCHDOG: the air lab (%d) stands but its job never reported done; finishing the job", Clock(frame), uid))
+            LT.OnJobDone(T, { tag = "lab", unitID = uid }, "done")
+            return
+        end
+    end
+end
+
+-- The macro saw an enemy unit / blip near the base before the vehicle lab stood: queue it at once (VP_RUSH).
+function LT.NoteThreat(T, frame)
+    if T and not T.threatFrame then
+        T.threatFrame = frame
+        Spring.Echo(string.format("[LT] %s enemy about: the vehicle lab will make Incisors first", Clock(frame)))
+    end
+end
+
+-- While the vehicle lab's frame stands (VP_RUSH): nanos that finished after it appeared are put on it too, every 30 frames.
+local function UpdateVpAssist(T, frame)
+    if not (T.CFG.VP_RUSH and T.vpPhase == "lab" and T.vpBuildID and frame % 30 == 0) then return end
+    local NANO = T.BP.NANO
+    local id = T.vpBuildID
+    if not (NANO and Spring.GetUnitDefID(id)) then T.vpBuildID = nil; return end
+    local x, _, z = Spring.GetUnitPosition(id)
+    if not x then return end
+    for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Assist(NANO.PRIO.VP, nid, id) end
 end
 
 -- ── Entry points ─────────────────────────────────────────────────────────────
@@ -977,6 +1040,8 @@ function LT.Update(T, frame, res)
     if T.phase == "wait" then UpdateWait(T, frame, res)
     elseif T.phase == "grids" then UpdateGrids(T, frame, res) end
     UpdateVehicleLab(T, frame, res)
+    UpdateLabWatchdog(T, frame)
+    UpdateVpAssist(T, frame)
     if T.spineOn then T.spineMod.Update(frame, res) end
 end
 
@@ -1065,6 +1130,10 @@ function LT.OnUnitDestroyed(T, unitID, attackerID)
     CB.Remove(T.CB, unitID)
     CB.Forget(T.CB, unitID)
     if unitID == T.airLabID then T.airLabID = nil end
+    if unitID == T.rzLabID then
+        T.rzLabID = nil
+        if T.WG and T.WG.RezLab and T.WG.RezLab.id == unitID then T.WG.RezLab = nil end    -- the other labs make rez bots again
+    end
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID, attackerID) end
 end
 

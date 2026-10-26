@@ -5,12 +5,14 @@
 -- Built the way t2bot_lab.lua builds the T2 bot lab: the site (a 3x2 block of an outer lane's last slots plus nano slots beside it) is
 -- RESERVED at the start, so the line, the decoy labs (line_decoy.lua) and the sink never take it; once income and the clock allow, a lane builder
 -- is given the job (LC.QueueJob).  The finished lab is NOT adopted by the spine or the sink (it is on the line, not a slot or a sink spot): the
--- lab controller's rez floor (lab_rules REZ_* options) fills it with rez bots.
+-- lab controller's rez floor (lab_rules REZ_* options) fills it with rez bots: the finished lab is published as WG.RezLab = { id }, and
+-- lab_rules' "rez-lab" want is then the ONLY thing that orders it (lab.only) -- no scout / floor / radar rule queues anything there.
 -- Part of line_transition (bar_framework/line_transition.lua installs it).  Options read (LT.CFG): REZ_LAB REZ_LAB_INCOME REZ_LAB_FRAME
 -- REZ_LAB_UNIT REZ_LAB_NANOS REZ_LAB_LANES REZ_LAB_URGENT
 
 local M = {}
 local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")
+local CH = VFS.Include("LuaUI/Widgets/bar_framework/wg_channels.lua")
 
 function M.Install(X)
     local LT, Clock = X.LT, X.Clock
@@ -159,6 +161,7 @@ function M.Install(X)
             return
         end
         T.rzLabID, T.rzState = j.unitID, "done"
+        if T.WG then CH.Publish(T.WG, "RezLab", { id = j.unitID }) end    -- lab_rules: that lab makes rez bots and nothing else
         Spring.Echo(string.format("[LT] %s REZ LAB finished (%d); %.0fs after it was queued", Clock(T.frame), j.unitID,
             (T.frame - (T.rzFrame or T.frame)) / 30))
     end

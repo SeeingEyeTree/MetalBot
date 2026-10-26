@@ -16,4 +16,5 @@ end
 
 local UNIT = VFS.Include("LuaUI/Widgets/bar_framework/unit_runtime.lua")
 
+-- Creep scouts (scout_net CREEP) and the rez broker (REZ_BROKER) are unit_runtime defaults, so this stays the plain CORE controller.
 UNIT.Install(widget, WG, {})

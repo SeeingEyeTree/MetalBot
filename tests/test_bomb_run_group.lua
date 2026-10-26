@@ -82,6 +82,34 @@ do
           tostring(ARMY.RoleOf(guard)) .. ")")
 end
 
+-- ── WAVE_SCOUTS: a launch takes 2..5 air scouts over the points; the wave's end releases them; the labs are told how many are missing ──
+do
+    local FINK = UnitDefNames.corfink and UnitDefNames.corfink.id
+    check(FINK ~= nil, "the stub has the Finch (corfink)")
+    local UQ3 = { is_air = function(d) return d == SHAD or d == FINK end, is_dedicated_aa = function() return false end,
+                  is_bomber = function(d) return d == SHAD end }
+    local BR3 = dofile("bar_framework/bomb_run.lua")
+    local bombers3, scouts3 = {}, {}
+    BR3.Init{ MM = MM, UQ = UQ3, EI = EI, ARMY = ARMY, bombers = bombers3, combat = {}, guards = {}, scouts = scouts3,
+              cfg = { WAVE_SCOUTS_MIN = 2, WAVE_SCOUTS_MAX = 5, LAUNCH_MIN = 5, MIN_LAUNCH_DAMAGE = 0, COOLDOWN = 0, RALLY_FIGHTERS = false,
+                      RETURN_FRAMES = 60 } }
+    for i = 1, 5 do local id = S.Spawn("corshad", 0, 1800 + i, 1000, { silent = true }); bombers3[id] = true end
+    local sc = {}
+    for i = 1, 3 do local id = S.Spawn("corfink", 0, 1200 + i, 1000, { silent = true }); scouts3[id] = FINK; sc[#sc + 1] = id end
+    frame = frame + 30; W.frame = frame; ARMY.Sweep(frame); BR3.Update(frame, { bomb = true })
+    check(BR3.Mode() == "strike", "the wave launches")
+    local eyes = 0
+    for _, id in ipairs(sc) do if ARMY.RoleOf(id) == "BOMBRUN_EYES" then eyes = eyes + 1 end end
+    check(eyes == 3, "the 3 air scouts fly with the wave (" .. eyes .. ")")
+    check(BR3.ScoutRoom() == 0 or BR3.ScoutRoom() == 2, "scout room reported")
+    for id in pairs(bombers3) do W.units[id] = nil end
+    for _ = 1, 6 do frame = frame + 30; W.frame = frame; ARMY.Sweep(frame); BR3.Update(frame, { bomb = true }) end
+    local still = 0
+    for _, id in ipairs(sc) do if ARMY.RoleOf(id) == "BOMBRUN_EYES" then still = still + 1 end end
+    check(still == 0, "after the wave the scouts are released (" .. still .. ")")
+    check(BR3.ScoutRoom() == 2, "back at the rally with 3 of 5 scouts: the labs are asked for 2 more (" .. BR3.ScoutRoom() .. ")")
+end
+
 check(#W.errors == 0, "no Lua errors")
 print(string.format("test_bomb_run_group: %d checks, %d failed", checks, failures))
 if failures > 0 then os.exit(1) end

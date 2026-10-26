@@ -42,7 +42,8 @@
 --   log            false: no [LB] announce for this want's orders; or function(defID, lab, frame) for a custom line
 --   onOrder(defID, lab, n, how, frame)    called for each unit this want orders (n = 1.. within one service), before lb.onOrder
 --
--- Fields the bot may set on `lab`: id (required), skip (true: leave the lab alone this tick: leaving, dead).  The broker sets
+-- Fields the bot may set on `lab`: id (required), skip (true: leave the lab alone this tick: leaving, dead), only (a want's name: that
+-- want alone may order this lab -- the rez lab is owned by the "rez-lab" want).  The broker sets
 -- lab.queueLen, lab.empty and lab.nOrdered (orders given in this service so far) before it calls applies/pick.
 --
 -- External orders (the macro asking the air lab for cons, say) go through LB.Order so the grace and pending gates stay true.
@@ -185,6 +186,7 @@ function LB.Service(lb, lab, frame)
     local last = lb.last[id]
     local list = len == 0 and lb.all or lb.busy
     for _, w in ipairs(list) do
+      if not lab.only or lab.only == w.name then      -- lab.only: a lab one want owns outright (the rez lab)
         local grace = w.grace or lb.cfg.ORDER_GRACE
         local fkey = (w.mode == "flush" and len > 0 and w.flushKey) and w.flushKey(lab) or nil
         local flush = fkey ~= nil and lb.flushed[id] ~= fkey
@@ -205,7 +207,7 @@ function LB.Service(lb, lab, frame)
                 if len > 0 and w.mode == "ahead" then
                     -- a busy queue: one insert, then wait for it to start
                     local p = lb.pending[id]
-                    if p and frame - p <= lb.cfg.PENDING_TIMEOUT then return nil end
+                    if p and frame - p <= lb.cfg.PENDING_TIMEOUT and not w.ignorePending then return nil end
                     Give(lb, defID, lab, "ahead", frame)
                     if not w.noPending then lb.pending[id] = frame end
                     Record(lb, w, defID, lab, "ahead", frame, 1)
@@ -229,6 +231,7 @@ function LB.Service(lb, lab, frame)
                 return w.name, first
             end
         end
+      end
     end
     return nil
 end

@@ -52,6 +52,9 @@ LC.LANES = {
     { id = 3, name = "con2",      z =  296, rows = {  240,  176 } },
     { id = 4, name = "con3",      z = -408, rows = { -352, -288 } },
 }LC.CON_LANES = { 2, 3, 4 }
+LC.NANO_CAP = nil        -- { max = n, untilF = frame }: at most n line nanos before that frame (nil = no cap)
+LC.LANE_MAX_K = nil      -- nil = every column
+LC.ESTOR_SLOTS = 0        -- slots at the far end of the commander lane's near row that hold energy storage, not a mex / wind (0 = none)
 
 local ORDER_TIMEOUT = 450
 local MOVE_TIMEOUT  = 600
@@ -164,6 +167,18 @@ function LC.Layout(comX, comZ, mapX, mapZ, starter, rotOverride)
                 L.slots[#L.slots + 1] = s
             end
         end
+        -- LC.LANE_MAX_K = { [lane] = k }: slots of that lane beyond column k are never built (a smaller line: less metal in mex / wind, more in army)
+        for _, sl in ipairs(lane.slots) do
+            local mk = LC.LANE_MAX_K and LC.LANE_MAX_K[def.id]
+            if mk and sl.k > mk and sl.state == "free" then sl.state = "dead" end
+        end
+        -- user 2026-10-26: the last LC.ESTOR_SLOTS slots of the commander lane's near row are reserved for energy storage (corestor)
+        if def.id == 1 and (LC.ESTOR_SLOTS or 0) > 0 then
+            local near = {}
+            for _, s in ipairs(lane.slots) do if s.row == 1 and s.state == "free" then near[#near + 1] = s end end
+            table.sort(near, function(a, b) return a.k < b.k end)
+            for i = math.max(1, #near - LC.ESTOR_SLOTS + 1), #near do near[i].reserve = "estor" end
+        end
         L.lanes[def.id] = lane
     end
     for j = LC.NANO_J[1], LC.NANO_J[2] do
@@ -228,7 +243,9 @@ end
 -- the choke at the commander's spawn, where the commander stands building: the con walked into it and stuck.  So it
 -- goes round the WEST end of the starter instead (clear of the starter mexes, which end at x = -160).
 LC.LANE_ROUTES = {
-    [2] = { { -208, 150 }, { -208, -120 }, { 100, -120 } },
+    -- user 2026-10-26: the old walk went round the west end of the winds (x = -208), a long way.  The commander only blocks the gap right
+    -- at his spawn, so go down the corridor between the starter's mexes / winds (x <= -40) and the bot lab / commander (x >= 8): x = -24.
+    [2] = { { -24, 128 }, { -24, -120 }, { 100, -120 } },
 }
 
 function LC.LaneRoute(L, laneID)
@@ -402,7 +419,9 @@ local function Decide(crew, c, res)
     -- Floor: one nano per SLOTS_PER_NANO finished slots, so there is always build power in range of the line.
     -- Above the floor, nanos follow the utilisation rule (an energy stall means energy is short, not build power).
     local belowFloor = LC.NanoFloorShort(crew)
-    if c.lane.nano and not c.cmdr and (belowFloor or (um < U and ue < U)) then
+    -- LC.NANO_CAP = { max, until }: until that frame the line holds at most `max` nanos (every nano is 230 metal of army not built)
+    local capped = LC.NANO_CAP and crew.frame < (LC.NANO_CAP.untilF or 0) and crew.nNano >= LC.NANO_CAP.max
+    if c.lane.nano and not c.cmdr and not capped and (belowFloor or (um < U and ue < U)) then
         local sp = Nearest(crew.L.nanos, x, z, reach)
         if sp then
             if IssueBuild(crew, c, sp, "nano") then return true end
@@ -411,6 +430,10 @@ local function Decide(crew, c, res)
         end
     end
 
+    if slot and slot.reserve == "estor" then
+        if IssueBuild(crew, c, slot, "estor") then return true end
+        slot.reserve = nil                 -- storage cannot go here: an ordinary slot after all
+    end
     if slot then
         -- Mex or wind: see LC.WantWind.  (Utilisation alone sits at ~0.99 in a stall and never clears 1.0, which is why
         -- the old rule left every slot a mex with the energy bank at 3-4%; WantWind also reads pull vs income and the
@@ -579,6 +602,10 @@ local function Step(crew, c, res)
             if x and (Dist(x, z, wp.wx, wp.wz) <= ROUTE_ARRIVE or crew.frame - c.moveFrame > ROUTE_TIMEOUT) then
                 table.remove(c.route, 1)
                 c.phase = "idle"                 -- next waypoint (or the lane) on the next call
+                if #c.route == 0 then
+                    Spring.Echo(string.format("[LN] %d:%02d con %d finished its walk to lane %d (%ds after it joined)", math.floor(crew.frame / 1800),
+                        math.floor(crew.frame / 30) % 60, c.id, c.lane.id, math.floor((crew.frame - (c.joinFrame or crew.frame)) / 30)))
+                end
             end
             return
         end

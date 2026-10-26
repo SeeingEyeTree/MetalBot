@@ -267,5 +267,26 @@ do
     check(LCd.Rotation(9888, 10384, 12288, 12288) == 1, "default: east half -> rot 1")
 end
 
+
+do   -- LC.ESTOR_SLOTS: the last N slots of the commander lane's near row are reserved for energy storage (default 0 = none)
+    local LCs = VFS.Include("LuaUI/Widgets/bar_framework/line_crew.lua")
+    LCs.ESTOR_SLOTS = 0
+    local L0 = LCs.Layout(2400, 1904, 12288, 12288, nil, 3)
+    local n0 = 0
+    for _, sl in ipairs(L0.slots) do if sl.reserve then n0 = n0 + 1 end end
+    check(n0 == 0, "ESTOR_SLOTS 0: no reserved slot")
+    LCs.ESTOR_SLOTS = 2
+    local L2 = LCs.Layout(2400, 1904, 12288, 12288, nil, 3)
+    local res, maxFree = {}, -1
+    for _, sl in ipairs(L2.lanes[1].slots) do
+        if sl.row == 1 and sl.state == "free" and sl.k > maxFree then maxFree = sl.k end
+        if sl.reserve then res[#res + 1] = sl end
+    end
+    check(#res == 2, "ESTOR_SLOTS 2: two reserved slots (" .. #res .. ")")
+    local allEnd = #res == 2 and res[1].lane == 1 and res[1].row == 1 and res[2].row == 1 and math.max(res[1].k, res[2].k) == maxFree
+    check(allEnd, "the reserved slots are the last of the commander lane's near row")
+    LCs.ESTOR_SLOTS = 0
+end
+
 print(string.format("%d checks, %d failed", checks, failures))
 if failures > 0 then error("test_line_crew: " .. failures .. " failure(s)") end

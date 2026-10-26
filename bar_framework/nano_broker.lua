@@ -33,6 +33,9 @@ local M = {}
 --   CLEAR         retrofits and consolidation: useful, but they can wait.
 --   BALANCE       army/eco allocation is a steady-state preference, not a job.
 M.PRIO = {
+    DEFEND       = 0,     -- an enemy unit in reach (reclaim it) or a con under attack (repair it): beats everything (home_defence.lua)
+    RUSH         = 0.3,   -- spine nanos guarding a lab while it rushes units out (slot_spine RUSH_NANOS): above the energy guard, hand-offs and clears
+    VP           = 0.25,  -- the vehicle lab frame while it is built with an enemy about (line_transition VP_RUSH): every nano in reach, ahead of the energy guard
     ENERGY       = 0.5,   -- energy is stalling: nanos in reach of a fusion job guard its builder (line_transition ENERGY_PRIORITY)
     WIND_RECLAIM = 1,
     HANDOFF      = 2,
@@ -59,6 +62,7 @@ end
 local function Expired(a)
     if a.mode == "park" then return false end   -- a park has no target
     if not Alive(a.target) then return true end
+    if a.keep and not a.keep(a.target) then return true end     -- a "defend" job ends when its own test says so (enemy left reach, con healed)
     -- An assist ends when the thing stops being a nanoframe; the unitID lives on as
     -- the finished building, so "target still exists" is not enough to tell.
     if a.mode == "assist" and not Spring.GetUnitIsBeingBuilt(a.target) then
@@ -90,7 +94,10 @@ local function Claim(nanoID, prio, cmd, target, mode, opts)
     if cur and not Expired(cur) then
         -- Already doing this exact job: leave it alone rather than re-issuing every
         -- tick, which resets the unit's command and loses its progress.
-        if cur.cmd == cmd and cur.target == target then return true end
+        if cur.cmd == cmd and cur.target == target then
+            if prio < cur.prio then cur.prio = prio end          -- the same job asked for again more urgently: it keeps the higher priority
+            return true
+        end
         if cur.prio <= prio then return false end
     end
     SetActive(nanoID, true)
@@ -101,6 +108,22 @@ end
 
 function M.Reclaim(prio, nanoID, target)
     return Claim(nanoID, prio, CMD_RECLAIM, target, "reclaim")
+end
+
+-- Defence jobs (home_defence.lua): like Reclaim / repair, but the job carries `keep(target)`; when it returns false the nano is
+-- stopped (Sweep) and handed back.  Repair of a finished unit is CMD.REPAIR, which Expired would read as an assist, so it has its own mode.
+function M.Defend(nanoID, target, keep, mode)
+    if not Alive(nanoID) or not Alive(target) then return false end
+    local cmd = mode == "repair" and CMD_REPAIR or CMD_RECLAIM
+    local cur = assign[nanoID]
+    if cur and not Expired(cur) then
+        if cur.cmd == cmd and cur.target == target then cur.keep = keep; return true end
+        if cur.prio < M.PRIO.DEFEND or (cur.prio == M.PRIO.DEFEND and cur.mode == "defend-reclaim" and mode == "repair") then return false end
+    end
+    SetActive(nanoID, true)
+    Spring.GiveOrderToUnit(nanoID, cmd, {target}, {})
+    assign[nanoID] = {prio = M.PRIO.DEFEND, cmd = cmd, target = target, mode = mode == "repair" and "defend-repair" or "defend-reclaim", keep = keep}
+    return true
 end
 
 function M.Assist(prio, nanoID, target)
@@ -165,7 +188,12 @@ end
 -- out new work, so freed nanos are available in the same pass.
 function M.Sweep()
     for nanoID, a in pairs(assign) do
-        if not Alive(nanoID) or Expired(a) then assign[nanoID] = nil end
+        if not Alive(nanoID) then assign[nanoID] = nil
+        elseif Expired(a) then
+            -- a defence job whose target is still alive (enemy out of reach, con healed): the engine would leave the nano on the order
+            if a.keep and Alive(a.target) then Spring.GiveOrderToUnit(nanoID, CMD_STOP, {}, {}) end
+            assign[nanoID] = nil
+        end
     end
     for nanoID in pairs(paused) do
         if not Alive(nanoID) then paused[nanoID] = nil end

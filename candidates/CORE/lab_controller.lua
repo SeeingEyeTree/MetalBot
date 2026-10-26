@@ -19,5 +19,8 @@ local LAB = VFS.Include("LuaUI/Widgets/bar_framework/lab_rules.lua")
 LAB.Install(widget, WG, {
     REZ_START_FRAME = 8 * 60 * 30,    -- rez floor (user 2026-10-25): the line's T1 bot lab (REZ_LAB) makes rez bots from 8:00 ...
     REZ_BASE = 4, REZ_MAX = 20,       -- ... keeping at least 4 alive (more with the army, up to 20).  2026-10-25 eco_sim (6 seeds): 3:00 / 8 cost 13% income at 10:00
+    AIR_SCOUTS_EARLY = 3,         -- user 2026-10-26: the first three scouts are air scouts, ahead of everything in any lab that can build one
+    SPINE_CON_FIRST = true,       -- the spine's first ground con goes ahead of the defence picks
+    BUDGET_FREE_BANK = 800,       -- a metal bank over 800 lifts the army budget (labs were idle with a 2k bank)
     SINK = true,    -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
 })

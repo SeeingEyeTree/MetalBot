@@ -53,9 +53,14 @@ M.CFG = {
     MIN_UNIT_SHARE  = 0.02,   -- units under this share do not justify a lab of their own
     ABSORB_SECONDS  = 2.5,    -- a lab takes at most buildTime/this BP, i.e. absorbs metalCost/this metal per second
     LAB_UTIL        = 0.8,    -- fraction of that a lab really sustains
+    NANO_CAP        = nil,    -- { max = n, untilF = frame }: at most n spine nanos before that frame (CORE_6K); nil = sized from the spend
+    RUSH_NANOS      = false,  -- user 2026-10-26: while the labs rush units out every spine nano guards a lab, at NANO.PRIO.RUSH (CORE: true)
+    RUSH_SHARE      = 0.8,    -- ... an army share this high counts as rushing
     CORE_NANOS      = 4,      -- nanos built when a block opens; the rest are released as the spend needs them
     NANO_HEADROOM   = 1.15,   -- nano capacity kept over what the spend absorbs
     BUILD_AHEAD     = 1.0,    -- nanos are sized for this share of income whatever the army share (1 = all of it) ...
+    NANO_UTIL_GATE  = 0,      -- CORE (user 2026-10-26): >0 = build-ahead sizing and every lab beyond the first of its type wait until this share of the
+                              -- standing nanos is building something (smoothed, NanoUtil); 0 = off.  Labs/nanos still follow the army share.
     BUILD_AHEAD_INCOME = 500, -- ... but only from this metal income; below it nanos/labs follow the army share alone, so the
                               -- metal goes to the mex grids (sized for 100% from the first minute they starved the grids)
     NANO_BATCH      = 6,      -- nanos released per tick
@@ -102,6 +107,16 @@ M.CFG = {
     CONS_MIN        = 3,      -- ground cons our labs keep making while a block or lab slot has work ...
     CONS_PER_INCOME = 150,    -- ... plus one per this much metal income, up to CONS_MAX
     CONS_MAX        = 8,
+    -- user 2026-10-26 (slimegirl game: ~5 ground cons far too early): until EARLY_CONS_UNTIL (frame) or EARLY_CONS_LABS labs stand, the spine keeps at most
+    -- EARLY_CONS ground cons (one is enough to place the nanos and the labs).  0 = off.
+    EARLY_CONS      = 0,
+    EARLY_CONS_LABS = 2,
+    EARLY_CONS_UNTIL = 6 * 60 * 30,
+    -- the first FIRST_VP spine labs are vehicle plants (VP_NAME), and each waits until FIRST_LAB_NANOS spine nanos stand ("two nanos, vp, then two
+    -- more": the other CORE_NANOS are built right after the lab is placed).  0 = off (the stance comp picks the labs).
+    FIRST_VP        = 0,
+    FIRST_VP_NAME   = ROLES.Get("lab_t1_veh"),
+    FIRST_LAB_NANOS = 2,
     EXPECT_UNTIL    = 10800,  -- frames (6:00): the host's own lab (S.expect) is awaited, not duplicated in a slot, until then
     BLOCK_OPEN_FRAC = 0.75,   -- the next block opens once this share of the released nanos stand
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
@@ -300,6 +315,14 @@ function M.SpendCapacity()
     return planned * S.nanoRate, planned, standing, standing * S.nanoRate
 end
 
+-- RUSH_NANOS: the labs are rushing units out (an urgent raid / air raid, or the army share is RUSH_SHARE or more): every spine nano guards a lab
+-- (none parked) at NANO.PRIO.RUSH.  The caller says when (SetRush); a share this high counts by itself.
+function M.SetRush(on) if S then S.rushFlag = on and true or false end end
+local function RushOn()
+    local K = Cfg()
+    if not K.RUSH_NANOS or not S then return false end
+    return S.rushFlag == true or (S.share or 0) >= (K.RUSH_SHARE or 0.8)
+end
 function M.SetShare(s) if S then S.share = math.max(0, math.min(1, s or 0)) end end
 function M.SetNanoFloor(f) if S then S.nanoFloor = f or 0 end end
 -- Absolute build-power floor (metal/s of corgator production the nanos must be able to absorb), whatever the income.
@@ -452,6 +475,11 @@ function M.PoolGive(uid, owner)
     end
     return true
 end
+-- The host asked this lab for cons first (AdoptLab conWant) and it has not made them all yet.
+function M.FirstConWanted(labID)
+    local L = S and S.labs[labID]
+    return L ~= nil and not L.leaving and L.conWant ~= nil and (L.conMade or 0) < L.conWant
+end
 function M.PoolCount()
     local total, idle = 0, 0
     if S then
@@ -490,11 +518,27 @@ local function TakeResident(block, defID)
     return nil
 end
 
+-- EARLY_CONS: true while the spine is capped at EARLY_CONS ground cons (fewer than EARLY_CONS_LABS labs stand, before EARLY_CONS_UNTIL)
+local function EarlyConCap()
+    local K = Cfg()
+    if (K.EARLY_CONS or 0) <= 0 or S.frame >= K.EARLY_CONS_UNTIL then return false end
+    local labs = 0
+    for uid, L in pairs(S.labs) do if Alive(uid) and not L.leaving then labs = labs + 1 end end
+    return labs < K.EARLY_CONS_LABS
+end
+local function AliveGroundCons()
+    local n = 0
+    for uid, st in pairs(S.cons) do
+        if Alive(uid) and st ~= "res" and st ~= "resbusy" then n = n + 1 end
+    end
+    return n
+end
+
 -- A resident con a block still lacks and this lab can make: returns defID, block, role (nil if none).  An order is remembered
 -- (b.conOrdered) for CON_ORDER_TTL so one lab does not order it twice.
 local function ResidentWanted(ld)
     local K = Cfg()
-    if not K.BLOCK_CONS then return nil end
+    if not K.BLOCK_CONS or EarlyConCap() then return nil end
     local opt = BT.Options(ld.id)
     for _, b in ipairs(S.blocks) do
         b.cons, b.conOrdered = b.cons or {}, b.conOrdered or {}
@@ -637,6 +681,32 @@ local function SpareBlocks()
     return n
 end
 
+-- Share of the standing, finished nanos that are building something (parked or idle ones count as unused), smoothed.
+-- nil while no nano stands (no gate then).
+local function NanoUtil()
+    if S.frame - (S.utilFrame or -1e9) < 15 then return S.util end
+    S.utilFrame = S.frame
+    local n, busy = 0, 0
+    for uid in pairs(S.nanos) do
+        if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then
+            n = n + 1
+            if Spring.GetUnitIsBuilding(uid) ~= nil then busy = busy + 1 end
+        end
+    end
+    if n == 0 then S.util = nil; return nil end
+    local u = busy / n
+    S.util = S.util and (S.util * 0.8 + u * 0.2) or u
+    return S.util
+end
+
+-- Is the build-ahead / extra-lab gate open?  (always, when NANO_UTIL_GATE is 0 or no nano stands)
+local function UtilOpen()
+    local g = Cfg().NANO_UTIL_GATE or 0
+    if g <= 0 then return true end
+    local u = NanoUtil()
+    return u == nil or u >= g
+end
+
 local function ThrottleNanos()
     local K = Cfg()
     local allowed, inflight = 0, 0
@@ -649,7 +719,7 @@ local function ThrottleNanos()
         end
     end
     local ready = (not S.env.MexGridsReady) or S.mexReady
-    local ahead = (ready and S.income >= K.BUILD_AHEAD_INCOME) and K.BUILD_AHEAD or 0
+    local ahead = (ready and S.income >= K.BUILD_AHEAD_INCOME and UtilOpen()) and K.BUILD_AHEAD or 0
     local nanoShare = math.max(S.share, S.nanoFloor, ahead)
     local mult = S.freeRun and K.FLOAT_MULT or 1
     local need = math.ceil(K.NANO_HEADROOM * nanoShare * S.income * mult / math.max(S.nanoRate, 1e-6) - 1e-9)
@@ -668,6 +738,9 @@ local function ThrottleNanos()
     if K.SLACK_BLOCKS > 0 and ready and S.income >= K.SLACK_INCOME and (S.bankFrac or 1) >= K.SLACK_MIN_BANK then
         buildNeed = math.max(need, (#S.blocks - S.spare + K.SLACK_BLOCKS) * K.NANOS_PER_BLOCK)
     end
+    -- NANO_CAP = { max, untilF }: until that frame at most `max` spine nanos are built (a nano is 230 metal that is not army)
+    local cap = K.NANO_CAP
+    if cap and S.frame < (cap.untilF or 0) then buildNeed = math.min(buildNeed, cap.max) end
     S.nanoBuildNeed = buildNeed
     if allowed >= buildNeed then return end
     local k = math.min(K.NANO_BATCH, buildNeed - allowed, K.NANO_INFLIGHT - inflight)
@@ -1115,19 +1188,52 @@ local function PlanLabs()
             end
         end
     end
-    local ahead = (((not S.env.MexGridsReady) or S.mexReady) and S.income >= K.BUILD_AHEAD_INCOME) and K.BUILD_AHEAD or 0
+    local ahead = (((not S.env.MexGridsReady) or S.mexReady) and S.income >= K.BUILD_AHEAD_INCOME and UtilOpen()) and K.BUILD_AHEAD or 0
     local spend = S.income * math.max(S.share, S.nanoFloor, ahead) * (S.freeRun and K.FLOAT_MULT or 1)
     local need = M.Counts(S.units, plan, tab, spend)
+    -- FIRST_VP: until that many labs stand (or are building), the missing ones are vehicle plants, whatever the comp says
+    local forcedVp, forcedNeed = false, 0
+    if (K.FIRST_VP or 0) > 0 and S.frame < K.EARLY_CONS_UNTIL then
+        -- labs that physically stand or are being placed (Standing() also counts the expected vehicle plant until EXPECT_UNTIL, even after it
+        -- stands, which would count it twice); the expected plant counts only while no vehicle plant has been adopted yet
+        local vp = K.FIRST_VP_NAME
+        local total, haveVp = 0, 0
+        for uid, L in pairs(S.labs) do
+            if Alive(uid) and not L.leaving then
+                total = total + 1
+                if L.name == vp then haveVp = haveVp + 1 end
+            end
+        end
+        for _, slot in ipairs(S.slots) do
+            if slot.state == "build" then
+                total = total + 1
+                if slot.labName == vp then haveVp = haveVp + 1 end
+            end
+        end
+        if haveVp == 0 and (S.expect[vp] or 0) > 0 then total = total + 1; haveVp = 1 end
+        if total < K.FIRST_VP and UnitDefNames[vp] then
+            forcedNeed = (have[vp] or 0) + (building[vp] or 0) + (K.FIRST_VP - total)
+            need[vp] = math.max(need[vp] or 0, forcedNeed)
+            plan[vp] = plan[vp] or 1
+            if not tab[vp] then tab[vp] = { name = vp, defID = UnitDefNames[vp].id, cost = UnitDefNames[vp].metalCost or 0, units = {} } end
+            forcedVp = true
+        end
+    end
     -- slots are limited: keep the labs with the most comp share first when there are more wanted than places
     local order = {}
     for name in pairs(need) do order[#order + 1] = name end
-    table.sort(order, function(a, b) if plan[a] ~= plan[b] then return plan[a] > plan[b] end return a < b end)
+    local fv = forcedVp and K.FIRST_VP_NAME or nil
+    table.sort(order, function(a, b)
+        if fv and a ~= b and (a == fv or b == fv) then return a == fv end     -- FIRST_VP: the forced plant is placed first
+        if plan[a] ~= plan[b] then return plan[a] > plan[b] end return a < b
+    end)
     local room = #S.slots
     for _, name in ipairs(order) do
         local c = math.min(need[name], math.max(1, room - (#order - 1)))
         need[name] = c
         room = room - c
     end
+    if forcedVp then need[K.FIRST_VP_NAME] = math.max(need[K.FIRST_VP_NAME] or 0, forcedNeed) end    -- the slot-room cap above must not trim the forced plant
     S.plan, S.need = plan, need
 
     -- mark surplus: a standing lab beyond need (or not in the plan at all) has been unneeded since...
@@ -1159,6 +1265,29 @@ local function PlanLabs()
             for _, sl in ipairs(S.slots) do if sl.state == "free" then fr = fr + 1 end end
             Log("wants %d more %s: free slots %d, jobs %d/%d, wide %s, con source %s", missing, name, fr, JobCount(), maxJobs, tostring(IsWide(name)),
                 tostring(HasConSource(name)))
+        end
+        -- FIRST_VP: until the first labs stand, only the vehicle plant is started (the other labs wait for it)
+        if forcedVp and name ~= K.FIRST_VP_NAME then missing = 0 end
+        -- FIRST_VP: the forced plant waits until FIRST_LAB_NANOS spine nanos stand (nanos before the lab), and skips the nano-use gate below
+        local forcedHere = forcedVp and name == K.FIRST_VP_NAME
+        if forcedHere and missing > 0 then
+            local built = 0
+            for uid in pairs(S.nanos) do if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then built = built + 1 end end
+            if built < (K.FIRST_LAB_NANOS or 0) then
+                if S.frame - (S.firstVpLogF or -1e9) >= 900 then
+                    S.firstVpLogF = S.frame
+                    Log("first vehicle plant waits for nanos: %d of %d stand", built, K.FIRST_LAB_NANOS)
+                end
+                missing = 0
+            end
+        end
+        -- NANO_UTIL_GATE: a lab beyond the first of its type waits while the standing nanos are mostly idle
+        if not forcedHere and missing > 0 and (have[name] or 0) + (building[name] or 0) > 0 and not UtilOpen() then
+            if S.frame - (S.utilLogF or -1e9) >= 1800 then
+                S.utilLogF = S.frame
+                Log("lab gate: %d more %s wait, nano use %.0f%% < %.0f%%", missing, name, (S.util or 0) * 100, K.NANO_UTIL_GATE * 100)
+            end
+            missing = 0
         end
         while missing > 0 and JobCount() < maxJobs do
             local slot = FreeSlot(IsWide(name))
@@ -1222,6 +1351,19 @@ local function UpdateNanos()
     local labs = NanoLabs()
     local activeWant = math.min(#list, math.max(0, S.nanoNeed))
     if S.floating then activeWant = #list end
+    local rush = RushOn()
+    if rush then activeWant = #list end
+    local gp = rush and NANO.PRIO.RUSH or NANO.PRIO.SPINE
+    if rush ~= S.rushLogged then
+        S.rushLogged = rush
+        if not rush then                                   -- rush over: the guards go back to the normal spine priority
+            for _, uid in ipairs(list) do
+                local a = NANO.Assignment(uid)
+                if a and a.prio == NANO.PRIO.RUSH then a.prio = NANO.PRIO.SPINE end
+            end
+        end
+        Log("%s: %d spine nanos %s", rush and "RUSH on" or "rush over", #list, rush and "all guard a lab at high priority" or "back to the spend-sized set")
+    end
     local nd = NanoDef()
     local reachBase = nd and nd.buildDistance or 128
     local moves = 0
@@ -1252,7 +1394,7 @@ local function UpdateNanos()
         local x, _, z = Spring.GetUnitPosition(uid)
         if x and moves < K.MOVES_MAX then
             local a = NANO.Assignment(uid)
-            if a and a.prio < NANO.PRIO.SPINE then
+            if a and a.prio < gp then
                 -- a hand-off or reclaim owns it right now
             elseif SwapSite(x, z) then
                 local w = SwapSite(x, z)
@@ -1277,9 +1419,11 @@ local function UpdateNanos()
                         if not bs or score < bs then best, bs = l, score end
                     end
                 end
-                if best and n.guard ~= best.uid then
+                if best and rush and n.guard == best.uid then
+                    NANO.Guard(gp, uid, best.uid)            -- already guarding it: raise the claim to the rush priority
+                elseif best and n.guard ~= best.uid then
                     NANO.Release(uid)
-                    if NANO.Guard(NANO.PRIO.SPINE, uid, best.uid) then
+                    if NANO.Guard(gp, uid, best.uid) then
                         for _, l in ipairs(labs) do if l.uid == n.guard then l.n = l.n - 1 end end
                         n.guard, n.parked, n.assist = best.uid, nil, nil
                         best.n = best.n + 1
@@ -1704,6 +1848,7 @@ function M.NextOrder(labID, labDefID)
             if not Alive(uid) then S.cons[uid] = nil elseif st ~= "res" and st ~= "resbusy" then alive = alive + 1 end
         end
         local target = math.min(Cfg().CONS_MAX, Cfg().CONS_MIN + math.floor(S.income / Cfg().CONS_PER_INCOME))
+        if EarlyConCap() then target = math.min(target, Cfg().EARLY_CONS) end
         if alive + math.max(0, S.conOrders - S.conOut) < target then
             -- the con that can place the most wanted job; else any ground con this lab makes
             local best
@@ -1724,6 +1869,7 @@ function M.NextOrder(labID, labDefID)
     end
     for wanted in pairs(S.conWanted) do
         for _, od in ipairs(BT.ConsMadeBy(ld)) do
+            if EarlyConCap() and AliveGroundCons() + math.max(0, S.conOrders - S.conOut) >= Cfg().EARLY_CONS then break end
             if BT.CanBuild(od.id, wanted) and not S.conPending[od.id] then
                 S.conPending[od.id] = S.frame
                 return od.id

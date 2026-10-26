@@ -31,7 +31,8 @@ function M.Install(X)
         for id in pairs(T.airConsAlive) do
             if Spring.GetUnitDefID(id) then alive = alive + 1 else T.airConsAlive[id] = nil end
         end
-        return alive + T.airConsOrdered >= T.CFG.AIR_CON_CAP_EARLY
+        local cap = (T.CFG.GRID_START and T.CFG.GRID_START.cap) or T.CFG.AIR_CON_CAP_EARLY
+        return alive + T.airConsOrdered >= cap
     end
 
     -- CON_HOLD: true while the bot wants no constructors from its air labs (logged at most every 30 s).

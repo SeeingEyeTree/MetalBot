@@ -50,6 +50,18 @@ M.NONSPECIALIST_AA = 0.35    -- same discount the threat map uses for weapons th
                              -- merely may shoot upward
 M.MOBILE_REACH     = 400     -- a mobile unit threatens its weapon range plus this
 M.STATIC_REACH     = 150     -- ...a turret only its range plus this
+-- Radar dots (2026-10-26, for the user's radar-creep vision: "it would just be radar dots but you could give a dot a value based on the unit
+-- comp that has been seen of the enemy or the speed it moves").  A radar-only contact (no unit type) is kept as a BLIP with its measured
+-- speed.  A ground blip that has moved is worth the count-weighted mean value of the enemy's mobile armed ground types seen so far that
+-- are fast enough to move that fast (max speed >= BLIP_SPEED_FIT x its speed); with no such type, the mean of the whole seen comp; with
+-- nothing seen yet, BLIP_DEFAULT.  A blip that never moved counts 0 (likely a building); one high above the ground is air (not counted).
+-- BLIPS: blips count in ArmyValue(frame, "ground"), so GroundValue, the push / burst ratios and match_enemy see the dots.
+M.BLIPS            = true
+M.BLIP_MEMORY      = 450     -- frames a blip lasts after its last radar sighting
+M.BLIP_DEFAULT     = 150
+M.BLIP_MOVING      = 12      -- elmos/s: a blip that once went faster than this has moved (not a building)
+M.BLIP_SPEED_FIT   = 0.85    -- a seen type fits a blip when its max speed >= this x the blip's speed
+M.BLIP_AIR_HEIGHT  = 60      -- a blip this far above the ground is flying
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -61,6 +73,9 @@ local classes   = {}      -- [defID]  = class table, see Class()
 local lastArmed = -1e9    -- last frame an armed mobile enemy was actually in view
 local commander = nil     -- record of the enemy commander, if ever seen
 local firsts    = {}      -- once-only events: air, t2, airlab, t2airlab
+local blips     = {}      -- [unitID] = { x, z, frame, speed, moved, air }: radar-only contacts (see BLIPS)
+local comp      = {}      -- [defID]  = { n, value, speed }: enemy mobile armed ground types seen (once per unit), for blip values
+local compSeen  = {}      -- [unitID] = true: already counted in comp
 
 function M.Init(opts)
     UQ, MM   = opts.UQ, opts.MM
@@ -147,11 +162,41 @@ local function Firsts(c, frame)
     if c.airFactory and c.tech >= 2 and not firsts.t2airlab then firsts.t2airlab = frame end
 end
 
-local function Note(uid, defID, x, z, frame)
+local function NoteBlip(uid, x, y, z, frame)
+    local b = blips[uid]
+    local gy = y and Spring.GetGroundHeight and Spring.GetGroundHeight(x, z)
+    local air = (y and gy and y > gy + M.BLIP_AIR_HEIGHT) or false
+    if not b then
+        blips[uid] = { x = x, z = z, frame = frame, speed = 0, moved = false, air = air }
+        return
+    end
+    local dt = frame - b.frame
+    if dt > 0 then
+        local sp = math.sqrt((x - b.x) ^ 2 + (z - b.z) ^ 2) / dt * 30
+        b.speed = (b.speed > 0) and (0.5 * b.speed + 0.5 * sp) or sp
+        if sp >= M.BLIP_MOVING then b.moved = true end
+    end
+    b.x, b.z, b.frame, b.air = x, z, frame, air
+end
+
+local function Note(uid, defID, x, z, frame, y)
     local rec = seen[uid]
     local c = defID and Class(defID)
+    if c then
+        blips[uid] = nil
+        if c.mobile and c.armed and not c.air and not c.scout and not c.commander and not compSeen[uid] then
+            compSeen[uid] = true
+            local d = UnitDefs[defID]
+            local e = comp[defID]
+            if not e then e = { n = 0, value = c.value, speed = (d and d.speed) or 0 }; comp[defID] = e end
+            e.n = e.n + 1
+        end
+    end
     if not rec then
-        if not c then return end          -- an unidentified blip we never saw up close
+        if not c then                     -- an unidentified blip we never saw up close: a radar dot (BLIPS)
+            if M.BLIPS then NoteBlip(uid, x, y, z, frame) end
+            return
+        end
         rec = { uid = uid, defID = defID, c = c, firstFrame = frame }
         seen[uid] = rec
         Firsts(c, frame)
@@ -177,9 +222,9 @@ function M.Scan(frame)
     for i = 1, #all do
         local uid = all[i]
         do
-            local x, _, z = Spring.GetUnitPosition(uid)
+            local x, y, z = Spring.GetUnitPosition(uid)
             if x then
-                Note(uid, Spring.GetUnitDefID(uid), x, z, frame)
+                Note(uid, Spring.GetUnitDefID(uid), x, z, frame, y)
                 visible[uid] = true
             end
         end
@@ -202,10 +247,14 @@ function M.Expire(frame, visible)
         end
     end
     if commander and not seen[commander.uid] then commander = nil end
+    for uid, b in pairs(blips) do
+        if frame - b.frame > M.BLIP_MEMORY then blips[uid] = nil end
+    end
 end
 
 function M.OnDestroyed(unitID)
     seen[unitID] = nil
+    blips[unitID] = nil
     if commander and commander.uid == unitID then commander = nil end
 end
 
@@ -234,8 +283,33 @@ function M.ArmyValue(frame, channel, maxAge)
             v = v + c.value
         end
     end
+    if M.BLIPS and channel ~= "air" then v = v + M.BlipGroundValue(frame) end
     return v
 end
+
+-- What a radar dot is worth (BLIPS above): by the enemy comp seen and the dot's speed.  0 for a dot that never moved, or flies.
+function M.BlipValue(uid)
+    local b = blips[uid]
+    if not b or b.air or not b.moved then return 0 end
+    local fitN, fitV, allN, allV = 0, 0, 0, 0
+    for _, e in pairs(comp) do
+        allN, allV = allN + e.n, allV + e.n * e.value
+        if e.speed >= M.BLIP_SPEED_FIT * b.speed then fitN, fitV = fitN + e.n, fitV + e.n * e.value end
+    end
+    if fitN > 0 then return fitV / fitN end
+    if allN > 0 then return allV / allN end
+    return M.BLIP_DEFAULT
+end
+
+-- The ground value of the radar dots on the map now (fresh blips).
+function M.BlipGroundValue(frame)
+    local v = 0
+    for uid, b in pairs(blips) do
+        if frame - b.frame <= M.BLIP_MEMORY then v = v + M.BlipValue(uid) end
+    end
+    return v
+end
+function M.Blips() return blips end
 
 function M.AirValue(frame)    return M.ArmyValue(frame, "air") end
 function M.GroundValue(frame) return M.ArmyValue(frame, "ground") end
@@ -481,6 +555,15 @@ function M.Facts(frame)
     return f
 end
 
+-- Has the enemy been located yet?  Latches true the first time any enemy unit, lab or the commander is seen (`known` can fall back to 0
+-- after the 5-minute memory runs out).  Strategy hooks use it: spend a fixed share until the enemy is known (user 2026-10-26).
+local located = false
+function M.Located()
+    if located then return true end
+    if next(seen) ~= nil then located = true end
+    return located
+end
+
 -- Plain numbers for other widgets (WG.MetalBot.intel); tables of unit records stay here.
 function M.Summary(frame)
     local labs = M.Labs()
@@ -500,6 +583,7 @@ function M.Summary(frame)
         lastArmed    = lastArmed,
         commanderX   = cx, commanderZ = cz, commanderFrame = cf,
         known        = M.Count(),
+        located      = M.Located(),
         frame        = frame,
         facts        = M.Facts(frame),
     }

@@ -136,11 +136,49 @@ function M.Install(X)
                                       check = function(state) return #state.nanoUnitIDs >= (T.CFG.EARLY_CAPSTONE_NANOS or 4) end }
                     intr = own
                 end
+                -- GRID_START: the first grid places GS.eco eco buildings first (what the economy is short of, by flow like the balance rule), then
+                -- GS.nanos nano(s), before anything else; its items nearest the air lab (its nanos reach them) come first
+                local GS = T.CFG.GRID_START
+                if GS and T.gridsAssigned == 0 and not g.recover then
+                    local own = {}
+                    for _, it in ipairs(intr) do own[#own + 1] = it end
+                    local function EcoBuilt(state)
+                        local n = 0
+                        for _, it in ipairs(state.queue) do
+                            if (it.cls == "metal" or it.cls == "energy") and (it.built or it.status == "built") then n = n + 1 end
+                        end
+                        return n
+                    end
+                    local function NanosBuilt(state) return #state.nanoUnitIDs end
+                    own[#own + 1] = { name = "start_metal", priority = 5, buildType = "metal", noPreempt = true,
+                        check = function(state, res)
+                            if EcoBuilt(state) >= (GS.eco or 4) then return false end
+                            local um, ue = T.BP.Utilization(res); return um >= ue
+                        end }
+                    own[#own + 1] = { name = "start_energy", priority = 5, buildType = "energy", noPreempt = true,
+                        check = function(state, res)
+                            if EcoBuilt(state) >= (GS.eco or 4) then return false end
+                            local um, ue = T.BP.Utilization(res); return ue > um
+                        end }
+                    own[#own + 1] = { name = "start_nano", priority = 4.9, buildType = "nano", noPreempt = true,
+                        check = function(state) return EcoBuilt(state) >= (GS.eco or 4) and NanosBuilt(state) < (GS.nanos or 1) end }
+                    intr = own
+                end
                 local st = T.BP.New(T.gridBP, conID, g.anchorX, g.anchorZ, g.rotation, intr)
+                if GS and T.gridsAssigned == 0 and not g.recover and T.airLabID then
+                    local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
+                    if lx then
+                        table.sort(st.queue, function(a, b)
+                            local da, db = (a.wx - lx) ^ 2 + (a.wz - lz) ^ 2, (b.wx - lx) ^ 2 + (b.wz - lz) ^ 2
+                            if da ~= db then return da < db end
+                            return (a.idx or 0) < (b.idx or 0)
+                        end)
+                    end
+                end
                 -- The grid's own factory is the last thing built, unless metal piles up unspent.
                 st.deferFactories, st.handoffProgress = true, T.CFG.GRID_HANDOFF
                 if T.CFG.GRID_INTR_MIN_NANOS then st.interruptMinNanos = T.CFG.GRID_INTR_MIN_NANOS end
-                if T.gridsAssigned == 0 then T.firstGrid = st end
+                if T.gridsAssigned == 0 then T.firstGrid = st; T.firstGridFrame = T.frame or frame end
                 if not g.recover then T.gridsAssigned = T.gridsAssigned + 1 end
                 ApplyCapstone(T, st, conID)
                 if T.consolidateOn and T.windDefID then st.skipDefIDs = { [T.windDefID] = true } end
@@ -220,6 +258,8 @@ function M.Install(X)
             Collect(T, sources)
         end
         if #T.gridCands == 0 then return end
+        -- GRID_START: no second grid until the first one's first nano stands (T.firstGridOK; see UpdateGrids)
+        if T.CFG.GRID_START and not T.firstGridOK and (#T.allAnchors + #T.pendingGrids) >= 1 then return end
         local opening = #T.pendingGrids
         for _, gs in ipairs(T.gridStates) do
             if not gs.done and not gs.nanoThresholdFired then opening = opening + 1 end
@@ -249,6 +289,23 @@ function M.Install(X)
             -- early game sinking its metal into slow grids.  Measured 10:00-17:30: 4-10 idle cons, 16-18 cells
             -- waiting, 230-350k banked, one grid per 15 s.
             why = "fast"
+        end
+        -- GRID_BACKLOG = n: as one more trigger, a new grid opens while the open grids still have fewer than n eco items
+        -- (mex / wind) left to place: the next grid is ready as the last ones run out of work, however much metal there is
+        local GB = T.CFG.GRID_BACKLOG
+        if GB and not why and opening >= T.CFG.GRIDS_OPENING then
+            local left = 0
+            for _, gs in ipairs(T.gridStates) do
+                if not gs.done then
+                    for _, it in ipairs(gs.queue) do
+                        if (it.cls == "metal" or it.cls == "energy") and not (it.built or it.status == "built" or it.status == "skipped") then left = left + 1 end
+                    end
+                end
+            end
+            left = left + 20 * #T.pendingGrids
+            if left < GB and idleCon and energyOK and frame - (T.lastBackGrid or -1e9) >= (T.CFG.GRID_BACKLOG_GAP or 120) then
+                why, T.lastBackGrid = string.format("backlog %d < %d", left, GB), frame
+            end
         end
         if not why then return end
         -- GRID_CAP_FRAC: grids counted at GRID_UNITS each must fit under the cap share

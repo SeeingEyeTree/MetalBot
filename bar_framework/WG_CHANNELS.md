@@ -22,6 +22,7 @@ do not see the widgets' `WG` automatically: `game_state.Collect{ MB = WG.MetalBo
 | `WG.LabBroker` | `lab_controller` (RAID_BOT, DRAGON_ECO, STANCE_*) | `con_broker` (`OrderCon`), `line_transition` | `{ LB = lab_broker module, lb = the instance }`: the macro's constructor orders to labs go through the same queue owner |
 | `WG.ConBroker` | `line_transition` | tests, other widgets | the `con_broker` instance: who owns which constructor |
 | `WG.ScoutNet` | CORE `unit_controller` (`scout_net.lua`) | anything that wants a look at the map | the scouting API: `RequestScout(x, z, opts)` / `RequestSector(key, opts)` (answered by the nearest free scout; `opts.kind` = `"scout"`, `"hawk"` or `"any"`, `untilMode` = `"seen"` / `"arrive"` / `"expire"`, `ttl`, `key` to refresh one request), `SacrificeScout(x, z)` (a scout runs straight at the spot and is expected to die), `Repeat(target, every)`, `CancelRequest(id)`, `Picture(frame)` (the enemy groups with value and last sighting, total value, commander, when the base was last seen), `LastSeenNear(x, z, r)`, `Want()`, `Stats()` |
+| `WG.RezLab` | `line_transition` (`rez_lab.lua`, cleared when the lab dies) | `lab_controller` (`lab_rules`) | `{ id }`: the line's T1 bot lab for rez bots. While it stands, the `rez-lab` want is the only thing that orders it (`lab.only`) and no other lab makes rez bots |
 | `WG.StatsTracker` | `metalbot_stats_tracker` | the tracker itself, bots (`DecodeSpeed`) | tracker API |
 
 ## Typed access (2026-10-16)
@@ -56,4 +57,5 @@ Published by `unit_controller.PublishState` unless noted. All are plain values o
 | `airKills`, `airLost` | air value killed / lost over the last 2 min | `lab_controller` (air superiority) |
 | `hunt` | the game is won, bombers hunt the last commander | `lab_controller` |
 | `airAlarm` | bombers heading for the base: `{ frame, n }` | `lab_controller` |
+| `pushMode` | the defend plan's army mode `defend` / `push` / `raid` (unit_runtime `push.mode`) | `signals.lua` (`push_mode`) |
 | `airRaid` | enemy bombers in our half (unit_runtime AIRDEF): `{ frame, n, value, x, z, tx, tz, seenMax, rush, since, defenders }`; `rush` = a large raid | `lab_rules` (AA floor, air-rush flush), `macro_runtime` (AIR_RUSH_SHARE) |

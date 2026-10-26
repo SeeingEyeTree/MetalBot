@@ -28,7 +28,7 @@ M.SCHEMA = {
         foeDist = "number", threats = "table", raid = "table", airLosses = "number", intel = "table",
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
         armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number",
-        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", blobs = "table",
+        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", pushMode = "string", blobs = "table",
     } },
     Strategy    = { kind = "table", open = true },                  -- strategy.lua object: Name / Plan / Assign / Pick / Note
     Spine       = { kind = "table", open = true },                  -- spine / slot_spine API
@@ -47,6 +47,7 @@ M.SCHEMA = {
     StanceChoices = { kind = "table" },                             -- { "raid_open", ... } the stances a person may pick (macro_runtime MANUAL_STANCES; stance_panel.lua shows them)
     StanceRequest = { kind = "string" },                            -- the stance a person picked (stance_panel.lua); the manual switch hook applies it
     ArmyShareRequest = { kind = "number" },                         -- army share 0..1 a person set (stance_panel.lua); nil = the bot's own rule
+    RezLab      = { kind = "table", fields = { id = "number" } },   -- the line's finished rez lab (rez_lab.lua); lab_rules' "rez-lab" want owns its queue
     ScoutNet    = { kind = "table", open = true },                  -- scout_net.lua API: RequestScout / SacrificeScout / Picture ... (CORE)
 }
 

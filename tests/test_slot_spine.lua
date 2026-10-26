@@ -77,7 +77,7 @@ local function FinishAllReleased(st)
 end
 
 -- ── fake nano broker ──────────────────────────────────────────────────────────
-local NANO = { PRIO = { SPINE = 2.5 } }
+local NANO = { PRIO = { SPINE = 2.5, RUSH = 0.3 } }
 local assign = {}
 function NANO.Guard(prio, n, lab) assign[n] = { prio = prio, mode = "guard", target = lab }; return true end
 function NANO.Park(prio, n) assign[n] = { prio = prio, mode = "park" }; return true end
@@ -185,6 +185,26 @@ check(guards > 0 and next(byLab) ~= nil, "built nanos guard a lab (" .. guards .
 local labsGuarded = 0
 for _ in pairs(byLab) do labsGuarded = labsGuarded + 1 end
 check(labsGuarded == 2, "both standing labs get nanos (" .. labsGuarded .. ")")
+
+-- ── RUSH_NANOS: while the labs rush units out, every spine nano guards a lab at the rush priority; afterwards it goes back ──────────
+do
+    SS.CFG.RUSH_NANOS = true
+    local nanosBefore, rushPrio = 0, 0
+    for _, a in pairs(assign) do if a.mode == "guard" then nanosBefore = nanosBefore + 1 end end
+    SS.SetRush(true); for _ = 1, 3 do SS.Update(frame, { metalIncome = income }) end
+    local guarded, atRush, parked = 0, 0, 0
+    for _, a in pairs(assign) do
+        if a.mode == "guard" then guarded = guarded + 1; if a.prio == NANO.PRIO.RUSH then atRush = atRush + 1 end end
+        if a.mode == "park" then parked = parked + 1 end
+    end
+    check(guarded >= nanosBefore and guarded == atRush and parked == 0, string.format("RUSH: every guarding nano is at the rush priority (%d guard, %d at %.1f, %d parked)", guarded, atRush, NANO.PRIO.RUSH, parked))
+    SS.SetRush(false); for _ = 1, 3 do SS.Update(frame, { metalIncome = income }) end
+    local still = 0
+    for _, a in pairs(assign) do if a.prio == NANO.PRIO.RUSH then still = still + 1 end end
+    check(still == 0, "RUSH over: no nano keeps the rush priority (" .. still .. ")")
+    SS.CFG.RUSH_NANOS = false
+end
+
 
 -- ── SWAP: slots full, the comp changes ────────────────────────────────────────
 SS.SetUnits({ { defID = Id("corak"), share = 1 } })     -- infantry: only corlab builds it

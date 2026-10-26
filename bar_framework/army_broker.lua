@@ -176,12 +176,12 @@ function M.Claim(prio, unitID, spec, frame)
         d = duty[unitID]
     end
 
-    local interval = (prio <= M.PRIO.RESPOND)
+    local interval = (prio <= M.PRIO.RESPOND or spec.urgent)
         and M.ORDER_URGENT_INTERVAL or M.ORDER_MIN_INTERVAL
     if CLK then
         local t = CLK.Tier(unitID)
         if t == CLK.HIGH then interval = M.ORDER_URGENT_INTERVAL
-        elseif t == CLK.LOW and prio > M.PRIO.RESPOND then interval = M.ORDER_LOW_INTERVAL end
+        elseif t == CLK.LOW and prio > M.PRIO.RESPOND and not spec.urgent then interval = M.ORDER_LOW_INTERVAL end
     end
     local needs = NeedsOrder(d, spec, unitID, frame)
     local rateOK = (not d.lastOrderFrame) or (frame - d.lastOrderFrame) >= interval
@@ -200,7 +200,7 @@ function M.Claim(prio, unitID, spec, frame)
     if needs and rateOK then
         -- Unit clock: only the urgent duties (retreat, raid, respond) go out at once; the rest wait for the unit's own
         -- frame, which spreads the orders over the second instead of one frame.
-        if CLK and prio > M.PRIO.RESPOND and not CLK.Due(unitID, frame) then
+        if CLK and prio > M.PRIO.RESPOND and not spec.urgent and not CLK.Due(unitID, frame) then
             d.pendingSpec, pending[unitID] = spec, heldSince or frame
         else
             Issue(unitID, spec, frame)

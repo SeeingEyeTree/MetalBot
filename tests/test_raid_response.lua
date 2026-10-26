@@ -102,5 +102,21 @@ do   -- the labs' raid record, air-loss list, Forget
     check(r.icpt.units[42] == nil, "Forget clears a responder's intercept flag")
 end
 
+
+do   -- HOME_R: ground units answer only intruders inside the home radius (base at 0,0; raiders at x=300 are inside 700, x=1500 outside)
+    local r, w = Setup({ HOME_R = 700, HOME_SLACK = 150 })
+    r.Dispatch(0)
+    check(Count(w.responding) >= 1, "HOME_R: an intruder group inside the radius is answered")
+    local r2, w2 = Build({ HOME_R = 700, HOME_SLACK = 150 })
+    for i = 1, 3 do w2.contacts[i] = { x = 300, z = 1500 + 100 * i, frame = 0, defID = gator.id, v = gator.metalCost } end
+    for i = 1, 6 do w2.combat[S.Spawn("corgator", 0, 200 + i, 200)] = gator.id end
+    r2.Dispatch(0)
+    check(#r2.clusters == 1 and Count(w2.responding) == 0, "HOME_R: a group 1500 out is not chased by ground units")
+    -- a responder that is sent, then the group moves out past HOME_R + SLACK: released
+    for k in pairs(w.contacts) do w.contacts[k] = { x = 300, z = 1500, frame = 30, defID = gator.id, v = gator.metalCost } end
+    r.Dispatch(30)
+    check(Count(w.responding) == 0, "HOME_R: responders are released once the group is past HOME_R + SLACK")
+end
+
 print(string.format("raid_response: %d checks, %d failures", checks, failures))
 if failures > 0 then os.exit(1) end

@@ -28,6 +28,14 @@ M.DEFAULTS = {
     CON_BANK_TRIGGER    = 130,       -- metal in the bank
     CON_FALLBACK_FRAMES = 45 * 30,   -- frames after the previous con came out (no other condition needed)
     CON1_RELEASE_WAIT   = 20 * 30,   -- frames con #1 may finish a starter item first
+    EARLY_GRUNTS        = 2,         -- user 2026-10-26: an enemy unit / radar blip seen before EARLY_GRUNTS_BY: the starter bot lab makes this many Grunts first (0 = off)
+    EARLY_GRUNTS_BY     = 4 * 60 * 30,
+    EARLY_GRUNTS_MAX    = 8,         -- user 2026-10-26
+    EARLY_GRUNT_RATIO   = 0.5,       -- Grunts worth this share of the enemy value seen (same as lab_rules' DEFENDER_ENEMY_RATIO)
+    EARLY_BLIP_VALUE    = 50,        -- a radar blip with no unit type counts this much
+    EARLY_GRUNT         = ROLES.Get("grunt"),
+    CMDR_RADAR          = ROLES.Get("radar"), -- user 2026-10-26: the commander builds a radar beside the base once CMDR_RADAR_NANOS nanos stand (early warning); false = none
+    CMDR_RADAR_NANOS    = 2,
     NANOS_HELPED        = 2,         -- the commander helps con #1 while it places nanos, until this many stand
     NANO_U              = 0.8,       -- both resources under this utilisation -> con #1 builds a nano
     WIND_U              = 1.0,       -- wind instead of mex only when energy utilisation is above this
@@ -51,6 +59,10 @@ M.DEFAULTS = {
                                      -- room for Tigers / Demons / eco instead of hundreds of Grunts); false = never
     AIR_RUSH_SHARE      = 1.0,       -- user 2026-10-25: the army share while a large air raid is on (mb.airRaid.rush, unit_runtime): all of income
                                      -- into the AA the labs are rushing; false = no lift
+    LINE_NANO_CAP       = nil,       -- { max = n, untilF = frame }: at most n nanos on the line before that frame (CORE_6K); nil = no cap
+    LANE_MAX_K          = nil,       -- { [lane] = last column built } shrinks the line (CORE_6K); nil = the full line
+    ESTOR_SLOTS         = 0,         -- user 2026-10-26: the last N slots of the commander lane's near row hold energy storage (line_crew LC.ESTOR_SLOTS); 0 = mex / wind as before
+    HOME_DEFENCE        = true,      -- user 2026-10-26: nanos / cons reclaim enemy units in reach and nanos repair cons under attack (home_defence.lua); table = its options; false = off
     MATCH               = true,      -- army share follows the scouted enemy army (humans); false = plain v16_share for bot-vs-bot
     SPINE_CFG           = { FLOAT_MULT = 2.5 },   -- slot_spine overrides: while both banks float, plan nanos/labs for 2.5x income
     RECLAIM_STARTER_LAB = true,      -- reclaim the starter bot lab once the air lab is queued and the cons are out
@@ -85,7 +97,7 @@ M.DEFAULTS = {
 }
 
 -- Options whose default is nil on purpose (a key set to nil is "absent", so these are the only ones not in M.DEFAULTS).
-M.NIL_OPTIONS = { MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
+M.NIL_OPTIONS = { MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
 
 function M.Install(widget, WG, K)
 local CFG = {}
@@ -131,6 +143,7 @@ local NET_SMOOTH  = 0.1
 
 local BP_PLACER, LC, LT, BUILD_ORDER, GRID_BP, UPGRADE_BP, ECELL_BP
 local CB, MS = nil, nil   -- bar_framework/con_broker.lua and metal_sink.lua (CFG.SINK only)
+local HD = nil     -- bar_framework/home_defence.lua
 local DC = nil     -- bar_framework/defense_crew.lua (LINE_CLICK_v16), nil if it failed to load
 local CG = nil    -- bar_framework/commander_guard.lua (LINE_CLICK_v2), nil if it failed to load
 local SPINE, SPINE_BPS = nil, {}     -- bar_framework/slot_spine.lua (STANCE_BOT: nano blocks + lab slots) and its blueprint
@@ -204,6 +217,9 @@ end
 local function StartBuildOrder()
     local cx, _, cz = spGetUnitPosition(commanderID)
     if not cx then return end
+    LC.ESTOR_SLOTS = CFG.ESTOR_SLOTS or 0
+    LC.LANE_MAX_K = CFG.LANE_MAX_K
+    LC.NANO_CAP = CFG.LINE_NANO_CAP
     layout = LC.Layout(cx, cz, (Game and Game.mapSizeX) or 8192, (Game and Game.mapSizeZ) or 8192, BUILD_ORDER)
     startPending = true
 end
@@ -312,6 +328,49 @@ local function FactoryBusy(fid)
     if not (fid and spGetUnitDefID(fid)) then return false end
     local cmds = Spring.GetFactoryCommands and Spring.GetFactoryCommands(fid, -1)
     return cmds ~= nil and #cmds > 0
+end
+
+-- Early defence (user 2026-10-26, from the _Opal_ game): the starter bot lab has Grunts ahead of its queue as soon as an enemy unit or a radar
+-- blip is about, while the lab still stands.  Once per game.
+local function EarlyGrunts(frame)
+    if (CFG.EARLY_GRUNTS or 0) <= 0 or frame > CFG.EARLY_GRUNTS_BY or frame % 30 ~= 0 then return end
+    local mb = WG and WG.MetalBot
+    local intel = mb and mb.intel or {}
+    local seenV = (intel.groundValue or 0) + (intel.airValue or 0)
+    local seen = seenV > 0 or (mb and mb.threats and #mb.threats > 0)
+    local hx, hz = mb and mb.homeX, mb and mb.homeZ
+    if not hx and commanderID then hx, _, hz = spGetUnitPosition(commanderID) end
+    if hx then
+        -- enemy units / radar blips near the base, valued by their cost (a blip with no def counts EARLY_BLIP_VALUE)
+        local ally, scanV = Spring.GetMyAllyTeamID(), 0
+        for _, eid in ipairs(Spring.GetUnitsInCylinder(hx, hz, 2500) or {}) do
+            if Spring.GetUnitAllyTeam(eid) ~= ally then
+                local ed = spGetUnitDefID(eid)
+                scanV = scanV + ((ed and UnitDefs[ed] and UnitDefs[ed].metalCost) or CFG.EARLY_BLIP_VALUE)
+            end
+        end
+        if scanV > 0 then seen = true; seenV = math.max(seenV, scanV) end
+    end
+    if not seen then return end
+    if trans then LT.NoteThreat(trans, frame) end      -- the vehicle lab makes Incisors first once it stands (line_transition VP_RUSH)
+    local lab = TS.botLabID
+    if not (lab and spGetUnitDefID(lab)) or Spring.GetUnitIsBeingBuilt(lab) then return end
+    local gd = UnitDefNames and UnitDefNames[CFG.EARLY_GRUNT]
+    if not gd then return end
+    -- the vehicle plant stands: it makes Incisors from here (lab_rules' defender floor), no more Grunts
+    local vp = trans and trans.vpID
+    if vp and spGetUnitDefID(vp) and not Spring.GetUnitIsBeingBuilt(vp) then return end
+    -- how many Grunts that is worth: EARLY_GRUNT_RATIO x the seen value, at least EARLY_GRUNTS, at most EARLY_GRUNTS_MAX; order the shortfall
+    local cost = math.max(1, gd.metalCost or 55)
+    local want = math.min(CFG.EARLY_GRUNTS_MAX, math.max(CFG.EARLY_GRUNTS, math.ceil(CFG.EARLY_GRUNT_RATIO * seenV / cost)))
+    local alive = #(Spring.GetTeamUnitsByDefs and Spring.GetTeamUnitsByDefs(myTeamID, { gd.id }) or {})
+    local have = alive + math.max(0, (TS.gruntsOrdered or 0) - (TS.gruntsFinished or 0))
+    local need = want - have
+    if need <= 0 then return end
+    for _ = 1, need do LT.OrderCon(WG, lab, gd.id, frame, true) end
+    TS.gruntsOrdered = (TS.gruntsOrdered or 0) + need
+    Spring.Echo(string.format("[LN] %s enemy about (seen value %.0f): %d %s ordered ahead in the starter lab (want %d, have %d)",
+        Clock(frame), seenV, need, CFG.EARLY_GRUNT, want, have))
 end
 
 -- One con at a time.  Reason is logged: the thresholds are what the test is for.
@@ -448,6 +507,27 @@ local function UpdateCommander(frame, res)
     local c = crew.cons[commanderID]
     if not c then return end
     local nanos = BP_PLACER.CountBuilt(distState, "nano") + crew.nNano
+    if CFG.CMDR_RADAR and not TS.cmdRadarQueued and nanos >= CFG.CMDR_RADAR_NANOS and c.phase ~= "help" then
+        local rd = UnitDefNames and UnitDefNames[CFG.CMDR_RADAR]
+        local cx, _, cz = spGetUnitPosition(commanderID)
+        if rd and cx then
+            -- the nearest free spot (rings of 8 around the commander, 120 .. 480 elmos out)
+            local site
+            for r = 120, 480, 90 do
+                for k = 0, 7 do
+                    local a = k * math.pi / 4
+                    local x, z = BP_PLACER.SnapToBuildGrid(rd.id, cx + r * math.cos(a), cz + r * math.sin(a), 0)
+                    if Spring.TestBuildOrder(rd.id, x, Spring.GetGroundHeight(x, z) or 0, z, 0) ~= 0 then site = { x = x, z = z }; break end
+                end
+                if site then break end
+            end
+            if site then
+                LC.QueueJob(crew, commanderID, { name = rd.name, x = site.x, z = site.z, f = 0, tag = "cmdradar" })
+                TS.cmdRadarQueued = true
+                Spring.Echo(string.format("[LN] %s commander builds a %s (nanos %d)", Clock(frame), rd.name, nanos))
+            end
+        end
+    end
     if c.phase == "help" then
         if nanos >= CFG.NANOS_HELPED or not Con1BuildsNano() then
             StopGuard()
@@ -543,12 +623,41 @@ function widget:Initialize()
         local okH, H  = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/strategy_hooks.lua")
         if okT and okG and okH and ST and G and H then
             GS = G
+            -- MACHINE (state machines, machines/<name>.lua, edited in machine_editor.html): its stance machine replaces the switch chain
+            -- below and its share machine replaces the share rule (a machine without one leaves that part as it is).  Falls back to
+            -- the options below when the file does not load or fails its checks.
+            local BUNDLE
+            if CFG.MACHINE then
+                local okF, FSMod = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/fsm.lua")
+                local spec, err
+                if okF and FSMod then spec, err = FSMod.Load(CFG.MACHINE) else err = FSMod end
+                if spec then
+                    local hookFac = { match_enemy = H.match_enemy, v16_share = H.v16_share }
+                    local probs = FSMod.Validate(spec, { hookFactories = hookFac, stanceExists = function(n)
+                        local okL, L = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/stance_loader.lua")
+                        return okL and L and L.Load(n) ~= nil
+                    end })
+                    if #probs == 0 then
+                        BUNDLE = FSMod.Bundle(spec, { hookFactories = hookFac, log = Spring.Echo })
+                        Spring.Echo("[FSM] machine '" .. tostring(CFG.MACHINE) .. "' loaded (" .. (spec.stance_machine and "stance" or "-") .. (spec.share_machine and " + share" or "") .. ")")
+                    else
+                        for _, pr in ipairs(probs) do Spring.Echo("[FSM] ERROR " .. pr) end
+                        Spring.Echo("[FSM] machine '" .. tostring(CFG.MACHINE) .. "' rejected; using the CFG switch options")
+                    end
+                else
+                    Spring.Echo("[FSM] machine '" .. tostring(CFG.MACHINE) .. "' did not load: " .. tostring(err) .. "; using the CFG switch options")
+                end
+            end
             -- RAID_BOT: cap_switch first (once on it holds for the game), then the game plan
             local function StanceList()           -- the stances to load (a stance switched off with false is not loaded)
                 local out = {}
                 for _, n in ipairs({ CFG.STANCE, CFG.HOLD_STANCE, CFG.LATE_STANCE, CFG.INCOME_SWITCH and CFG.INCOME_SWITCH.to or false, CFG.INCOME_SWITCH2 and CFG.INCOME_SWITCH2.to or false,
                                      CFG.BURST_SWITCH and CFG.BURST_SWITCH.to or false, CFG.BURST_SWITCH and CFG.BURST_SWITCH.back or false }) do
                     if n then out[#out + 1] = n end
+                end
+                if BUNDLE and BUNDLE.stanceMachine then
+                    out = {}
+                    for _, n in ipairs(BUNDLE.StanceNames()) do out[#out + 1] = n end
                 end
                 for _, n in ipairs(CFG.MANUAL_STANCES or {}) do          -- MANUAL_STANCES: the buttons' choices (stance_panel.lua)
                     local dup = false
@@ -575,12 +684,13 @@ function widget:Initialize()
                 for k, v in pairs(CFG.PLAN or {}) do po[k] = v end
                 switches[#switches + 1] = H.game_plan(po)
             end
+            if BUNDLE and BUNDLE.stanceMachine then switches = { BUNDLE.switch } end
             if CFG.MANUAL_STANCES then
                 -- a person picks the stance (stance_panel.lua writes WG.StanceRequest); no automatic switch runs
                 switches = { function() local r = WG and WG.StanceRequest; if r and r ~= (STRAT and STRAT:Name()) then return r end end }
             end
             STRAT = ST.New{
-                stances = StanceList(), initial = CFG.STANCE, capFilter = CFG.CAP_T1_FRAC or nil,
+                stances = StanceList(), initial = (BUNDLE and BUNDLE.stanceMachine and BUNDLE.InitialStance()) or CFG.STANCE, capFilter = CFG.CAP_T1_FRAC or nil,
                 -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
                 -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
                 hooks = { army_share = (function(base0)
@@ -600,7 +710,7 @@ function widget:Initialize()
                                   if r then return r end
                                   return base(state, strat)
                               end
-                          end)((CFG.MATCH and H.match_enemy or H.v16_share)(CFG.SHARE)),
+                          end)((BUNDLE and BUNDLE.shareMachine) and BUNDLE.army_share or (CFG.MATCH and H.match_enemy or H.v16_share)(CFG.SHARE)),
                           switch = (#switches > 0) and H.chain_switch(switches) or nil,
                           weights = H.income_mix(CFG.MIX) },
             }
@@ -673,6 +783,17 @@ function widget:Initialize()
             Spring.Echo("[SINK] ERROR loading metal_sink: " .. tostring(rL))
         end
     end
+    if CFG.HOME_DEFENCE then
+        local okH, rH = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/home_defence.lua")
+        local okQ2, rQ2 = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/unit_query.lua")
+        if okH and rH and okQ2 and rQ2 and BP_PLACER and BP_PLACER.NANO then
+            HD = rH
+            HD.Init{ teamID = myTeamID, allyID = Spring.GetMyAllyTeamID and Spring.GetMyAllyTeamID(), NANO = BP_PLACER.NANO, UQ = rQ2,
+                     cfg = type(CFG.HOME_DEFENCE) == "table" and CFG.HOME_DEFENCE or nil }
+        else
+            Spring.Echo("[HD] ERROR loading home_defence: " .. tostring(rH) .. " " .. tostring(rQ2))
+        end
+    end
     -- LINE_CLICK_v16: flak when bombers come, anti-nuke, silos (bar_framework/defense_crew.lua).
     local okD, rD = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/defense_crew.lua")
     if okD and rD then
@@ -718,6 +839,9 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
 end
 
 function widget:UnitFinished(unitID, unitDefID, teamID)
+    if teamID == myTeamID and UnitDefNames and UnitDefNames[CFG.EARLY_GRUNT] and unitDefID == UnitDefNames[CFG.EARLY_GRUNT].id then
+        TS.gruntsFinished = (TS.gruntsFinished or 0) + 1
+    end
     if teamID ~= myTeamID then return end
     if MS then MS.OnFinished(unitID, currentFrame) end
     if IsCommander(unitDefID) and not commanderID then
@@ -779,14 +903,24 @@ function widget:GameFrame(frame)
     local res = ReadResources()
     MaybeQueueNextCon(frame, res)
     ReclaimStarterLab(frame)
+    EarlyGrunts(frame)
     ReleaseCon1(frame)
     if TS.cmdEvading == nil then UpdateCommander(frame, res) end
     if frame % 30 == 0 then UpdateCommanderSafety(frame, res) end
     LC.Update(crew, frame, res)
     CheckFloat(frame, res)
     if BP_PLACER.NANO and BP_PLACER.NANO.Sweep then BP_PLACER.NANO.Sweep() end
+    if HD then
+        local okHD, errHD = pcall(HD.Update, frame)
+        if not okHD then Spring.Echo("[HD] error: " .. tostring(errHD)) end
+    end
     if STRAT and frame % 30 == 0 then
         STRAT:Tick(frame, GS.Collect(frame, { team = myTeamID, Spine = SPINE, MB = WG and WG.MetalBot }))
+        -- the labs are rushing units out (an urgent raid on us, or a large air raid): the spine's nanos go to the labs at high priority
+        if SPINE and SPINE.SetRush then
+            local mb = WG and WG.MetalBot
+            SPINE.SetRush(mb ~= nil and (mb.urgency == "rush" or (mb.airRaid ~= nil and mb.airRaid.rush == true)))
+        end
     end
     LT.Update(trans, frame, res)
     if MS then

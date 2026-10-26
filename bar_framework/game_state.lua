@@ -22,6 +22,7 @@
 --     ecoTargets, blobs              the best 5 eco structures and the enemy ground blobs (only when o.EI is given)
 --     spine,                         spine.Status() when the caller passes o.Spine
 --     airAlarm, raid, airLosses,     WG.MetalBot fields passed through (nil until published): bombers heading for the base,
+--     airRaid, pushMode,            enemy bombers in our half {n, value, rush, ...}; the defend plan's army mode (fsm signals)
 --     hunt, scoutWant,               the labs' raid record, own air units shot down, game-won bomber hunt, and the scout /
 --     ringRadarWant, callScouts      ring-radar / called-Hawk counts the labs keep;  home / foe = {x, z}, foeDist
 --   }
@@ -57,6 +58,7 @@ function M.Collect(frame, o)
     s.armyByDef = o.armyByDef
     s.urgency, s.threats = mb.urgency, mb.threats or {}
     s.intel = mb.intel
+    s.located = (s.intel and s.intel.located) or false      -- the enemy has been seen at least once (enemy_intel.Located)
     s.enemyAir = s.intel and s.intel.airValue or 0
     s.enemyGround = s.intel and s.intel.groundValue or 0
     local tot = s.enemyAir + s.enemyGround
@@ -86,6 +88,7 @@ function M.Collect(frame, o)
     s.foe = mb.foeX and { x = mb.foeX, z = mb.foeZ } or nil
     s.foeDist = mb.foeDist
     s.airKills, s.airLost = mb.airKills, mb.airLost
+    s.airRaid, s.pushMode = mb.airRaid, mb.pushMode      -- bombers in our half (unit_runtime AIRDEF); army mode defend | push | raid
     if s.armyAir then
         s.airSuperior = s.armyAir > 0 and s.armyAir >= 1.5 * s.enemyAir and (s.airKills or 0) >= (s.airLost or 0)
     end

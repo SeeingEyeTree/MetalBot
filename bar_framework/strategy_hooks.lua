@@ -65,10 +65,19 @@ function M.match_enemy(o)
     local lead, aheadFloor = o.lead or 1.5, o.ahead_floor or 0.05   -- army >= lead x target -> share ahead_floor
     local horizon = o.horizon or 60     -- seconds of income that a shortfall may cost before the share is 1
     local start = o.start or 5400
+    local unscouted = o.unscouted        -- user 2026-10-26: a fixed share until the enemy has been seen (state.located == false); nil = off
     local cur, lastLog = 0, -1e9
     return function(state)
         local f = state.frame or 0
         local share = base(state)
+        if unscouted and state.located == false then
+            -- nothing known about the enemy: spend a high share on army (what a human does) rather than the thin expect-curve share, until scouted
+            if o.log ~= false and f - lastLog >= 300 then
+                lastLog = f
+                Spring.Echo(string.format("[SHARE] f=%d enemy not located yet: share %.2f", f, math.max(share, unscouted)))
+            end
+            return math.max(share, unscouted)
+        end
         if f >= start and state.armyValue then
             local known = (state.enemyGround or 0) + (state.enemyAir or 0)
             local enemy = math.max(known, expect * ExpectedEnemy(f / 1800))
@@ -249,7 +258,12 @@ function M.game_plan(o)
     local minLost, badEnds = o.min_lost or 1000, o.bad_ends or 2
     local resumeRatio, resumeFor = o.resume_ratio or 1.4, o.resume_for or 1800
     local minStay = o.min_stay or 2700
-    local cur, since, goodF = raid, -1e9, nil
+    -- o.scout (user 2026-10-26): { low_ratio 0.5, low_abs 2500, high_ratio 0.8, high_abs 4000, min_stay 2700 }.  The plan starts as `hold` (o.start_hold), and
+    -- once the enemy is located (state.located) it is chosen from the scouted enemy army value (ground + air) against ours: weak -> raid, strong -> hold.
+    -- Later the usual rules below (behind with bad trades -> hold, ahead for a while -> raid) still apply.
+    local sc = o.scout
+    local cur, since, goodF = (o.start_hold and hold or raid), -1e9, nil
+    local decided = false
     local function Log(f, from, to, state, why)
         local s = math.floor(f / 30)
         local t = state.trade or {}
@@ -260,6 +274,26 @@ function M.game_plan(o)
     return function(state)
         local f = state.frame or 0
         local ratio, t = state.armyRatio, state.trade
+        if sc and state.located and state.armyValue then
+            local enemy = (state.enemyGround or 0) + (state.enemyAir or 0)
+            local own = state.armyValue
+            local weak = enemy < (sc.low_ratio or 0.5) * own and enemy < (sc.low_abs or 2500)
+            local strong = enemy > (sc.high_ratio or 0.8) * own or enemy > (sc.high_abs or 4000)
+            if not decided and (enemy > 0 or own > 0) then
+                decided = true
+                local to = weak and raid or hold
+                Log(f, cur, to, state, string.format("enemy located: army %.0f vs ours %.0f -> %s", enemy, own, weak and "weak, raid" or "hold"))
+                cur, since = to, f
+            elseif f - since >= (sc.min_stay or minStay) then
+                if cur == raid and strong then
+                    Log(f, raid, hold, state, string.format("enemy army %.0f is strong against ours %.0f", enemy, own))
+                    cur, since, goodF = hold, f, nil
+                elseif cur == hold and weak then
+                    Log(f, hold, raid, state, string.format("enemy army %.0f is weak against ours %.0f", enemy, own))
+                    cur, since, goodF = raid, f, nil
+                end
+            end
+        end
         if cur == hold then
             if ratio and ratio >= resumeRatio then goodF = goodF or f else goodF = nil end
         end
