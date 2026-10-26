@@ -6,6 +6,8 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 
 ## Main bot and test settings
 
+**2026-10-26: `candidates/CORE` is the baseline** (README.md explains it and how to swap strategies); `deploy.ps1` and `eco_sim.py` default to it. New strategies are CORE variants. The v16 notes below are history.
+
 **`candidates/LINE_CLICK_v16/` is the main bot** (user, 2026-10-12: v16 is the best version; future work builds off it).
 It is LINE_CLICK + the v12-v16 changes: forward-core/flanking army, grid expansion fixes, energy push, resource-pressure grids,
 energy cells, capstone silos + anti-nuke, rez bots, depth scouts. Its design notes are in `knowledge/bots/v16_2026-10-09.md`
@@ -177,11 +179,30 @@ into a T1 air lab; cons spread over all T1 air labs). Known bug left: `endgame.S
 - **Ledgers:** `ledger_logger.lua` writes `[LED] spend / fight / value / scout` rows, `python ledger_report.py [log]` reports them and ranks the GAPS. A unit's worth
   (`bar_framework/value_weights.lua`): army = cost, eco = cost + 60 s of income, build power = 3 x cost + 60 s of throughput, commander 25k. `knowledge/ledgers.md`.
   `find_weakness.py` on CORE (runs_tide, 10/16): metal float first, then early warning, undefended eco, AA cover; the 10/25 games agree on float.
+- **Rez broker + creep (2026-10-25).** `bar_framework/rez_broker.lua` (unit_runtime `REZ_BROKER`, on by default for every CORE variant: CORE, AIR_TIMING) is the one owner of rez-bot orders: registered jobs
+  (`wreck` reclaims, and resurrects only while the metal bank is over 50% (`RESURRECT_BANK`), `repair`, `trail`; add logic with `RB.AddJob{name, prio, find, valid, claim}`), commitment (`MIN_HOLD` / `MAX_HOLD`), wreck / friend
+  reservations; rez_crew only supplies the finders. The line's rez lab is published as `WG.RezLab`; lab_rules' `rez-lab` want owns its queue (`lab.only` in lab_broker) so no
+  scout / floor / radar rule can fill it, and other labs stop making rez bots while it stands. `scout_net` `CREEP` (unit_runtime default on; `SCOUT_NET = { CREEP = false }` opts out): parked units for vision that GROW like zerg creep: a post grid, a new unit takes a post adjacent to the creep (held posts, our sight, the base, a radar's cover) toward the enemy; front points (enemy groups, the enemy base, where a unit died or met an enemy) forbid posts on or behind them; ground radar units grow a wider net as they are built; a creep unit with an enemy in its vision gets an urgent RETREAT claim even while walking; income-gated (`CREEP_*` options). lab_rules `scout-ahead` inserts scouts into busy queues (`SCOUT_AHEAD`) -- the old empty-queue scout rule never fired in a working lab. Tests: `test_rez_broker`, `test_scout_net`.
 - **Test tracker:** `python tests/run_tests.py` logs every run (`tests/test_tracker.json`, `test_history.jsonl`, git-ignored); a suite with 20 passes in a row is
   skipped; `--touched` also runs stable suites covering a changed file, `--all` runs everything, `--status` shows streaks. Coverage = the repo paths a suite's source names
   plus `tests/covers.json`. `tests/LUA_TESTING.md`.
 
+**State machines (2026-10-26).** *When* CORE changes stance and army share is data, not hook code: `machines/<name>.lua` (a stance machine + an army-share machine,
+nodes = stances / share values, edges = boolean conditions over named signals, `bar_framework/signals.lua`), run by `bar_framework/fsm.lua`, loaded by `MACHINE = "core_default"`
+in `candidates/CORE/macro_controller.lua` (`false` = the old CFG switch options, also the fallback). The two machines read each other through the `stance*` / `share*` signals.
+Edit them graphically in `machine_editor.html` (run `python fsm_index.py` first; it also shows the always-on built-in rules from `machines/builtin_rules.lua`). Every transition logs
+`[FSM] ...`. Format and workflow: `machines/README.md`. Test: `tests/test_fsm.lua`. A new "when" rule = an edge or a signal, not a new hook.
+
 ## Running a test
+
+**Default testing policy (user, 2026-10-26) -- overrides the longer advice below when they conflict:**
+1. **Eco sim first.** Anything that does not involve the army fighting -- economy, build orders, building an army, scouting patterns (the sim has no real enemy to see) --
+   is tested in `eco_sim.py`, not a real game. Only fighting needs a real game.
+2. **Otherwise run ONE real game** long enough to see the change. An early-game change = a 10-minute game (`--end-minutes 10`). No A/B, no repeats, no slot pairs, no baseline
+   unless the user asks for one.
+3. **Do not write new Lua unit tests** unless something broke in a real game (then a regression test for that break is fine). Do not run `tests/run_tests.py` as the test of a change;
+   running the existing suites after a refactor is still fine.
+4. **No one-off bots for a test.** Make the test a variant of CORE (stance + config, `candidates/CORE`-derived). If a variant cannot do the test, say why before building anything else.
 
 ### Locally (Windows)
 

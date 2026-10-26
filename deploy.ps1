@@ -1,4 +1,4 @@
-param([string]$Bot = "candidates\LINE_CLICK_v16")
+param([string]$Bot = "candidates\CORE")
 
 $src = "$PSScriptRoot"
 
@@ -104,7 +104,7 @@ foreach ($f in $files) {
 
 # Everything under bar_framework\ (including behaviors\), stances\ and blueprints\general\ is copied too, so a new
 # module or behavior needs no entry in the list above.
-foreach ($dir in @("bar_framework", "stances", "blueprints\general")) {
+foreach ($dir in @("bar_framework", "stances", "machines", "blueprints\general")) {
     $root = Join-Path $src $dir
     if (-not (Test-Path $root)) { continue }
     Get-ChildItem $root -Recurse -Filter *.lua | ForEach-Object {

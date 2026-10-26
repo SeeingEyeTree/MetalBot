@@ -22,7 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.path.join(ROOT, "ecosim", "runs")
-DEFAULT_BOT = "candidates/STANCE_BOT"
+DEFAULT_BOT = "candidates/CORE"
 WIDGETS = ["macro_controller.lua", "lab_controller.lua", "unit_controller.lua"]
 
 
