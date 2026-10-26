@@ -155,11 +155,11 @@ Dragons carry the stance's `extras` behaviours `dragon_defend` (wait + help defe
 power, AA, closest eco), the Dragon labs are the metal sink, `bar_framework/metal_sink.lua` (2026-10-16: any sink unit, spots 4 nanos apart, starts at 85% of the spine's spend capacity), and `slot_spine` `REBUILD_NANOS` rebuilds lost nanos.  See
 `knowledge/bots/dragon_eco_2026-10-14.md`.
 
-**HAMMER_ANVIL + unit_runtime (2026-10-25).** CORE's unit controller is now `bar_framework/unit_runtime.lua` (`UNIT.Install`). CORE's
-`unit_controller.lua` is a stub, so **a new CORE variant is three short config files, not a copy.** `candidates/HAMMER_ANVIL` = CORE with
+**AIR_TIMING + unit_runtime (2026-10-25).** CORE's unit controller is now `bar_framework/unit_runtime.lua` (`UNIT.Install`). CORE's
+`unit_controller.lua` is a stub, so **a new CORE variant is three short config files, not a copy.** `candidates/AIR_TIMING` = CORE with
 the stances `anvil_open` (10% share, the ground only holds) -> `anvil_burst` (a one-off T1 bomber burst, `BURST_SWITCH` /
 `strategy_hooks.burst_switch`, stance `plan.share`) -> `anvil_hold`, plus smaller build-power-first Dragon waves. Notes:
-`knowledge/bots/hammer_anvil_2026-10-25.md`. Framework changes from it (every bot on unit_runtime / lab_rules / line_transition):
+`knowledge/bots/air_timing_2026-10-25.md`. Framework changes from it (every bot on unit_runtime / lab_rules / line_transition):
 plan army `"defend"` (maneuver blobs + push when ahead; `"hold"`'s parked ring is gone), plan `bomb_run`; **air defence**
 (`mb.airRaid`: an AA floor once a bomber is seen; a large raid clears every lab's queue for AA via lab_broker mode `"flush"`,
 `AIR_RUSH_SHARE` 1.0, all ground AA + fighters to the raid); **T1 air con recovery** (`AIR_CON_LABS`: a deficit turns a grid capstone

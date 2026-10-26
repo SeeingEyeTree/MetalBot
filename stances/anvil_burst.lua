@@ -1,4 +1,4 @@
--- HAMMER_ANVIL stage 2 (2026-10-25): the bomber burst.  T1_bombing_run's comp (user: "rush out as many bombers in a short period
+-- AIR_TIMING stage 2 (2026-10-25): the bomber burst.  T1_bombing_run's comp (user: "rush out as many bombers in a short period
 -- of time ... spend a lot quickly and then go back into eco.  15-30 bombers"), taken for a fixed window by
 -- strategy_hooks.burst_switch until 30 Shadows stand.  plan.share lifts the army share for the window; plan.bomb_run = "rally":
 -- bomb_run.lua holds the bombers at the station (anvil_hold's "launch" sends them the moment the burst ends).
