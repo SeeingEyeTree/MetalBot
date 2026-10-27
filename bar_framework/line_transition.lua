@@ -282,6 +282,7 @@ local OPT_ALT, OPT_CTRL, OPT_INTERNAL = (CMD and CMD.OPT_ALT) or 128, (CMD and C
 local CMD_GUARD  = (CMD and CMD.GUARD) or 25
 
 local function Clock(frame)
+    if frame ~= frame or frame == math.huge or frame == -math.huge then return "--:--" end      -- the second vehicle lab's start is math.huge until the first stands
     return string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60)
 end
 
