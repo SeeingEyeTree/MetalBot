@@ -22,5 +22,5 @@ LAB.Install(widget, WG, {
     AIR_SCOUTS_EARLY = 3,         -- user 2026-10-26: the first three scouts are air scouts, ahead of everything in any lab that can build one
     SPINE_CON_FIRST = true,       -- the spine's first ground con goes ahead of the defence picks
     BUDGET_FREE_BANK = 800,       -- a metal bank over 800 lifts the army budget (labs were idle with a 2k bank)
-    SINK = false,    -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
+    SINK = true,     -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
 })

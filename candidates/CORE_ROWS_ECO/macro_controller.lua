@@ -29,10 +29,10 @@ MACRO.Install(widget, WG, {
      ROW_CONS = 3, ROW_BOTH = false, ROW_COLS = 32, ROW_UNIT_FRAC = 0.5, ROW_MAX = 3,   -- 3 grown rows on top of the 4 lanes; each is ONE lane (32 columns, east only), user 2026-10-26
     MAX_CONS    = 1e9,
     CON_GAP     = ROW_GAP, CON_INCOME = ROW_INCOME, CON_BANK_TRIGGER = 150, CON_FALLBACK_FRAMES = 5 * 30,   -- eco_sim (ecosim/sweeps/rows1.json, 6 seeds): a bank gate (100-600) is slower than a con every 5 s: income at 10:00 288 / 283 / 220 / 181 vs 358
-    -- PURE SCALING (user 2026-10-27): a fixed army share (ARMY_SHARE_FIXED = 0.2; 0 = no army at all), no Dragon sink.
+    -- ROWS: lines that scale with cons (user 2026-10-27); everything else is CORE (state machine, Dragon sink).
     -- (scouts, AA and the raid-response floors of the lab rules still make their few units)
     -- ARMY_SHARE_FIXED (nil = off): the army share comes from CORE's state machine (MACHINE below, machines/core_default.lua), user 2026-10-27; a number pins it (0 = pure scaling)
-    SINK        = false,            -- metal sink on (metal_sink.lua): extra labs make Dragons once the spine cannot spend the income
+    SINK        = true,             -- metal sink on (metal_sink.lua): extra labs make Dragons once the spine cannot spend the income
     SINK_UNIT   = "corcrwh",       -- the sink unit: a Dragon (the framework default, named here so it is visible)
     -- user 2026-10-26 (slimegirl game): nothing is known about the enemy at first, so the army share is 35% (SHARE.unscouted) and the units hold at home;
     -- once the enemy is located, game_plan's `scout` rule picks raid_open (weak enemy army) or stays on hold (strong), see strategy_hooks.game_plan
