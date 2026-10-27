@@ -437,7 +437,7 @@ function W.Spawn(defName, team, x, z)
     return u
 end
 
-function W.Kill(u, reason)
+function W.Kill(u, reason, attackerID)
     if not W.units[u.id] then return end
     if u.built then UnfinishEcon(u) end
     Unoccupy(u)
@@ -455,7 +455,7 @@ function W.Kill(u, reason)
     T.set[u.id] = nil; T.list = nil; T.count = T.count - 1
     u.dead = true
     if u.cat ~= "army" then Event("destroyed", { id = u.id, name = u.d.name, reason = reason, x = u.x, z = u.z }) end
-    W.callin("UnitDestroyed", u.id, u.defID, u.team, nil, nil, nil)
+    W.callin("UnitDestroyed", u.id, u.defID, u.team, attackerID, nil, nil)     -- attackerID: stress_recovery.py kills "as the enemy"
 end
 
 local function Finish(t)

@@ -102,10 +102,27 @@ function M.New(o)
     for k, v in pairs(o.cfg or {}) do K[k] = v end
     local PK = {}                                          -- perimeter_guard's ring settings (R_MIN, BEARINGS, ...)
     for k, v in pairs(PG.CFG) do PK[k] = v end
+    for k, v in pairs(o.cfg or {}) do if PG.CFG[k] ~= nil then PK[k] = v end end    -- a stance's maneuver = { R_MIN = 1100 } sets the ring too
     local md = { o = o, K = K, PK = PK, units = {}, blobs = {}, clusters = {}, responding = {}, prev = {}, nextCid = 1,
                  lastPlan = -1e9, posts = {}, ignore = {}, warned = {}, intercepts = 0, released = 0, returned = 0, sig = "" }
     md.homeOf = function(uid) local u = md.units[uid]; return u and u.home end
     return md
+end
+
+-- A stance change re-applies the plan's `maneuver` table (keys of M.CFG and of perimeter_guard's CFG, e.g. R_MIN: how far out the line stands).
+-- base = the settings the unit controller derived for the plan (SUPPORT_ROLE ...), over = the stance's own table.
+function M.Reconfigure(md, base, over)
+    local K, PK = md.K, md.PK
+    for k in pairs(M.CFG) do K[k] = M.CFG[k] end
+    for k in pairs(PG.CFG) do PK[k] = PG.CFG[k] end
+    for _, t in ipairs({ base or {}, over or {} }) do
+        for k, v in pairs(t) do
+            if PG.CFG[k] ~= nil then PK[k] = v end
+            if M.CFG[k] ~= nil or PG.CFG[k] == nil then K[k] = v end
+        end
+    end
+    md.sig = ""
+    md.lastPlan = -1e9
 end
 
 -- Long-range support (SUPPORT_ROLE): its weapon range, or nil when the unit is not support.

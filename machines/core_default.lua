@@ -1,35 +1,60 @@
--- CORE's default state machines (CFG.MACHINE = "core_default"): the same rules strategy_hooks.game_plan + cap_switch + match_enemy
--- applied before, written as nodes and edges.  Edit it in machine_editor.html (open this file, change, save).
--- File format: machines/README.md.  Signals: bar_framework/signals.lua.
+-- CORE's default state machines (CFG.MACHINE = "core_default"); edit in machine_editor.html (open this file, change, save).
+-- File format: machines/README.md.  Signals: bar_framework/signals.lua.  v2 (user 2026-10-26): T1 / T2 hold and push stances, a 4k opening.
 --
--- Stance machine:
---   hold   the opening: defend near the line until the enemy is located
---   raid   raid_open: fast raiders hit build power; leaves for hold after bad trades while behind
---   late   raid_late: once the unit cap fills (permanent)
--- Share machine: one node, match_enemy (keep our army value up with the scouted enemy's; 35% until the enemy is located).
+-- STANCE MACHINE
+--   start     core_start  6 Incisors : 1 Pounder, held just out from the base, for the first 6:00
+--   t1_hold   T1 defend, ring ~1100 out          t1_push   T1 raid groups (Incisor / Brute)
+--   t2_hold   T2 defend, ~18% T1 filler          t2_push   T2 raid groups (Tiger), ~23% T1
+--   late      Demons + Tigers (the Dragon sink is separate); permanent once the unit cap fills
+--   at 6:00: enemy well scouted and little army value seen -> push, otherwise hold.  hold <-> push follows the scouted enemy's value
+--   against ours and bad trades; a real attack on us pulls a push stance back to hold.  T2 stances once income >= 500.
+-- SHARE MACHINE (army share, reads the stance through `stance` / `stance_army`)
+--   start     big share so ~4k of army stands at 6:00 (nanos guard the lab at share >= 0.8: slot_spine RUSH_SHARE)
+--   push_high relatively high share while raiding             hold_low  lower share while holding and not about to be attacked
+--   catch_up  match_enemy: a good scout shows the enemy army is as big as ours, so the share follows it
+--   attack    share 1.0 while a real attack is on, or many enemy units are inside our territory (near the spine's build power)
 return {
-  name = "core_default", version = 1,
+  name = "core_default", version = 2,
 
   stance_machine = {
-    initial = "hold",
+    initial = "start",
     nodes = {
-      hold = { stance = "hold",      x = 120, y = 120 },
-      raid = { stance = "raid_open", x = 460, y = 120 },
-      late = { stance = "raid_late", x = 290, y = 330 },
+      start   = { stance = "core_start", x = 60,   y = 260 },
+      t1_hold = { stance = "t1_hold",    x = 560,  y = 100 },
+      t1_push = { stance = "t1_push",    x = 560,  y = 420 },
+      t2_hold = { stance = "t2_hold",    x = 1060, y = 100 },
+      t2_push = { stance = "t2_push",    x = 1060, y = 420 },
+      late    = { stance = "core_late",  x = 1560, y = 260 },
     },
     edges = {
-      -- enemy located and weak against us -> raid (game_plan's scout rule: enemy < 0.5 x ours and under 2500)
-      { from = "hold", to = "raid", prio = 20, min_stay_s = 60, note = "enemy located and weak",
-        when = { all = { { sig = "enemy_located" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { sig = "enemy_value", op = "<", val = 2500 } } } },
-      -- raid -> hold: the enemy turns out strong (enemy > 0.8 x ours, or over 4000)
-      { from = "raid", to = "hold", prio = 20, min_stay_s = 60, note = "enemy army is strong",
-        when = { all = { { sig = "enemy_located" }, { any = { { sig = "enemy_vs_army", op = ">", val = 0.8 }, { sig = "enemy_value", op = ">", val = 4000 } } } } } },
-      -- raid -> hold: behind and the raids trade badly
-      { from = "raid", to = "hold", prio = 10, min_stay_s = 90, note = "behind and the raids trade badly",
-        when = { all = { { sig = "army_ratio", op = "<", val = 0.85 }, { sig = "bad_trade" } } } },
-      -- hold -> raid: ahead on the ground for a minute
-      { from = "hold", to = "raid", prio = 10, min_stay_s = 90, hold_s = 60, note = "ahead for a minute",
-        when = { sig = "army_ratio", op = ">=", val = 1.4 } },
+      -- 6:00: well scouted and the enemy army is small next to ours -> push; otherwise hold (also when nothing was scouted)
+      { from = "start", to = "t1_push", prio = 20, note = "6:00: enemy scouted, little army value seen -> raid",
+        when = { all = { { sig = "minute", op = ">=", val = 6 }, { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.6 }, { ["not"] = { sig = "under_attack" } } } } },
+      { from = "start", to = "t1_hold", prio = 10, note = "6:00: otherwise hold",
+        when = { sig = "minute", op = ">=", val = 6 } },
+      -- T1: hold <-> push
+      { from = "t1_hold", to = "t1_push", prio = 10, hold_s = 30, min_stay_s = 60, note = "enemy army small next to ours",
+        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { ["not"] = { sig = "under_attack" } } } } },
+      { from = "t1_push", to = "t1_hold", prio = 30, min_stay_s = 45, note = "real attack on us: come home",
+        when = { sig = "under_attack" } },
+      { from = "t1_push", to = "t1_hold", prio = 20, min_stay_s = 90, note = "raids trade badly",
+        when = { all = { { sig = "bad_trade" }, { sig = "army_ratio", op = "<", val = 0.85 } } } },
+      { from = "t1_push", to = "t1_hold", prio = 10, hold_s = 20, min_stay_s = 60, note = "the enemy army is as big as ours",
+        when = { all = { { sig = "enemy_located" }, { sig = "enemy_vs_army", op = ">", val = 0.9 } } } },
+      -- T1 -> T2 on income (keeps the hold / push mode)
+      { from = "t1_hold", to = "t2_hold", prio = 5, hold_s = 20, min_stay_s = 60, note = "T2 income",
+        when = { all = { { sig = "minute", op = ">=", val = 8 }, { sig = "metal_income", op = ">=", val = 500 } } } },
+      { from = "t1_push", to = "t2_push", prio = 5, hold_s = 20, min_stay_s = 60, note = "T2 income",
+        when = { all = { { sig = "minute", op = ">=", val = 8 }, { sig = "metal_income", op = ">=", val = 500 } } } },
+      -- T2: hold <-> push
+      { from = "t2_hold", to = "t2_push", prio = 10, hold_s = 30, min_stay_s = 60, note = "enemy army small next to ours",
+        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { ["not"] = { sig = "under_attack" } } } } },
+      { from = "t2_push", to = "t2_hold", prio = 30, min_stay_s = 45, note = "real attack on us: come home",
+        when = { sig = "under_attack" } },
+      { from = "t2_push", to = "t2_hold", prio = 20, min_stay_s = 90, note = "raids trade badly",
+        when = { all = { { sig = "bad_trade" }, { sig = "army_ratio", op = "<", val = 0.85 } } } },
+      { from = "t2_push", to = "t2_hold", prio = 10, hold_s = 20, min_stay_s = 60, note = "the enemy army is as big as ours",
+        when = { all = { { sig = "enemy_located" }, { sig = "enemy_vs_army", op = ">", val = 0.9 } } } },
     },
     any_edges = {
       -- cap_switch: the unit cap is filling -> the late stance for the rest of the game (no edge leaves it)
@@ -39,10 +64,37 @@ return {
   },
 
   share_machine = {
-    initial = "match",
+    initial = "start",
     nodes = {
-      match = { hook = "match_enemy", cfg = { unscouted = 0.35 }, x = 200, y = 120 },
+      start     = { share = 1.0,  ramp_s = 5, x = 60,   y = 260 },
+      hold_low  = { share = 0.22, ramp_s = 20, x = 560, y = 100 },
+      push_high = { share = 0.55, ramp_s = 10, x = 560, y = 420 },
+      catch_up  = { hook = "match_enemy", cfg = { floor = 0.25, unscouted = 0.35 }, x = 1060, y = 100 },
+      attack    = { share = 1.0,  ramp_s = 3, x = 1060, y = 420 },
     },
-    edges = {},
+    edges = {
+      { from = "start", to = "push_high", prio = 20, note = "the stance machine chose a push stance",
+        when = { all = { { sig = "stance", op = "!=", val = "core_start" }, { sig = "stance_army", op = "==", val = "raid" } } } },
+      { from = "start", to = "hold_low", prio = 10, note = "the stance machine chose a hold stance",
+        when = { sig = "stance", op = "!=", val = "core_start" } },
+      { from = "hold_low", to = "push_high", prio = 10, note = "raiding: keep the share relatively high",
+        when = { sig = "stance_army", op = "==", val = "raid" } },
+      { from = "push_high", to = "hold_low", prio = 10, note = "holding: lower the share",
+        when = { sig = "stance_army", op = "!=", val = "raid" } },
+      { from = "hold_low", to = "catch_up", prio = 10, hold_s = 10, note = "good scout: the enemy army is about as big as ours",
+        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = ">", val = 0.9 } } } },
+      { from = "catch_up", to = "hold_low", prio = 10, hold_s = 30, note = "the enemy army is small again",
+        when = { sig = "enemy_vs_army", op = "<", val = 0.7 } },
+      { from = "catch_up", to = "push_high", prio = 20, note = "raiding: keep the share relatively high",
+        when = { sig = "stance_army", op = "==", val = "raid" } },
+      { from = "attack", to = "push_high", prio = 20, hold_s = 20, note = "the attack is over; raiding",
+        when = { all = { { ["not"] = { sig = "under_attack" } }, { sig = "enemy_near_base", op = "<", val = 300 }, { sig = "stance_army", op = "==", val = "raid" } } } },
+      { from = "attack", to = "hold_low", prio = 10, hold_s = 20, note = "the attack is over; holding",
+        when = { all = { { ["not"] = { sig = "under_attack" } }, { sig = "enemy_near_base", op = "<", val = 300 } } } },
+    },
+    any_edges = {
+      { to = "attack", prio = 50, note = "a real attack, or a lot of enemy near the base / spine build power",
+        when = { any = { { sig = "under_attack" }, { sig = "enemy_near_base", op = ">=", val = 600 } } } },
+    },
   },
 }

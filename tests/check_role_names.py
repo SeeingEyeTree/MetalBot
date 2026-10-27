@@ -12,7 +12,7 @@ import json, os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.path.join(ROOT, "tests", "role_name_baseline.json")
 PAT = re.compile(r"""["']((?:cor|arm)[a-z0-9_]{2,})["']""")
-EXEMPT = ("roles.lua",)
+EXEMPT = ("roles.lua", "signals.lua")      # signals.lua: signal names such as army_value, not unit names
 
 
 def scan():

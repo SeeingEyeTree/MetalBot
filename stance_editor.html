@@ -66,7 +66,7 @@ textarea{resize:vertical;min-height:90px}
   <span class="sp"></span>
   <span id="status" class="dim"></span>
   <button onclick="showM('help')">?</button>
-  <input type="file" id="fileIn" accept=".json" style="display:none">
+  <input type="file" id="fileIn" accept=".json,.lua" style="display:none">
 </div>
 <div id="main">
   <div id="left">
@@ -95,6 +95,15 @@ textarea{resize:vertical;min-height:90px}
     <textarea id="sControl" placeholder="Control: groups, targets, retreat/kite rules, who escorts whom..."></textarea>
     <label>Suggested army share (note only; the overall share is controlled elsewhere)</label>
     <input type="text" id="sShare" placeholder="e.g. 40% early, 60% once nanos are up">
+    <h3>Plan (what the bot does with this stance)</h3>
+    <label>Army mode (plan.army)</label>
+    <select id="pArmy"><option value="">(none)</option><option>raid</option><option>hold</option><option>defend</option><option>maneuver</option><option>perimeter</option></select>
+    <label>Army-share floor, % (plan.share)</label><input type="number" id="pShare" min="0" max="100" step="1" placeholder="none">
+    <label>Bombers 0-1 (plan.bombers)</label><input type="number" id="pBomb" min="0" max="1" step="0.1" placeholder="none">
+    <label>Bomb run (plan.bomb_run)</label><select id="pRun"><option value="">(none)</option><option>rally</option><option>launch</option></select>
+    <label>Hold ring distance, elmos (plan.maneuver.R_MIN; default 700)</label><input type="number" id="pRmin" min="0" step="50" placeholder="default">
+    <label>Other plan fields (JSON, e.g. {"push":{"ratio":1.3}})</label><textarea id="pOther" placeholder="{}"></textarea>
+    <label>Extras (JSON list: units with behaviours that are not in the mix, e.g. Dragons)</label><textarea id="pExtras" placeholder="[]"></textarea>
     <h3>Summary</h3>
     <div id="sum" class="dim"></div>
   </div>
@@ -105,10 +114,11 @@ textarea{resize:vertical;min-height:90px}
   <p>Click a unit to add it. Set each unit's <b>share</b> of the army spend; shares always total 100%. Typing or dragging one share rescales the other unlocked units in proportion. The padlock keeps a unit's share fixed.</p>
   <p><b>Units / 1000 M</b> is what the controller will aim for: the metal-equivalent value (metal + energy/70) of each unit is divided into its share of spend.</p>
   <p>The overall army share is not set here. The notes boxes explain the stance to whoever implements it.</p>
-  <p><b>Save JSON</b> keeps everything for re-editing. <b>Export Lua</b> writes the file the bot reads (put it in <code>stances/</code>). Run <code>python extract_unit_data.py</code> to refresh units and pictures from your installed BAR. Autosaves to this browser.</p>
+  <p><b>Load</b> opens a saved .json or a stance .lua from <code>stances/</code>. <b>Save JSON</b> keeps everything for re-editing. <b>Export Lua</b> writes the file the bot reads (put it in <code>stances/</code>). Run <code>python extract_unit_data.py</code> to refresh units and pictures from your installed BAR. Autosaves to this browser.</p>
   <button onclick="hideM('help')">Close</button>
 </div></div>
 
+<script src="machine_editor/lua_table.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const el=(t,a={},...k)=>{const e=document.createElement(t);for(const x in a){if(x==='class')e.className=a[x];else if(x.startsWith('on'))e[x]=a[x];else e.setAttribute(x,a[x])}k.flat().forEach(c=>e.append(c));return e};
@@ -155,7 +165,7 @@ function addUnit(n){
   if(st.units.some(x=>x.n===n)){return}
   push();
   const k=st.units.length;
-  st.units.push({n,pct:0,locked:false,note:'',beh:'',ov:''});
+  st.units.push({n,pct:0,locked:false,note:'',beh:'',ov:'',tag:'',max:''});
   rebalanceNew(k);render();
 }
 function rebalanceNew(k){ // give the new unit an equal slice, scale the others down
@@ -210,6 +220,11 @@ function render(){
     beh.onchange=()=>{push();x.beh=beh.value;save()};
     const ov=el('input',{type:'text',placeholder:'Behaviour tunables (e.g. kite.step=400, kite.trigger_ttc=3)',value:x.ov||''});
     ov.onchange=()=>{push();x.ov=ov.value;save()};
+    const tagSel=el('select',{title:'tag: mass = cheap bodies (more at low income), quality = heavies (more at high income); strategy_hooks.income_mix'},
+      ...['','mass','quality'].map(t=>el('option',{value:t,...(t===(x.tag||'')?{selected:'selected'}:{})},t?'tag: '+t:'tag: none')));
+    tagSel.onchange=()=>{push();x.tag=tagSel.value;save()};
+    const maxIn=el('input',{type:'number',min:1,step:1,placeholder:'max alive (none)',title:'max: no more of this unit once this many are alive (e.g. 40 flak); the other units take its share',value:x.max||'',style:'width:150px'});
+    maxIn.onchange=()=>{push();x.max=maxIn.value===''?'':Math.max(1,Math.round(+maxIn.value));save()};
     const row=el('div',{class:'row',style:`border-left:4px solid ${color}`},
       el('img',{src:'stance_editor/pics/'+u.name+'.png',onerror:function(){this.style.visibility='hidden'}}),
       el('div',{class:'nm'},el('b',{},u.display),el('span',{class:'dim'},`${u.name} · T${u.tech}`)),
@@ -217,7 +232,7 @@ function render(){
       el('div',{},rng,num),
       el('div',{class:'ratio'},r[i].toFixed(2)),
       el('div',{},lock,del),
-      el('div',{class:'note'},note,beh,ov));
+      el('div',{class:'note'},note,beh,ov,el('div',{style:'display:flex;gap:6px'},tagSel,maxIn)));
     row._rng=rng;row._num=num;row._ratio=row.querySelector('.ratio');
     rows.append(row);
   });
@@ -242,15 +257,31 @@ function summary(){
 }
 
 /* ---- meta, persistence ---- */
-function syncMeta(){$('sName').value=st.name;$('sIntent').value=st.intent;$('sControl').value=st.control;$('sShare').value=st.share}
+const PKNOWN=['army','share','bombers','bomb_run','maneuver'];
+function syncMeta(){$('sName').value=st.name;$('sIntent').value=st.intent;$('sControl').value=st.control;$('sShare').value=st.share;
+  const p=st.plan||{};$('pArmy').value=p.army||'';$('pShare').value=p.share!=null?Math.round(p.share*100):'';$('pBomb').value=p.bombers!=null?p.bombers:'';
+  $('pRun').value=p.bomb_run||'';$('pRmin').value=(p.maneuver&&p.maneuver.R_MIN!=null)?p.maneuver.R_MIN:'';
+  const o={};Object.keys(p).forEach(k=>{if(!PKNOWN.includes(k))o[k]=p[k]});
+  if(p.maneuver){const m={...p.maneuver};delete m.R_MIN;if(Object.keys(m).length)o.maneuver=m}
+  $('pOther').value=Object.keys(o).length?JSON.stringify(o):'';$('pExtras').value=(st.extras&&st.extras.length)?JSON.stringify(st.extras):''}
+function readPlan(){
+  const p={},a=$('pArmy').value;if(a)p.army=a;
+  if($('pShare').value!=='')p.share=+$('pShare').value/100;if($('pBomb').value!=='')p.bombers=+$('pBomb').value;if($('pRun').value)p.bomb_run=$('pRun').value;
+  let o={};try{o=$('pOther').value.trim()?JSON.parse($('pOther').value):{};$('pOther').style.borderColor=''}catch(e){$('pOther').style.borderColor='var(--red)';o=null}
+  if(o)Object.assign(p,o);else if(st.plan)Object.keys(st.plan).forEach(k=>{if(!PKNOWN.includes(k)&&!(k in p))p[k]=st.plan[k]});
+  if($('pRmin').value!=='')p.maneuver=Object.assign({},p.maneuver||{},{R_MIN:+$('pRmin').value});
+  st.plan=Object.keys(p).length?p:null;
+  let x=null;try{x=$('pExtras').value.trim()?JSON.parse($('pExtras').value):null;$('pExtras').style.borderColor=''}catch(e){$('pExtras').style.borderColor='var(--red)';x=st.extras||null}
+  st.extras=x&&x.length?x:null}
 ['sName','sIntent','sControl','sShare'].forEach(id=>$(id).addEventListener('input',()=>{
   st.name=$('sName').value;st.intent=$('sIntent').value;st.control=$('sControl').value;st.share=$('sShare').value;save()}));
+['pArmy','pShare','pBomb','pRun','pRmin','pOther','pExtras'].forEach(id=>$(id).addEventListener('change',()=>{push();readPlan();save()}));
 function save(){try{localStorage.setItem('stanceEditor',JSON.stringify(st));$('status').textContent=(st.name||'unnamed')+' · autosaved'}catch(e){}}
-function newStance(){if(st.units.length&&!confirm('Discard the current stance?'))return;push();st={name:'',intent:'',control:'',share:'',units:[]};syncMeta();render()}
+function newStance(){if(st.units.length&&!confirm('Discard the current stance?'))return;push();st={name:'',intent:'',control:'',share:'',plan:null,extras:null,units:[]};syncMeta();render()}
 function dl(name,text,type){const a=el('a',{href:URL.createObjectURL(new Blob([text],{type})),download:name});document.body.append(a);a.click();a.remove()}
 const slug=()=>(st.name||'stance').trim().replace(/[^A-Za-z0-9_-]+/g,'_');
-function toJson(){return JSON.stringify({name:st.name,notes:{intent:st.intent,control:st.control,share:st.share},
-  units:st.units.map(x=>({n:x.n,share:+(x.pct/100).toFixed(4),locked:!!x.locked,note:x.note||'',beh:x.beh||'',ov:x.ov||''}))},null,2)}
+function toJson(){return JSON.stringify({name:st.name,notes:{intent:st.intent,control:st.control,share:st.share},plan:st.plan||undefined,extras:st.extras||undefined,
+  units:st.units.map(x=>({n:x.n,share:+(x.pct/100).toFixed(4),locked:!!x.locked,note:x.note||'',beh:x.beh||'',ov:x.ov||'',tag:x.tag||undefined,max:x.max||undefined}))},null,2)}
 /* behaviours: "kite, advance" and "kite.step=400, kite.trigger_ttc=3" -> {behaviors, cfg} for bar_framework/behavior_host */
 const parseBeh=s=>(s||'').split(',').map(t=>t.trim()).filter(Boolean);
 function parseOv(s){const o={};(s||'').split(',').forEach(p=>{const m=p.trim().match(/^(\w+)\.(\w+)\s*=\s*(.+)$/);if(!m)return;
@@ -262,19 +293,29 @@ function behLua(x){const b=parseBeh(x.beh),o=parseOv(x.ov);let t='';
   if(Object.keys(o).length)t+=', cfg = '+luaCfg(o);return t}
 function saveJson(){dl(slug()+'.json',toJson(),'application/json')}
 function loadFile(){$('fileIn').click()}
+function fromObj(j){ // the editor's own JSON
+  return {name:j.name||'',intent:(j.notes||{}).intent||'',control:(j.notes||{}).control||'',share:(j.notes||{}).share||'',plan:j.plan||null,extras:j.extras||null,
+    units:(j.units||[]).map(u=>({n:u.n,pct:(u.share||0)*100,locked:!!u.locked,note:u.note||'',beh:u.beh||'',ov:u.ov||'',tag:u.tag||'',max:u.max||''}))}}
+function fromLuaStance(M,fallbackName){ // stances/*.lua: M.name / intent / control / suggestedShare / plan / extras / units
+  const ov=c=>Object.entries(c||{}).map(([b,o])=>Object.entries(o||{}).map(([k,v])=>b+'.'+k+'='+v).join(', ')).filter(Boolean).join(', ');
+  const units=(M.units||[]).map(u=>({n:u.n,pct:(u.share||0)*100,locked:false,note:u.note||'',beh:(u.behaviors||[]).join(', '),ov:ov(u.cfg),tag:u.tag||'',max:u.max||''}));
+  return {name:M.name||fallbackName||'',intent:M.intent||'',control:M.control||'',share:M.suggestedShare||'',plan:M.plan||null,extras:M.extras||null,units}}
 $('fileIn').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{
-  try{const j=JSON.parse(t);push();
-    st={name:j.name||'',intent:(j.notes||{}).intent||'',control:(j.notes||{}).control||'',share:(j.notes||{}).share||'',
-        units:(j.units||[]).map(u=>({n:u.n,pct:(u.share||0)*100,locked:!!u.locked,note:u.note||'',beh:u.beh||'',ov:u.ov||''}))};
-    fix();syncMeta();render()}catch(err){alert('Could not read that file: '+err.message)}
+  try{
+    const isLua=/\.lua$/i.test(f.name);
+    const next=isLua?fromLuaStance(LuaTable.parseStanceLua(t),f.name.replace(/\.lua$/i,'')):fromObj(JSON.parse(t));
+    if(isLua){const miss=next.units.filter(u=>!BY[u.n]).map(u=>u.n);if(miss.length)alert('Units not in units.json (kept, shown blank): '+miss.join(', '))}
+    push();st=next;fix();syncMeta();render()}catch(err){alert('Could not read that file: '+err.message)}
   e.target.value=''})};
+const luaKey=k=>/^[A-Za-z_]\w*$/.test(k)?k:'['+JSON.stringify(k)+']';
+const luaAny=v=>v===null||v===undefined?'nil':typeof v==='string'?JSON.stringify(v):typeof v==='object'?(Array.isArray(v)?'{ '+v.map(luaAny).join(', ')+' }':'{ '+Object.entries(v).map(([k,x])=>luaKey(k)+' = '+luaAny(x)).join(', ')+' }'):String(v);
 const lq=s=>{let d='=';while(s.includes(']'+d+']'))d+='=';return '['+d+'['+s+']'+d+']'};
 function toLua(){
   const r=ratios(),tot=r.reduce((a,b)=>a+b,0)||1;
   const L=['-- Generated by stance_editor.html. share = fraction of army spend; ratio = unit-count weight (share/cost, sums to 1);','-- perK = units per 1000 metal-equivalent of army spend (metal + energy/70). behaviors / cfg: bar_framework/behavior_host.','local M = {}',
-    'M.name = '+JSON.stringify(st.name||slug()),'M.intent = '+lq(st.intent),'M.control = '+lq(st.control),'M.suggestedShare = '+lq(st.share),'M.units = {'];
+    'M.name = '+JSON.stringify(st.name||slug()),'M.intent = '+lq(st.intent),'M.control = '+lq(st.control),'M.suggestedShare = '+lq(st.share)].concat(st.plan?['M.plan = '+luaAny(st.plan)]:[],st.extras?['M.extras = '+luaAny(st.extras)]:[],['M.units = {']);
   st.units.forEach((x,i)=>{const u=BY[x.n];
-    L.push(`  { n = ${JSON.stringify(x.n)}, share = ${(x.pct/100).toFixed(4)}, ratio = ${(r[i]/tot).toFixed(4)}, perK = ${r[i].toFixed(3)}, cost = ${u?val(u).toFixed(1):0}, note = ${lq(x.note||'')}${behLua(x)} },`)});
+    L.push(`  { n = ${JSON.stringify(x.n)}, share = ${(x.pct/100).toFixed(4)}, ratio = ${(r[i]/tot).toFixed(4)}, perK = ${r[i].toFixed(3)}, cost = ${u?val(u).toFixed(1):0}, note = ${lq(x.note||'')}${x.tag?', tag = '+JSON.stringify(x.tag):''}${x.max?', max = '+x.max:''}${behLua(x)} },`)});
   L.push('}','return M','');
   return L.join('\n')}
 function exportLua(){dl(slug()+'.lua',toLua(),'text/plain')}
@@ -303,7 +344,7 @@ async function init(){
 }
 function start(){
   BY={};UNITS.forEach(u=>BY[u.name]=u);
-  try{const s=localStorage.getItem('stanceEditor');if(s){const j=JSON.parse(s);if(j&&j.units)st=j}}catch(e){}
+  try{const s=localStorage.getItem('stanceEditor');if(s){const j=JSON.parse(s);if(j&&j.units){st=j;if(st.plan===undefined)st.plan=null}}}catch(e){}
   initFilters();syncMeta();render();
 }
 init();

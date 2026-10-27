@@ -40,6 +40,8 @@ M.list = {
     { "army_ratio",      "number", "our ground value / scouted enemy ground value (nil while none known)", "", function(s) return s.armyRatio end },
     { "enemy_vs_army",   "number", "scouted enemy value / our army value (nil until the enemy is located)",  "",
       function(s) local own = s.armyValue; if s.located and own and own > 0 then return EnemyValue(s) / own end end },
+    { "enemy_known_units","number", "enemy units seen so far (how good the scouting is)", "", function(s) return Intel(s).known end },
+    { "enemy_scouted",   "bool",   "a good scout: the enemy is located and >= 12 of its units were seen", "", function(s) return s.located == true and (Intel(s).known or 0) >= 12 end },
     { "enemy_labs",      "number", "scouted enemy factories", "", function(s) return Intel(s).labs end },
     { "enemy_air_labs",  "number", "scouted enemy air factories", "", function(s) return Intel(s).airLabs end },
     { "enemy_t2_labs",   "number", "scouted enemy T2 factories", "", function(s) return Intel(s).t2Labs end },
@@ -62,6 +64,11 @@ M.list = {
     { "air_raid_bombers","number", "bombers counted in the current air raid", "", function(s) local r = Raid(s); return r and r.n or 0 end },
     { "air_lost",        "number", "own air value lost, last 120 s", "metal", function(s) return s.airLost end },
     { "air_kills",       "number", "enemy air value killed, last 120 s", "metal", function(s) return s.airKills end },
+    -- attacks on us (raid_response's intruder groups inside our territory, held 10 s)
+    { "enemy_near_base", "number", "value of enemy groups inside our territory right now (near the spine's build power); 0 when none", "metal",
+      function(s) local r = s.raid; if r and (s.frame or 0) - (r.frame or -1e9) <= 300 then return r.value or 0 end return 0 end },
+    { "under_attack",    "bool",   "a REAL attack on us: enemy groups worth >= 800 inside our territory within the last 10 s", "",
+      function(s) local r = s.raid; return r ~= nil and (s.frame or 0) - (r.frame or -1e9) <= 300 and (r.value or 0) >= 800 end },
     -- ground raids / urgency
     { "raid_active",     "bool",   "an enemy ground/air raid group is at our base (raid_response record)", "", function(s) return s.raid ~= nil end },
     { "raid_value",      "number", "value of the raid at the base", "metal", function(s) return s.raid and s.raid.value or 0 end },

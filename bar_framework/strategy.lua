@@ -135,6 +135,27 @@ local function IsT1Combat(defID)
 end
 M.IsT1Combat = IsT1Combat
 
+-- A stance unit with `max = n` (user 2026-10-26: flak in most comps at 5% would pile up, since it never dies): once n of it are alive
+-- (finished or in production: Spring.GetTeamUnitDefCount) it is dropped from the picks and from UnitList, so the others take its share.
+-- Orders already in a lab's queue can still finish, so the count can pass n by about a queue.
+local function Alive(defID)
+    local team = Spring.GetMyTeamID and Spring.GetMyTeamID()
+    return (team and Spring.GetTeamUnitDefCount and Spring.GetTeamUnitDefCount(team, defID)) or 0
+end
+function Strategy:AtMax(u) return u ~= nil and u.max ~= nil and Alive(u.defID) >= u.max end
+
+local function MaxCanBuild(self, canBuild)
+    local cur = self.current
+    local any = false
+    for _, u in ipairs(cur and cur.units or {}) do if u.max then any = true; break end end
+    if not any then return canBuild end
+    local byDef = cur.byDef
+    return function(d)
+        local u = byDef and byDef[d]
+        return not (u and u.max and Alive(d) >= u.max) and (canBuild == nil or canBuild(d))
+    end
+end
+
 function Strategy:CapFiltered(defID) return self.capTight == true and IsT1Combat(defID) end
 
 local function CapCanBuild(self, canBuild)
@@ -144,14 +165,14 @@ end
 
 function Strategy:Pick(canBuild, skip, positiveOnly)
     if not self.current then return nil end
-    return self.loader.Pick(self.current, self.ledger, CapCanBuild(self, canBuild), skip, positiveOnly, self.weights)
+    return self.loader.Pick(self.current, self.ledger, MaxCanBuild(self, CapCanBuild(self, canBuild)), skip, positiveOnly, self.weights)
 end
 
 -- A unit of the PREVIOUS stance the lab can build (slot_spine WAVE_SWAP: a lab that is about to be replaced keeps producing, so unit
 -- production never dips during a swap).  Nil without a previous stance.
 function Strategy:PickPrev(canBuild)
     if not (self.prev and self.prevLedger) then return nil end
-    local defID = self.loader.Pick(self.prev, self.prevLedger, CapCanBuild(self, canBuild), nil, nil, nil)
+    local defID = self.loader.Pick(self.prev, self.prevLedger, CapCanBuild(self, canBuild), nil, nil, nil)   -- (max is not applied to the previous stance)
     if defID and self.prev.byDef[defID] then self.loader.Note(self.prevLedger, defID, 1) end
     return defID
 end
@@ -196,7 +217,7 @@ function Strategy:UnitList()
         for _, u in ipairs(self.current.units) do if not IsT1Combat(u.defID) then drop = true; break end end
     end
     for _, u in ipairs(self.current.units) do
-        if not (drop and IsT1Combat(u.defID)) then
+        if not (drop and IsT1Combat(u.defID)) and not self:AtMax(u) then
             local w = (self.weights and self.weights[u.n]) or 1
             out[#out + 1] = { defID = u.defID, share = u.share * w }
             sum = sum + u.share * w

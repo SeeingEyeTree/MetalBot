@@ -51,8 +51,9 @@ function M.Prepare(raw)
         if ud and (u.share or 0) > 0 then
             -- behaviors = {"kite", ...} and cfg = {kite = {step = 400}} plug the unit into behavior_host (strategy.lua)
             -- tag = "mass" | "quality" (optional): strategy_hooks.income_mix tilts the share by income
+            -- max = n (optional): no more of this unit once n are alive (strategy.lua Pick / UnitList); the share of the others grows
             st.units[#st.units + 1] = { n = u.n, defID = ud.id, share = u.share, note = u.note,
-                                        behaviors = u.behaviors, cfg = u.cfg, tag = u.tag }
+                                        behaviors = u.behaviors, cfg = u.cfg, tag = u.tag, max = tonumber(u.max) }
             sum = sum + u.share
         end
     end

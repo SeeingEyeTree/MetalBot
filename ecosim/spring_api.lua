@@ -43,7 +43,7 @@ function A.Install(W, P, defsById, defsByName, weaponDefs, root, simCfg)
         for i = 1, #l do out[i] = l[i] end
         return out
     end
-    S.DestroyUnit = function(id) local u = W.units[id]; if u then W.Kill(u, "stress") end end     -- stress_stances.py: kill a unit mid-game
+    S.DestroyUnit = function(id, attackerID) local u = W.units[id]; if u then W.Kill(u, "stress", attackerID) end end     -- stress_stances.py: kill a unit mid-game
     S.GetTeamUnitsByDefs = function(team, defs)
         local want = {}
         if type(defs) == "table" then for _, d in ipairs(defs) do want[d] = true end else want[defs] = true end

@@ -108,6 +108,7 @@ LT.CFG = {
     GRID_BALANCE = true,
     GRID_INTR_MIN_NANOS = 0,
     ENERGY_PUSH = true,
+    SHARE_GOV_UNTIL = nil,        -- frame: the governor runs only until then (then eco is un-paused for good); nil = the whole game (CORE: 6:30, the 4k opening)
     SHARE_GOV = false,            -- bar_framework/spend_governor.lua: make the spine army share bind (pauses grids / tunes the spine)
     FAST_OPEN_CAP = nil,          -- max grids opening at once in the fast-income path (nil = no cap)
     COLLECT_DONE_ONLY = false,    -- new cells only next to grids whose nanos are up (DRAGON_BOT's rule), not next to every assigned grid
@@ -188,6 +189,12 @@ LT.CFG = {
     -- user 2026-10-26: the vehicle lab keeps its normal timing, but once its frame is placed every nano in reach builds it (NANO.PRIO.VP,
     -- re-checked each second) and, if an enemy was seen, its first units are VP_FIRST x VP_FIRST_UNIT (ahead of the spine's con).  false = old.
     VP_RUSH       = true,
+    -- VP_NANO_ASSIST (user 2026-10-26, a 4k army at 6:00): after the vehicle lab stands, every nano in reach keeps building it (NANO.PRIO.VP, above the
+    -- eco jobs) while the army share is VP_ASSIST_SHARE or more, the lab has units queued, and the frame is before VP_ASSIST_UNTIL.  false = off.
+    VP_WAIT_AIR_LAB = true,       -- the vehicle lab is queued only after the air lab's frame is up; false (CORE, 4k opening) = on its own deadline
+    VP_NANO_ASSIST = false,
+    VP_ASSIST_SHARE = 0.6,
+    VP_ASSIST_UNTIL = 7 * 60 * 30,
     VP_FIRST      = 2,
     VP_FIRST_UNIT = ROLES.Get("raider_veh"),
     VP_NAME       = ROLES.Get("lab_t1_veh"),
@@ -868,7 +875,7 @@ local function UpdateVehicleLab(T, frame, res)
     end
     local p = LT.LabPlan(T, res, x, z, site.builder, T.vpDefID)
     local fire = T.CFG.VP_DONE_FRAME - math.floor(p.t * 30) - T.CFG.VP_MARGIN
-    if not T.labFrame then return end            -- the site is held; the air lab always goes first
+    if T.CFG.VP_WAIT_AIR_LAB and not T.labFrame then return end            -- the site is held; the air lab goes first (VP_WAIT_AIR_LAB)
     if frame % T.CFG.LOG_EVERY == 0 then
         Spring.Echo(string.format("[LT] %s vehicle lab plan: BP %.0f (%d nanos) -> %.0fs; start at %s for done by %s; bank %d",
             Clock(frame), p.bp, p.nanos, p.t, Clock(math.max(fire, 0)), Clock(T.CFG.VP_DONE_FRAME), res.metal))
@@ -1008,6 +1015,20 @@ local function UpdateVpAssist(T, frame)
     for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Assist(NANO.PRIO.VP, nid, id) end
 end
 
+-- VP_NANO_ASSIST: the finished vehicle lab keeps its nanos while the strategy wants a big army early (every second)
+local function UpdateVpNanoAssist(T, frame)
+    if not (T.CFG.VP_NANO_ASSIST and T.vpPhase == "done" and T.vpID and frame % 30 == 0 and frame < T.CFG.VP_ASSIST_UNTIL) then return end
+    local NANO = T.BP.NANO
+    if not (NANO and Spring.GetUnitDefID(T.vpID)) then return end
+    local strat = T.WG and T.WG.Strategy
+    if not (strat and strat.Share and strat:Share() >= T.CFG.VP_ASSIST_SHARE) then return end
+    local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(T.vpID, 0)
+    if type(q) == "number" and q <= 0 then return end            -- an idle lab has nothing for the nanos to build
+    local x, _, z = Spring.GetUnitPosition(T.vpID)
+    if not x then return end
+    for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Assist(NANO.PRIO.VP, nid, T.vpID) end
+end
+
 -- ── Entry points ─────────────────────────────────────────────────────────────
 
 function LT.Update(T, frame, res)
@@ -1023,7 +1044,16 @@ function LT.Update(T, frame, res)
             i = i + 1
         end
     end
-    if T.CFG.SHARE_GOV then
+    if T.CFG.SHARE_GOV and T.CFG.SHARE_GOV_UNTIL and frame >= T.CFG.SHARE_GOV_UNTIL then
+        if T.sg and (T.sg.paused or T.sg.boost ~= 1) then            -- the window is over: release everything it held
+            T.sg.paused, T.sg.boost, T.sg.hold, T.ecoPaused = false, 1, false, false
+            if T.spineMod then
+                if T.spineMod.SetBoost then T.spineMod.SetBoost(1) end
+                if T.spineMod.SetHold then T.spineMod.SetHold(false) end
+            end
+            Spring.Echo("[LT] SHARE_GOV window over: eco released")
+        end
+    elseif T.CFG.SHARE_GOV then
         if not T.sg then
             local ok, SG = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/spend_governor.lua")
             if ok and SG then
@@ -1042,6 +1072,7 @@ function LT.Update(T, frame, res)
     UpdateVehicleLab(T, frame, res)
     UpdateLabWatchdog(T, frame)
     UpdateVpAssist(T, frame)
+    UpdateVpNanoAssist(T, frame)
     if T.spineOn then T.spineMod.Update(frame, res) end
 end
 

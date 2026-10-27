@@ -34,7 +34,7 @@ MACRO.Install(widget, WG, {
     -- no nano parking near a swap, an idle lab becomes a T2 bot lab
     SINK_MAX    = 40,              -- 2026-10-25: 10 labs absorb ~4.3k m/s (10 x ~430) and the bank floated to 600k at 9.4k income; one lab with 32 decoys takes ~430 m/s
     SINK_PARALLEL = 5,             -- labs being placed at once (24+ are needed at 9-10k m/s)
-    LT_CFG      = { GRID_FAST_INCOME = 1, LAB_NANOS_FIRST_GRID = true, GRID_START = { cap = 2, eco = 3, nanos = 1, wait = 30 * 30 }, T2BOT_LAB = true, DECOY_LINE = true, REZ_LAB = true, REZ_LAB_INCOME = 250 },   -- REZ_LAB: a T1 bot lab on the line for the rez floor (line_transition/rez_lab.lua)        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
+    LT_CFG      = { VP_NANO_ASSIST = true, VP_WAIT_AIR_LAB = false, VP_DONE_FRAME = 3 * 60 * 30, GRID_FAST_INCOME = 1, LAB_NANOS_FIRST_GRID = true, GRID_START = { cap = 2, eco = 3, nanos = 1, wait = 30 * 30 }, T2BOT_LAB = true, DECOY_LINE = true, REZ_LAB = true, REZ_LAB_INCOME = 250 },   -- REZ_LAB: a T1 bot lab on the line for the rez floor (line_transition/rez_lab.lua)        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
     SPINE_CFG   = { RUSH_NANOS = true, FLOAT_MULT = 2.5, EARLY_CONS = 1, FIRST_VP = 2, FIRST_LAB_NANOS = 2, LAB_CANDIDATES = { "corlab", "corvp", "corap", "coralab", "coravp", "coraap", "corgant" }, FRONT = 600, BLOCK_PITCH = 320, WAVE_SWAP = true, BLOCK_CONS = true, IDLE_LAB_T2 = true, BUILD_AHEAD = 0.5, NANO_UTIL_GATE = 0.5 },
     -- everything else: the defaults in macro_runtime.lua (RAID_BOT's values)
 })

@@ -77,10 +77,12 @@ M.SPEED_BANDS = {
 -- Weight by distance from the home anchor, as a fraction of the home->enemy
 -- distance.  Ground falls off hard; air barely does, because air closes that
 -- distance in seconds.
+-- user 2026-10-26: the response always came in time but should come a little faster, so the close bands are raised ~25%
+-- (were 1.00 / 0.70 / 0.30): a ground group scores over BAND_RESPOND sooner as it nears the base.  Also raises production urgency a little.
 M.POS_GROUND = {
-    { 0.08, 1.00 },  -- in the base
-    { 0.20, 0.70 },  -- in the mex grid
-    { 0.50, 0.30 },  -- our half
+    { 0.08, 1.25 },  -- in the base
+    { 0.20, 0.90 },  -- in the mex grid
+    { 0.50, 0.38 },  -- our half
     { 0.65, 0.10 },  -- around the midline
     { math.huge, 0.02 },
 }

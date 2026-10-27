@@ -1973,15 +1973,20 @@ local function ManeuverPlan()
     return plan.army == "maneuver"
 end
 
-local function EnsureMD()
-    if MD then return MD end
-    if not (MDm and ARMY and TM) then return nil end
-    local plan = WG.Strategy:Plan()
+local function MDBaseCfg(plan)
     -- unit_runtime: the plan army "defend" plays long-range support as support (maneuver_defence SUPPORT_ROLE) unless its stance says not
     local cfg = {}
     if DefendPlan(plan) then cfg.SUPPORT_ROLE, cfg.MAX_GROUP_SPEED = true, 150 end
     -- HOME_DEFENCE (user 2026-10-26: the scouts were ignored by a minimum threat): every threat, however small, gets a unit
     if K.HOME_DEFENCE then cfg.MIN_UNIT_V, cfg.MIN_THREAT, cfg.SCOUT_V, cfg.MIN_RESPONDERS = 1, 1, 0, 1 end
+    return cfg
+end
+
+local function EnsureMD()
+    if MD then return MD end
+    if not (MDm and ARMY and TM) then return nil end
+    local plan = WG.Strategy:Plan()
+    local cfg = MDBaseCfg(plan)
     for k, v in pairs((plan and plan.maneuver) or {}) do cfg[k] = v end
     MD = MDm.New{ ARMY = ARMY, teamID = myTeamID, mapX = Game.mapSizeX or 8192, mapZ = Game.mapSizeZ or 8192,
                   enemyBase = EnemyBase, contacts = function() return TM.Contacts() end, cfg = cfg,
@@ -2067,6 +2072,10 @@ local function StanceHandover(frame)
     if not name or name == lastStance then return end
     local prev, was, now = lastStance, lastManeuver, ManeuverPlan()
     lastStance, lastManeuver = name, now
+    if MD and MDm.Reconfigure then                    -- the new stance's own maneuver settings (ring distance ...)
+        local plan = WG.Strategy:Plan()
+        MDm.Reconfigure(MD, MDBaseCfg(plan), plan and plan.maneuver)
+    end
     if not now and WG and WG.MetalBot then WG.MetalBot.blobs = nil end
     if prev == nil or not (was or now) then return end
     local list = {}
@@ -2085,6 +2094,15 @@ local function StanceHandover(frame)
         for uid, defID in pairs(list) do if spGetUnitDefID(uid) then ids[#ids + 1] = { uid = uid, sp = (UnitDefs[defID] or {}).speed or 0 } end end
         table.sort(ids, function(a, b) if a.sp ~= b.sp then return a.sp < b.sp end return a.uid < b.uid end)
         for i = 1, math.floor(#ids * keep) do garrison[ids[i].uid] = true end
+    end
+    -- user 2026-10-26: a raid at the base always keeps its responders.  Blob units sent out against an intruder group are not handed to
+    -- click_army when the army goes out (push / raid, or a push stance): they stay blob units and finish the job (the game log: a push
+    -- started 45 s after a pull-back and took the units that were defending).
+    local nResp = 0
+    if MD then
+        for uid, r in pairs(MD.responding) do
+            if r.state == "out" and MD.units[uid] and not garrison[uid] and spGetUnitDefID(uid) then garrison[uid] = true; nResp = nResp + 1 end
+        end
     end
     -- a pull-back (out -> the maneuver blobs): units attacking the base stay committed (COMMIT above)
     local nCommit = 0
@@ -2124,8 +2142,9 @@ local function StanceHandover(frame)
             widget:UnitFinished(uid, defID, myTeamID)
         end
     end
-    Spring.Echo(string.format("[UnitCtrl] %d:%02d stance %s -> %s: %d units released to the %s plan", math.floor(frame / 1800),
-        math.floor(frame / 30) % 60, prev, name, n, now and "maneuver" or "click_army"))
+    Spring.Echo(string.format("[UnitCtrl] %d:%02d stance %s -> %s: %d units released to the %s plan%s", math.floor(frame / 1800),
+        math.floor(frame / 30) % 60, prev, name, n, now and "maneuver" or "click_army",
+        nResp > 0 and string.format(" (%d stay to answer a raid)", nResp) or ""))
 end
 
 local function StaysHome(unitDefID)
@@ -2480,7 +2499,7 @@ function widget:GameFrame(frame)
             ApplyCAPush(plan)
             CA.SetMode("raid", frame)
             CA.Update(frame)
-            if push.mode == "raid" and MD then         -- the garrison keeps its posts while the rest raids
+            if MD and (push.mode == "raid" or next(MD.units)) then   -- the garrison / the raid's responders keep their posts while the rest is out
                 local okM, errM = pcall(MDm.Update, MD, frame)
                 if not okM then Spring.Echo("[MD] error: " .. tostring(errM)) end
             end

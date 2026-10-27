@@ -26,3 +26,13 @@ any_edges = { { to = "late", when = ... } },      -- same, from every node
 - `builtin_rules.lua`: what CORE does on its own whatever the machine says (air raid -> AA rush, AA floor, raid response, rez, anti-nuke, ...);
   view-only, shown in the editor's "Built-in rules" tab and the "always on" strip.
 - Checks: `python fsm_index.py --check [file]`, `python tests/run_lua.py tests/test_fsm.lua`.
+
+## core_default v2 (2026-10-26)
+`start` (stance `core_start`: 76% Incisor / 24% Pounder, share 1.0) for 6:00 -> `t1_hold` or `t1_push` (T1 units only) -> `t2_hold` / `t2_push` (income >= 500; ~18-23% T1
+filler) -> `core_late` (Demon + Tiger; the Dragon sink is separate) at the unit cap. Share machine: `start` 1.0 -> `hold_low` 0.22 / `push_high` 0.55 by the stance's
+army mode, `catch_up` (match_enemy) when a good scout shows an enemy army as big as ours, `attack` 1.0 while `under_attack` or `enemy_near_base >= 600`.
+New signals: `enemy_scouted` (located + 12 units seen), `enemy_known_units`, `under_attack`, `enemy_near_base` (raid_response's intruder value inside our territory).
+Hold stances stand further out: the stance plan `maneuver = { R_MIN = 1100 }` (default ring 700); any perimeter_guard / maneuver_defence option can be set per stance there,
+and it is re-applied on every stance change (`maneuver_defence.Reconfigure`).
+The 4k-at-6:00 opening is config in `candidates/CORE/macro_controller.lua` `LT_CFG`: `VP_WAIT_AIR_LAB = false` (the vehicle lab goes first), `VP_DONE_FRAME` 3:00, `VP_NANO_ASSIST`
+(the lab's nanos keep building it while the share is >= 0.6, line_transition). eco_sim: ~4.2k army spent at 6:00 (was ~2.0k), income 10-14 min ~25% lower, 20 min about the same.

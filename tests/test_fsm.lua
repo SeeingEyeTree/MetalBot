@@ -103,28 +103,74 @@ for _, name in ipairs({ "core_default", "air_timing" }) do
     end
 end
 
--- core_default: hold -> raid when the enemy is weak; raid -> hold when behind + bad trades; late at the cap
+-- core_default (v2): start -> hold / push at 6:00, push <-> hold, T1 -> T2, late at the cap; share follows
 local cd = FSM.Load("core_default")
 local CB = FSM.Bundle(cd, { hookFactories = { match_enemy = function() return function() return 0.4 end end }, log = function() end })
-local cs = "hold"
-local cstrat = { Name = function() return cs end, Plan = function() return {} end }
+local cs = "core_start"
+local ST = {}
+for _, n in ipairs({ "core_start", "t1_hold", "t1_push", "t2_hold", "t2_push", "core_late" }) do
+    local raw = dofile("stances/" .. n .. ".lua")
+    ST[n] = raw
+end
+local cstrat = { Name = function() return cs end, Plan = function() return ST[cs].plan end }
 local function S0(extra)
-    local t = { frame = 0, minute = 0, metal = { income = 100 }, capFrac = 0.1, located = false, enemyGround = 0, enemyAir = 0 }
+    local t = { frame = 0, minute = 0, metal = { income = 100 }, capFrac = 0.1, located = false, enemyGround = 0, enemyAir = 0, armyValue = 4000 }
     for k, v in pairs(extra or {}) do t[k] = v end
     return t
 end
-check(CB.switch(S0(), cstrat) == "hold", "core_default starts in hold")
-local f = 1800 * 3
-check(CB.switch(S0{ frame = f, minute = 3, located = true, armyValue = 3000, enemyGround = 500 }, cstrat) == "raid_open", "weak enemy located -> raid_open")
-cs = "raid_open"
-f = f + 30 * 100
-check(CB.switch(S0{ frame = f, minute = 4, located = true, armyValue = 3000, enemyGround = 500, armyRatio = 0.7,
-    trade = { killed = 0, lost = 1500, ratio = 0, badEnds = 0 } }, cstrat) == "hold", "behind + bad trade -> hold")
-cs = "hold"
-check(CB.switch(S0{ frame = f + 30, minute = 13, capFrac = 0.8 }, cstrat) == "raid_late", "cap filling -> raid_late (any_edge)")
-cs = "raid_late"
-check(CB.switch(S0{ frame = f + 60, minute = 14, capFrac = 0.8, located = true, armyValue = 3000, enemyGround = 100 }, cstrat) == "raid_late", "late is permanent")
-check(math.abs(CB.army_share(S0(), cstrat) - 0.4) < 1e-9, "core_default share node runs match_enemy")
+local function Step(st) local s = CB.switch(st, cstrat); cs = s or cs; return cs, CB.army_share(st, cstrat) end
+local sx, sh = Step(S0())
+check(sx == "core_start" and sh == 1.0, "starts in core_start with share 1.0")
+sx = Step(S0{ frame = 1800 * 5, minute = 5 })
+check(sx == "core_start", "stays in core_start before 6:00")
+local f = 1800 * 6
+local scouted = { located = true, intel = { known = 20 }, enemyGround = 500, enemyAir = 0 }
+sx = Step(S0{ frame = f, minute = 6, located = true, intel = { known = 20 }, enemyGround = 500 })
+check(sx == "t1_push", "6:00 scouted, little enemy value -> t1_push (" .. sx .. ")")
+local _, sh2 = Step(S0{ frame = f + 30, minute = 6, located = true, intel = { known = 20 }, enemyGround = 500 })
+check(sh2 and sh2 < 1.0 and sh2 > 0.5, "share eases toward push_high (" .. tostring(sh2) .. ")")
+-- an unscouted enemy at 6:00 -> hold
+CB = FSM.Bundle(cd, { hookFactories = { match_enemy = function() return function() return 0.4 end end }, log = function() end })
+cs = "core_start"
+sx = Step(S0{ frame = f, minute = 6 })
+check(sx == "t1_hold", "6:00 nothing scouted -> t1_hold")
+local _, shh = Step(S0{ frame = f + 30 * 60, minute = 7 })
+check(math.abs(shh - 0.22) < 0.02, "hold share is low once ramped (" .. tostring(shh) .. ")")
+-- a good scout showing an enemy army as big as ours -> catch_up (match_enemy)
+local big = { frame = f + 30 * 200, minute = 9, located = true, intel = { known = 20 }, enemyGround = 4000, armyValue = 4000, metal = { income = 100 }, capFrac = 0.1 }
+Step(big); big.frame = big.frame + 30 * 12; local _, shc = Step(big)
+check(math.abs(shc - 0.4) < 1e-9, "good scout, big enemy -> catch_up node (match_enemy) (" .. tostring(shc) .. ")")
+-- a real attack: share 1.0 from any node, then back
+local atk = S0{ frame = f + 30 * 300, minute = 11, raid = { frame = f + 30 * 300, value = 2000 }, metal = { income = 100 } }
+local _, sha = Step(atk)
+check(sha and sha >= 0.4, "under attack raises the share (" .. tostring(sha) .. ")")
+atk.frame = atk.frame + 30 * 20; local _, sha2 = Step(atk)
+check(sha2 and sha2 > 0.9, "attack share ramps to 1.0 (" .. tostring(sha2) .. ")")
+-- T1 -> T2 on income, push -> hold on attack, late at the cap
+local t2 = S0{ frame = f + 30 * 400, minute = 12, metal = { income = 600 }, capFrac = 0.1 }
+Step(t2); t2.frame = t2.frame + 30 * 25
+check(Step(t2) == "t2_hold", "income 600 -> t2_hold (stays in hold mode)")
+local late = S0{ frame = f + 30 * 500, minute = 14, capFrac = 0.8 }
+check(Step(late) == "core_late", "cap filling -> core_late")
+CB = FSM.Bundle(cd, { hookFactories = { match_enemy = function() return function() return 0.4 end end }, log = function() end })
+cs = "t1_push"
+local ua = S0{ frame = 5000, minute = 8, raid = { frame = 5000, value = 3000 } }
+check(Step(ua) == "t1_hold", "push stance pulls back to hold under a real attack")
+-- signals
+check(SG.Get("under_attack", { frame = 100, raid = { frame = 90, value = 900 } }) == true, "under_attack signal")
+check(SG.Get("under_attack", { frame = 1000, raid = { frame = 90, value = 900 } }) == false, "under_attack expires")
+check(SG.Get("enemy_near_base", { frame = 100, raid = { frame = 90, value = 700 } }) == 700, "enemy_near_base value")
+check(SG.Get("enemy_scouted", { located = true, intel = { known = 12 } }) == true and SG.Get("enemy_scouted", { located = true, intel = { known = 3 } }) == false, "enemy_scouted")
+-- the opening stance: 6 Incisors to 1 Pounder by count (76 / 24 by value), all T1 units in the T1 stances
+check(math.abs(ST.core_start.units[1].share - 0.76) < 1e-9 and ST.core_start.units[1].n == "corgator", "core_start is 76% Incisor")
+local T2 = { corcan = 1, correap = 1, corban = 1, corsumo = 1, cormort = 1, corsent = 1, coraak = 1, corftiger = 1, cordemon = 1 }
+for _, n in ipairs({ "t1_hold", "t1_push", "core_start" }) do
+    for _, u in ipairs(ST[n].units) do check(not T2[u.n], n .. " has only T1 units (" .. u.n .. ")") end
+end
+local t1share = 0
+for _, u in ipairs(ST.t2_hold.units) do if not T2[u.n] then t1share = t1share + u.share end end
+check(t1share > 0 and t1share < 0.25, "t2_hold keeps a small T1 share (" .. t1share .. ")")
+check(ST.t1_hold.plan.maneuver.R_MIN > 700, "hold stances hold further out than the old 700 ring")
 
 print(string.format("test_fsm: %d checks, %d failures", checks, failures))
 if failures > 0 then os.exit(1) end

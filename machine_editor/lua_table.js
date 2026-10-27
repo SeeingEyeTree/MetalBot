@@ -3,7 +3,7 @@
 // parseLua(src) -> { header, value }   header = the comment text before `return` (kept so a save does not lose it)
 // serializeLua(value, header) -> text
 (function (root) {
-  function parseLua(src) {
+  function parseLua(src, assign) {
     let i = 0;
     const n = src.length;
     const err = (m) => { throw new Error(m + " at line " + (src.slice(0, i).split("\n").length)); };
@@ -99,6 +99,17 @@
       if (hasKey) { arr.forEach((v, k) => { obj[k + 1] = v; }); return obj; }
       return arr;
     }
+    if (assign) {                      // a stance file: `local M = {}` then `M.name = ...` statements, `return M`
+      const out = {};
+      for (;;) {
+        ws();
+        if (i >= n) break;
+        const am = /^M\.(\w+)\s*=(?!=)/.exec(src.slice(i, i + 80));
+        if (am) { i += am[0].length; out[am[1]] = value(); }
+        else { while (i < n && src[i] !== "\n") i++; }
+      }
+      return { header: "", value: out };
+    }
     const m = /(^|\n)[ \t]*return\b/.exec(src);
     if (!m) err("no `return` found");
     const header = src.slice(0, m.index + (m[1] ? 1 : 0)).replace(/\s+$/, "");
@@ -150,7 +161,8 @@
     return (header ? header.replace(/\s+$/, "") + "\n" : "") + "return " + ser(value, "", 0, false) + "\n";
   }
 
-  const api = { parseLua, serializeLua };
+  const parseStanceLua = (src) => parseLua(src, true).value;
+  const api = { parseLua, parseStanceLua, serializeLua };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LuaTable = api;
 })(typeof window !== "undefined" ? window : this);
