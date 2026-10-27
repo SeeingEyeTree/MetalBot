@@ -117,6 +117,7 @@ M.CFG = {
     FIRST_VP        = 0,
     FIRST_VP_NAME   = ROLES.Get("lab_t1_veh"),
     FIRST_LAB_NANOS = 2,
+    LAB_MIN_NANOS   = 0,      -- user 2026-10-27: no spine lab is started until LAB_MIN_NANOS spine nanos stand for it (this many x (1 + the labs already placed in slots)); 0 = off
     EXPECT_UNTIL    = 10800,  -- frames (6:00): the host's own lab (S.expect) is awaited, not duplicated in a slot, until then
     BLOCK_OPEN_FRAC = 0.75,   -- the next block opens once this share of the released nanos stand
     SLACK_BLOCKS    = 2,      -- spare blocks (all nanos standing, both slots free) kept ready for a transition; 0 = off
@@ -736,6 +737,12 @@ local function ThrottleNanos()
     S.nanoAllowed, S.nanoNeed = allowed, need    -- nanoNeed (what the spend uses) drives guarding; slack nanos stay parked
     -- slack: keep SLACK_BLOCKS blocks free of labs, with every nano of theirs standing, on top of the blocks in use
     local buildNeed = need
+    -- LAB_MIN_NANOS: build (not necessarily use) the nanos a waiting lab needs: LAB_MIN_NANOS per lab, placed ones + the next
+    if (K.LAB_MIN_NANOS or 0) > 0 then
+        local placed = 0
+        for _, slot in ipairs(S.slots) do if slot.state == "build" or slot.state == "lab" then placed = placed + 1 end end
+        buildNeed = math.max(buildNeed, K.LAB_MIN_NANOS * (1 + placed))
+    end
     S.spare = SpareBlocks()
     if K.SLACK_BLOCKS > 0 and ready and S.income >= K.SLACK_INCOME and (S.bankFrac or 1) >= K.SLACK_MIN_BANK then
         buildNeed = math.max(need, (#S.blocks - S.spare + K.SLACK_BLOCKS) * K.NANOS_PER_BLOCK)
@@ -1279,6 +1286,19 @@ local function PlanLabs()
                 if S.frame - (S.firstVpLogF or -1e9) >= 900 then
                     S.firstVpLogF = S.frame
                     Log("first vehicle plant waits for nanos: %d of %d stand", built, K.FIRST_LAB_NANOS)
+                end
+                missing = 0
+            end
+        end
+        -- LAB_MIN_NANOS: nanos before labs -- a new spine lab waits until LAB_MIN_NANOS nanos stand for each lab (placed ones + this one)
+        if (K.LAB_MIN_NANOS or 0) > 0 and missing > 0 then
+            local built, placed = 0, 0
+            for uid in pairs(S.nanos) do if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then built = built + 1 end end
+            for _, slot in ipairs(S.slots) do if slot.state == "build" or slot.state == "lab" then placed = placed + 1 end end
+            if built < K.LAB_MIN_NANOS * (1 + placed) then
+                if S.frame - (S.labNanoLogF or -1e9) >= 900 then
+                    S.labNanoLogF = S.frame
+                    Log("lab %s waits for nanos: %d stand, %d wanted (%d per lab, %d placed)", name, built, K.LAB_MIN_NANOS * (1 + placed), K.LAB_MIN_NANOS, placed)
                 end
                 missing = 0
             end

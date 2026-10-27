@@ -91,3 +91,12 @@ Nonstop spend of lab + 8 nanos: Grunts 60 m/s, opening comp 97 m/s, Pounders 124
 Machine `rows_default` (copy of core_default): share 0 until 4:00 (`open`), 35% from 4:00 (`start`), a `spam` node (75%) when metal income >= 126 (1.3x the opening comp's 97) until 9:00 -- slot_spine then sizes its active nanos (share x income / 11) = all 8;
 spam exits under 111 m/s or at 9:00. In eco_sim the income reaches 126 at ~7:20, so spam runs 7:23-9:05: army metal by 4:00 / 7:00 / 8:00 / 9:00 / 12:00 = 946 / 5.0k / 8.3k / 13.2k / 26.7k (CORE: 1.0k at 4:00, 5.7k at 7:00).
 Not changed: the first spine block still opens at 6:00 (VP2 wait) so the 8 nanos only stand from ~6:00-7:00; NANO_CAP 8 changed nothing in the sim (the need is share-driven). Income at 20:00 3.4k (6 seeds).
+
+## After the first win against CORE_ROWS_ECO (user 2026-10-27, "gg"): spine cons and nanos before labs
+User beat rows_default (much better than before: the macro is OK now; the remaining problems are the STANCE SWAP and UNIT CONTROL). One macro problem left: the spine ordered ~5 ground cons; it should build ONE, and 4 nanos must stand before any new lab.
+Done (config + slot_spine): SPINE_CFG `CONS_MIN = 1, CONS_PER_INCOME = 500, CONS_MAX = 4` (con target = 1 + income/500), `EARLY_CONS = 1` until 3 labs stand or 10:00 (`EARLY_CONS_LABS = 3`, `EARLY_CONS_UNTIL`), `FIRST_LAB_NANOS = 4`,
+new `LAB_MIN_NANOS = 4` (slot_spine: a spine lab waits until 4 nanos stand per lab -- placed labs + the new one -- and ThrottleNanos' `buildNeed` is raised to that so the nanos really get built; the log says `lab corlab waits for nanos: n stand, 4 wanted`).
+eco_sim: first spine lab placed ~7:00 after 4 nanos stand, 8 nanos by 7:15 (was: lab at 6:17 with 3 parked nanos); no Lua errors. NOTE: `NANO_CAP` in SPINE_CFG is NOT a slot_spine option (the [CFG] warning says so) -- it never capped anything.
+STILL OPEN: eco_sim still shows 2 `spine-con corcv` orders (4:16 and 4:36; lab_rules `spine-con-first`, "spine-con-first 2" in the lab broker rows of the real game) -- one of them should go; look at lab_rules SPINE_CON_FIRST / the `spine` want when you resume.
+Also open (user): stance swap (the 6:00 push at start -> t1_push, back to t1_hold at 6:45 when attacked: the army leaves and comes back) and unit control; the nano / lab-capacity facts and the 8-nano spam rule are above.
+Versions on TreeServer: commit after 3267ae5 (this section). Deploy: candidates/CORE_ROWS_ECO. Machine: machines/rows_default.lua (copy of core_default with open/start/spam share nodes).
