@@ -58,6 +58,7 @@ LC.SITE_K_LAST = nil     -- last column the rez / T2 bot / decoy sites count bac
 LC.MAP_MARGIN = 96       -- row halves (LC.GrowRow) never build closer than this to the map edge
 LC.ROW_CONS = 3          -- builders on each half of a grown row
 LC.GROW = false          -- true: a con with no free lane makes a new row (LC.GrowRow), see LC.NextConLane
+LC.PAUSED = false        -- set by the macro each tick while the share governor holds the eco pipeline paused (GOV_LINE): line builders start no new item
 LC.HELP_LANES = false    -- true: a builder whose lane is done guards a builder on a lane still being built
 LC.ROW_BOTH = true      -- true: a grown row is two lanes (east and west of the middle); false: one lane running east
 LC.ROW_MAX = nil         -- most rows GrowRow makes (nil = no limit)
@@ -799,6 +800,7 @@ local function Step(crew, c, res)
     end
     if c.hold then return end        -- the macro wants this builder free (after the item it just finished)
     if StepJob(crew, c) then return end
+    if LC.PAUSED and not c.cmdr and c.phase == "idle" then return end      -- LC.PAUSED (share governor): no new slot until the army has its share
     if Decide(crew, c, res) then return end
     local stop = NextStop(crew, c)
     if stop then

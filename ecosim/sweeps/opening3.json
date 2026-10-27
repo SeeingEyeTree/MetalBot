@@ -1,0 +1,109 @@
+{
+ "tag": "opening3",
+ "seeds": "1-6",
+ "minutes": 16,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "now_rs5": {},
+  "cap60": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.6
+    }
+   }
+  },
+  "cap60_line": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.6
+    }
+   }
+  },
+  "cap50_line": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.5
+    }
+   }
+  },
+  "cap40_line": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.4
+    }
+   }
+  },
+  "cap60_line_min50": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.6,
+     "SHARE_GOV_MIN_ALPHA": 0.5
+    }
+   }
+  },
+  "cap50_line_min50_rs0": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true,
+     "ROW_START_FRAME": 0
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.5,
+     "SHARE_GOV_MIN_ALPHA": 0.5
+    }
+   }
+  },
+  "cap60_line_until9": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": true,
+     "GOV_LINE": true
+    },
+    "line_transition": {
+     "SHARE_GOV": true,
+     "GOV_AIR_LAB": true,
+     "SHARE_GOV_ALPHA_CAP": 0.6,
+     "SHARE_GOV_UNTIL": 16200
+    }
+   }
+  }
+ }
+}

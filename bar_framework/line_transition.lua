@@ -34,7 +34,7 @@ local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")   -- sp
 local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
 local RegisterJobs                                                       -- defined below the jobs it registers
 
-LT.NIL_OPTIONS = { "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+LT.NIL_OPTIONS = { "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
     NANO_FIRST     = nil,         -- n: every grid's first jobs are n nanos, chained (a nano a finished nano reaches first); nil = the blueprint's order
@@ -43,6 +43,8 @@ LT.CFG = {
     GRID_REACH_FALLBACK_OK = false,
     GRID_BRIDGE    = false,       -- with NANO_FIRST: a new grid none of whose nano spots a finished nano reaches first gets a bridge nano from the next grid built by its con
     GRID_BRIDGE_RANGE = 700,      -- ... the bridge spot must be within this of the grid's nano spots
+    GOV_AIR_LAB    = false,       -- with SHARE_GOV: the air lab waits while the governor holds the eco pipeline paused (army starved), at most GOV_AIR_LAB_MAX frames
+    GOV_AIR_LAB_MAX = 3600,
     SPINE_EARLY    = false,       -- true: start the spine as soon as the vehicle lab has its site (needed when the air lab is late, CORE_ROWS)
     AIR_LAB        = true,        -- false: no air lab (and so no mex grids / air cons); the line, the vehicle lab and the spine only (CORE_LONGLINE)
     LATEST_FRAME   = 6 * 60 * 30, -- build the lab by now whatever the bank says
@@ -117,6 +119,9 @@ LT.CFG = {
     GRID_INTR_MIN_NANOS = 0,
     ENERGY_PUSH = true,
     SHARE_GOV_UNTIL = nil,        -- frame: the governor runs only until then (then eco is un-paused for good); nil = the whole game (CORE: 6:30, the 4k opening)
+    SHARE_GOV_ALPHA_CAP = nil,    -- the governor's target share is at most this (nil = the spine's share as it is)
+    SHARE_GOV_ALPHA_FLOOR = nil,  -- ... and it always asks for at least this share of actual spending (nil = the spine's share)
+    SHARE_GOV_MIN_ALPHA = nil,    -- ... and it does nothing under this share (nil = always)
     SHARE_GOV = false,            -- bar_framework/spend_governor.lua: make the spine army share bind (pauses grids / tunes the spine)
     FAST_OPEN_CAP = nil,          -- max grids opening at once in the fast-income path (nil = no cap)
     COLLECT_DONE_ONLY = false,    -- new cells only next to grids whose nanos are up (DRAGON_BOT's rule), not next to every assigned grid
@@ -571,6 +576,11 @@ local function UpdateWait(T, frame, res)
         end
     end
     if early or not (p.ok or late) then return end
+    -- GOV_AIR_LAB: while the share governor holds the eco pipeline paused (the army is starved of metal) the air lab waits, at most GOV_AIR_LAB_MAX frames
+    if T.CFG.GOV_AIR_LAB and T.ecoPaused then
+        T.labGovSince = T.labGovSince or frame
+        if frame - T.labGovSince < (T.CFG.GOV_AIR_LAB_MAX or 3600) then return end
+    end
     local ud = UnitDefs[T.labDefID]
     LC.QueueJob(T.crew, b.id, { name = ud.name, x = x, z = z, f = f, tag = "lab" })
     T.phase, T.labFrame = "lab", frame

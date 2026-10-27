@@ -68,6 +68,8 @@ M.DEFAULTS = {
     ROW_MAX             = nil,       -- SCALE_ROWS: most rows made (nil = until the map edge / unit cap)
     ROW_CONS            = 3,         -- builders on each half of a grown row
     ROW_COLS            = 16,        -- columns in each half of a grown row
+    GOV_LINE            = false,     -- the line's builders start no new slot while the share governor holds the eco pipeline paused (army starved of metal)
+    GOV_ROWS            = false,     -- SCALE_ROWS: no new row con while the share governor holds the eco pipeline paused (the army is starved of metal)
     ROW_START_FRAME     = 0,         -- SCALE_ROWS: no con beyond the first 3 before this frame (the opening's metal goes to the army; user 2026-10-27, the 5:30 raid)
     ROW_UNIT_FRAC       = 0.5,       -- SCALE_ROWS: no new con once the team has this share of the unit cap
     EXTRA_LANES         = 0,         -- CORE_LONGLINE: extra lanes beyond the 4 (line_crew LC.AddLanes), on the side away from the enemy; each is served by LANE_CONS builders
@@ -405,6 +407,8 @@ local function MaybeQueueNextCon(frame, res)
     if TS.queuedCount >= CFG.MAX_CONS then return end
     if CFG.SCALE_ROWS and crew and TS.queuedCount >= 3 then
         if frame < (CFG.ROW_START_FRAME or 0) then return end
+        -- the share governor (line_transition SHARE_GOV) has paused the eco pipeline: the army is starved of metal, so no new row con either
+        if CFG.GOV_ROWS and trans and trans.ecoPaused then return end
         -- rows scale with the unit cap and the map: no con without a lane for it, none past ROW_UNIT_FRAC of the cap
         local maxU, cnt = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID), Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
         if maxU and cnt and cnt >= maxU * CFG.ROW_UNIT_FRAC then return end
@@ -940,6 +944,7 @@ function widget:GameFrame(frame)
     ReleaseCon1(frame)
     if TS.cmdEvading == nil then UpdateCommander(frame, res) end
     if frame % 30 == 0 then UpdateCommanderSafety(frame, res) end
+    LC.PAUSED = (CFG.GOV_LINE and trans and trans.ecoPaused) and true or false
     LC.Update(crew, frame, res)
     CheckFloat(frame, res)
     if BP_PLACER.NANO and BP_PLACER.NANO.Sweep then BP_PLACER.NANO.Sweep() end

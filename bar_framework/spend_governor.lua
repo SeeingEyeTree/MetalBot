@@ -92,6 +92,12 @@ function SG.Update(G, frame, res)
     if not (T.spineOn and spine and spine.Share) then return end
     if frame % K.EVERY ~= 0 then return end
     local alpha = spine.Share()
+    -- SHARE_GOV_ALPHA_CAP: the governor never asks for more than this share (the machine's start / attack share is 1.0, which would stop the eco altogether);
+    -- SHARE_GOV_MIN_ALPHA: below this share it does nothing (the quiet hold shares are left to the labs' own budget)
+    if T.CFG.SHARE_GOV_ALPHA_CAP then alpha = math.min(alpha, T.CFG.SHARE_GOV_ALPHA_CAP) end
+    if alpha < (T.CFG.SHARE_GOV_MIN_ALPHA or 0) then alpha = 0 end
+    -- SHARE_GOV_ALPHA_FLOOR: the governor always asks for at least this share of ACTUAL spending (user 2026-10-27: 35% actual army spend is what is needed), whatever the machine says
+    if T.CFG.SHARE_GOV_ALPHA_FLOOR and alpha < T.CFG.SHARE_GOV_ALPHA_FLOOR then alpha = T.CFG.SHARE_GOV_ALPHA_FLOOR end
     if frame - G.lastScan >= K.MEASURE_EVERY then
         G.lastScan = frame
         local a, e, aPot = Scan(G)
