@@ -1062,7 +1062,7 @@ local function UpdateVpNanoAssist(T, frame)
     if type(q) == "number" and q <= 0 then return end            -- an idle lab has nothing for the nanos to build
     local x, _, z = Spring.GetUnitPosition(T.vpID)
     if not x then return end
-    for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Assist(NANO.PRIO.VP, nid, T.vpID) end
+    for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Guard(NANO.PRIO.VP, nid, T.vpID) end      -- Guard: see UpdateRaidFocus
 end
 
 -- The spine's first block opens after the line's vehicle labs stand (VP2 on): VP2 gets the metal first.
@@ -1121,7 +1121,7 @@ local function UpdateRaidFocus(T, frame)
             if x and not (type(q) == "number" and q <= 0) then
                 nLabs = nLabs + 1
                 for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do
-                    if NANO.Assist(NANO.PRIO.ARMY, nid, id) then
+                    if NANO.Guard(NANO.PRIO.ARMY, nid, id) then      -- Guard, not Assist: an assist on a FINISHED lab reads as expired and was re-issued every second (the nanos stuttered)
                         if not T.rfNanos[nid] then nNanos = nNanos + 1 end
                         T.rfNanos[nid] = true
                     end
