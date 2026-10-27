@@ -33,6 +33,7 @@ local M = {}
 --   CLEAR         retrofits and consolidation: useful, but they can wait.
 --   BALANCE       army/eco allocation is a steady-state preference, not a job.
 M.PRIO = {
+    ARMY         = -0.5,  -- every nano in reach of an army lab builds units while a raid is on (line_transition RAID_FOCUS): above even home_defence's repair
     DEFEND       = 0,     -- an enemy unit in reach (reclaim it) or a con under attack (repair it): beats everything (home_defence.lua)
     RUSH         = 0.3,   -- spine nanos guarding a lab while it rushes units out (slot_spine RUSH_NANOS): above the energy guard, hand-offs and clears
     VP           = 0.25,  -- the vehicle lab frame while it is built with an enemy about (line_transition VP_RUSH): every nano in reach, ahead of the energy guard

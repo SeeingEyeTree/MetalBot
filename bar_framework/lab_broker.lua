@@ -186,7 +186,7 @@ function LB.Service(lb, lab, frame)
     local last = lb.last[id]
     local list = len == 0 and lb.all or lb.busy
     for _, w in ipairs(list) do
-      if not lab.only or lab.only == w.name then      -- lab.only: a lab one want owns outright (the rez lab)
+      if not lab.only or lab.only == w.name or (lab.also and lab.also[w.name]) then      -- lab.only: a lab one want owns outright (the rez lab)
         local grace = w.grace or lb.cfg.ORDER_GRACE
         local fkey = (w.mode == "flush" and len > 0 and w.flushKey) and w.flushKey(lab) or nil
         local flush = fkey ~= nil and lb.flushed[id] ~= fkey

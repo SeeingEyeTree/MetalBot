@@ -318,6 +318,8 @@ end
 -- RUSH_NANOS: the labs are rushing units out (an urgent raid / air raid, or the army share is RUSH_SHARE or more): every spine nano guards a lab
 -- (none parked) at NANO.PRIO.RUSH.  The caller says when (SetRush); a share this high counts by itself.
 function M.SetRush(on) if S then S.rushFlag = on and true or false end end
+-- The host (line_transition VP2) holds the first block back: no block opens before this frame (nil = no hold; math.huge = until released).
+function M.SetOpenAfter(f) if S then S.openAfter = f end end
 local function RushOn()
     local K = Cfg()
     if not K.RUSH_NANOS or not S then return false end
@@ -749,7 +751,7 @@ local function ThrottleNanos()
         k = k - ReleaseHeld(b, k)
     end
     -- every block fully released and still short: open the next (one at a time)
-    if k > 0 and S.started then
+    if k > 0 and S.started and not (S.openAfter and S.frame < S.openAfter) then
         for _, b in ipairs(S.blocks) do if #b.held > 0 then return end end
         for _, ses in ipairs(S.sessions) do
             if ses.kind == "block" and not ses.done then

@@ -1048,6 +1048,7 @@ local function Describe(labID, labDefID, frame)
     if RezLabID() == labID then
         local p = GetArmyPicks(labDefID)
         lab.isRezLab, lab.only, lab.rezDef = true, "rez-lab", p and p.rez
+        lab.also = { ["rez-army"] = true }              -- REZ_LAB_ARMY: it may also make the stance's units (below)
         return lab
     end
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
@@ -1292,6 +1293,11 @@ RegisterWants = function()
     add{ name = "rez-lab", prio = 200, mode = "topup", why = "rez", depth = function() return REZ_LAB_DEPTH end,
          applies = function(lab) return lab.isRezLab and lab.rezDef ~= nil end,
          pick = function(lab) if C.rezRoom > 0 then return lab.rezDef end end }
+    -- user 2026-10-26: the rez bot lab can also make units when needed -- while a raid is on the base (or urgency is "rush"), or while the army share is
+    -- high and the metal bank is not empty.  The stance's units that a T1 bot lab can build, ahead of its rez bots.
+    add{ name = "rez-army", prio = 150, mode = "ahead", why = "rez-lab-army", log = false,
+         applies = function(lab) return lab.isRezLab and C.rezArmyOn end,
+         pick = function(lab) return StancePick(lab.defID, lab.id) end }
     add{ name = "rez", prio = 60, mode = "empty",
          applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
          pick = function(lab) if C.rezRoom > 0 and lab.picks.rez then return lab.picks.rez end end }
@@ -1421,6 +1427,12 @@ function widget:GameFrame(frame)
     end
     C.enemyGround = (mb and mb.intel and mb.intel.groundValue) or 0
 
+    do   -- REZ_LAB_ARMY: is the rez lab needed for units?
+        local rr = mb and mb.raid
+        local raidOn = rr ~= nil and frame - (rr.frame or -1e9) <= 300 and (rr.value or 0) >= 500
+        local shareHigh = ((C.SP and C.SP.Share and C.SP.Share()) or 0) >= 0.9 and mFill >= 0.25
+        C.rezArmyOn = raidOn or shareHigh
+    end
     -- STANCE_BOT raid state (see RAID)
     do
         local raid = mb and mb.raid

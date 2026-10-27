@@ -192,6 +192,12 @@ LT.CFG = {
     -- VP_NANO_ASSIST (user 2026-10-26, a 4k army at 6:00): after the vehicle lab stands, every nano in reach keeps building it (NANO.PRIO.VP, above the
     -- eco jobs) while the army share is VP_ASSIST_SHARE or more, the lab has units queued, and the frame is before VP_ASSIST_UNTIL.  false = off.
     VP_WAIT_AIR_LAB = true,       -- the vehicle lab is queued only after the air lab's frame is up; false (CORE, 4k opening) = on its own deadline
+    -- VP2 (user 2026-10-26, a real game: the line's one vehicle lab left its nanos idle while its units walked out): a SECOND vehicle lab on the line,
+    -- queued VP2_AFTER_S after the first stands, with its own two nanos.  The spine's first block opens only after it stands (or VP2_WAIT_MAX_S), plus
+    -- SPINE_DELAY_S.  RAID_FOCUS: while a raid worth RAID_FOCUS_VALUE  is on the base, every nano in reach of an army lab assists it at
+    -- NANO.PRIO.ARMY (above home_defence's repairs), for RAID_FOCUS_HOLD_S after the last sighting.
+    VP2 = false, VP2_AFTER_S = 10, VP2_MIN_FRAME = 4 * 60 * 30 + 30 * 30, VP2_WAIT_MAX_S = 90, SPINE_DELAY_S = 20,
+    RAID_FOCUS = false, RAID_FOCUS_VALUE = 500, RAID_FOCUS_HOLD_S = 15,
     VP_NANO_ASSIST = false,
     VP_ASSIST_SHARE = 0.6,
     VP_ASSIST_UNTIL = 7 * 60 * 30,
@@ -710,6 +716,23 @@ local function FacingFor(dx, dz)          -- Spring facing: 0 south (+z), 1 east
     return 3
 end
 
+-- The second vehicle lab runs the vehicle-lab code on a VIEW of T: its vp* fields live in T.vp2* (vpSite -> vp2Site ...), everything else is T's.
+local VP_KEYS = { vpSite = true, vpPhase = true, vpID = true, vpBuildID = true, vpTries = true, vpFrame = true, vpDefID = true, vpSpotLogged = true, vpDoneFrame = true }
+local function Vp2(T)
+    if rawget(T, "vp2View") then return T.vp2View end
+    local V = setmetatable({}, {
+        __index = function(_, k)
+            if k == "vpIsSecond" then return true elseif k == "vpTag" then return "vp2" end
+            if VP_KEYS[k] then return T["vp2" .. k:sub(3)] end
+            return T[k]
+        end,
+        __newindex = function(_, k, v)
+            if VP_KEYS[k] then T["vp2" .. k:sub(3)] = v else T[k] = v end
+        end })
+    T.vp2View = V
+    return V
+end
+
 -- The outer lane the vehicle lab goes on: the one the air lab did not take.
 -- The vehicle lab's lane: the outer lane that faces the enemy (needs a builder on it before a site can be claimed).
 local function VpLane(T)
@@ -786,6 +809,7 @@ StartSpine = function(T, frame)
     -- see the widget environment's globals (a bare WG was nil in the real game and killed this function here).
     if T.WG then CH.Publish(T.WG, "Spine", SPINE) end
     SPINE.Start(frame, { deferOpen = true })
+    if T.CFG.VP2 and SPINE.SetOpenAfter then SPINE.SetOpenAfter(math.huge) end      -- the first block waits for the second vehicle lab (UpdateSpineOpen)
     T.spineOn = true
     -- the spine's ground cons are a broker pool (C2): the sink / the line decoy labs borrow them through CB.TakeAny and give them back by owner
     local SM = T.spineMod
@@ -802,7 +826,10 @@ StartSpine = function(T, frame)
     -- The vehicle lab can already stand (air lab finished late): hand it over now.
     if T.vpID and Spring.GetUnitDefID(T.vpID) then
         SPINE.AdoptLab(T.vpID, Spring.GetUnitDefID(T.vpID), T.CFG.VP_CONS)
-        SPINE.OpenFirst()
+        T.spineOpenWanted = true                    -- UpdateSpineOpen opens the first block (after VP2 + SPINE_DELAY_S when VP2 is on)
+    end
+    if T.vp2ID and Spring.GetUnitDefID(T.vp2ID) then
+        SPINE.AdoptLab(T.vp2ID, Spring.GetUnitDefID(T.vp2ID), T.CFG.VP_CONS)
     end
 end
 X.StartSpine = StartSpine   -- grid_core opens the spine once the first grid stands
@@ -875,6 +902,10 @@ local function UpdateVehicleLab(T, frame, res)
     end
     local p = LT.LabPlan(T, res, x, z, site.builder, T.vpDefID)
     local fire = T.CFG.VP_DONE_FRAME - math.floor(p.t * 30) - T.CFG.VP_MARGIN
+    if T.vpIsSecond then                         -- VP2: VP2_AFTER_S after the first stands, and once the bank covers it (or 60 s later regardless)
+        fire = T.vp2Earliest and math.max(T.vp2Earliest, T.CFG.VP2_MIN_FRAME) or math.huge
+        if frame >= fire and not p.ok and frame < fire + 3600 then return end
+    end
     if T.CFG.VP_WAIT_AIR_LAB and not T.labFrame then return end            -- the site is held; the air lab goes first (VP_WAIT_AIR_LAB)
     if frame % T.CFG.LOG_EVERY == 0 then
         Spring.Echo(string.format("[LT] %s vehicle lab plan: BP %.0f (%d nanos) -> %.0fs; start at %s for done by %s; bank %d",
@@ -882,7 +913,7 @@ local function UpdateVehicleLab(T, frame, res)
     end
     if frame < fire then return end
     -- urgent: the lane's con drops the slot it is on (it was seen stuck on one) and goes straight to the lab.
-    LC.QueueJob(T.crew, site.builder, { name = ud.name, x = x, z = z, f = f, tag = "vp", urgent = true })
+    LC.QueueJob(T.crew, site.builder, { name = ud.name, x = x, z = z, f = f, tag = T.vpTag or "vp", urgent = true })
     T.vpPhase, T.vpFrame = "lab", frame
     Spring.Echo(string.format("[LT] %s VEHICLE LAB queued (%s) at (%d, %d) facing %d; BP %.0f, %.0fs, bank %d income %.1f%s",
         Clock(frame), ud.name, x, z, f, p.bp, p.t, res.metal, res.metalIncome, p.ok and "" or " (bank short)"))
@@ -893,6 +924,7 @@ end
 -- Called by line_crew when a job's frame appears: every nano in reach goes onto the lab (the vehicle lab was built
 -- by its con alone while the nanos worked on other jobs).
 function LT.OnJobStarted(T, j)
+    if j.tag == "vp2" then j.tag = "vp"; LT.OnJobStarted(Vp2(T), j); j.tag = "vp2"; return end
     if j.tag == "t2bot" then T2BotJobStarted(T, j); return end
     if j.tag == "rezlab" then RezLabJobStarted(T, j); return end
     if j.tag ~= "lab" and j.tag ~= "vp" then return end
@@ -911,6 +943,7 @@ end
 
 -- Called by line_crew when a job ends.
 function LT.OnJobDone(T, j, state)
+    if j.tag == "vp2" then j.tag = "vp"; LT.OnJobDone(Vp2(T), j, state); j.tag = "vp2"; return end
     if j.tag == "t2bot" or j.tag == "t2bnano" then T2BotJobDone(T, j, state); return end
     if j.tag == "rezlab" or j.tag == "rzlnano" then RezLabJobDone(T, j, state); return end
     if j.tag == "lab" then
@@ -959,6 +992,8 @@ function LT.OnJobDone(T, j, state)
             return
         end
         T.vpID, T.vpPhase, T.vpBuildID = j.unitID, "done", nil
+        T.vpDoneFrame = T.frame
+        if not T.vpIsSecond then T.vp2Earliest = T.frame + T.CFG.VP2_AFTER_S * 30 end
         local gd = T.CFG.VP_RUSH and T.CFG.VP_FIRST_UNIT and UnitDefNames[T.CFG.VP_FIRST_UNIT]
         if gd and T.threatFrame then
             for _ = 1, T.CFG.VP_FIRST do LT.OrderCon(T.WG, j.unitID, gd.id, T.frame, true) end
@@ -971,7 +1006,7 @@ function LT.OnJobDone(T, j, state)
         end
         if T.spineOn then
             T.spineMod.AdoptLab(j.unitID, Spring.GetUnitDefID(j.unitID), T.CFG.VP_CONS)
-            T.spineMod.OpenFirst()
+            T.spineOpenWanted = true
         end
     elseif j.tag == "vpnano" then
         Spring.Echo(string.format("[LT] %s vehicle lab nano %s", Clock(T.frame), state))
@@ -1029,6 +1064,76 @@ local function UpdateVpNanoAssist(T, frame)
     for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Assist(NANO.PRIO.VP, nid, T.vpID) end
 end
 
+-- The spine's first block opens after the line's vehicle labs stand (VP2 on): VP2 gets the metal first.
+local function UpdateSpineOpen(T, frame)
+    local C = T.CFG
+    -- safety: a vehicle lab that never stands must not keep the spine shut for ever
+    if T.spineOn and not T.spineOpened and not T.spineOpenWanted and C.VP2 and frame >= C.VP2_MIN_FRAME + (C.VP2_WAIT_MAX_S + 60) * 30 then T.spineOpenWanted = true end
+    if not (T.spineOpenWanted and T.spineOn and not T.spineOpened and frame % 30 == 0) then return end
+    local ref, delay = T.vpDoneFrame or frame, 0
+    if C.VP2 and T.vp2Phase ~= "off" then
+        if T.vp2Phase == "done" or T.vp2Phase == "lab" then ref = T.vp2Frame or ref   -- the spine follows SPINE_DELAY_S after VP2 was queued
+        elseif T.vp2Earliest and frame < math.max(T.vp2Earliest, C.VP2_MIN_FRAME) + C.VP2_WAIT_MAX_S * 30 then return end
+        delay = C.SPINE_DELAY_S * 30
+    end
+    if frame < ref + delay then return end
+    T.spineOpenWanted, T.spineOpened = false, true
+    if T.spineMod.SetOpenAfter then T.spineMod.SetOpenAfter(nil) end
+    Spring.Echo(string.format("[LT] %s spine: first block opens (vehicle labs: %s, %s)", Clock(frame), tostring(T.vpPhase), tostring(T.vp2Phase)))
+    T.spineMod.OpenFirst()
+end
+
+-- RAID_FOCUS: with a raid on the base every nano in reach of an army lab (the line's vehicle labs and the spine's labs, not the air labs)
+-- builds units -- ahead of home_defence's repairs (a hit con or the commander used to pull every nano off the labs).
+local AIR_LABS = { corap = true, coraap = true, corplat = true }
+local function UpdateRaidFocus(T, frame)
+    local C = T.CFG
+    if not (C.RAID_FOCUS and frame % 30 == 0) then return end
+    local NANO = T.BP.NANO
+    if not NANO then return end
+    local mb = T.WG and T.WG.MetalBot or {}
+    local r = mb.raid
+    local on = (r ~= nil and frame - (r.frame or -1e9) <= 300 and (r.value or 0) >= C.RAID_FOCUS_VALUE)
+    if on then T.rfLast = frame end
+    T.rfNanos = T.rfNanos or {}
+    if not (T.rfLast and frame - T.rfLast <= C.RAID_FOCUS_HOLD_S * 30) then
+        if next(T.rfNanos) then
+            for nid in pairs(T.rfNanos) do NANO.Release(nid) end
+            T.rfNanos, T.rfOn = {}, false
+            Spring.Echo(string.format("[LT] %s raid focus over", Clock(frame)))
+        end
+        return
+    end
+    local labs, seen = {}, {}
+    local function Add(id) if id and not seen[id] then seen[id] = true; labs[#labs + 1] = id end end
+    Add(T.vpID); Add(T.vp2ID)
+    Add(T.WG and T.WG.RezLab and T.WG.RezLab.id)                -- the rez bot lab makes units too while a raid is on (lab_rules 'rez-army')
+    local ss = T.spineMod and T.spineMod.State and T.spineMod.State()
+    if ss and ss.labs then for id in pairs(ss.labs) do Add(id) end end
+    local nLabs, nNanos = 0, 0
+    for _, id in ipairs(labs) do
+        local did = Spring.GetUnitDefID(id)
+        local d = did and UnitDefs[did]
+        if d and not AIR_LABS[d.name] and not Spring.GetUnitIsBeingBuilt(id) then
+            local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(id, 0)
+            local x, _, z = Spring.GetUnitPosition(id)
+            if x and not (type(q) == "number" and q <= 0) then
+                nLabs = nLabs + 1
+                for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do
+                    if NANO.Assist(NANO.PRIO.ARMY, nid, id) then
+                        if not T.rfNanos[nid] then nNanos = nNanos + 1 end
+                        T.rfNanos[nid] = true
+                    end
+                end
+            end
+        end
+    end
+    if not T.rfOn and nNanos > 0 then
+        T.rfOn = true
+        Spring.Echo(string.format("[LT] %s RAID FOCUS: %d nanos on %d army labs (raid %.0f)", Clock(frame), nNanos, nLabs, r and r.value or 0))
+    end
+end
+
 -- ── Entry points ─────────────────────────────────────────────────────────────
 
 function LT.Update(T, frame, res)
@@ -1069,10 +1174,16 @@ function LT.Update(T, frame, res)
     end
     if T.phase == "wait" then UpdateWait(T, frame, res)
     elseif T.phase == "grids" then UpdateGrids(T, frame, res) end
+    if T.vp2Phase == nil then T.vp2Phase, T.vp2Tries = (T.spineMod and T.CFG.VP2) and "wait" or "off", 0 end
     UpdateVehicleLab(T, frame, res)
+    UpdateVehicleLab(Vp2(T), frame, res)
     UpdateLabWatchdog(T, frame)
     UpdateVpAssist(T, frame)
+    UpdateVpAssist(Vp2(T), frame)
     UpdateVpNanoAssist(T, frame)
+    UpdateVpNanoAssist(Vp2(T), frame)
+    UpdateSpineOpen(T, frame)
+    UpdateRaidFocus(T, frame)
     if T.spineOn then T.spineMod.Update(frame, res) end
 end
 
@@ -1146,7 +1257,7 @@ function LT.OnUnitFromFactory(T, unitID, defID, factID)
     if IsGroundCon(gd) then
         local owner
         if gd.canResurrect then owner = "rez"
-        elseif factID and ((factID == T.vpID) or (T.spineOn and T.spineMod.IsLab and T.spineMod.IsLab(factID))) then owner = "spine" end
+        elseif factID and ((factID == T.vpID) or (factID == T.vp2ID) or (T.spineOn and T.spineMod.IsLab and T.spineMod.IsLab(factID))) then owner = "spine" end
         LT.AdoptCon(T, unitID, owner)
     end
     if T.spineOn then T.spineMod.OnUnitFromFactory(unitID, defID, factID) end
