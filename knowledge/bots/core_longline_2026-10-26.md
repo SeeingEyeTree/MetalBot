@@ -82,3 +82,12 @@ Early-game math (eco_sim per-minute rows + unit costs): a mex 50 m + ~500 E, ~18
 so each con adds ~0.056 m/s per second until metal limits it; a nano (230 m, BP 200) adds ~0.13 m/s per second of assist. Income grows ~x1.5 per minute from 3:00 to 7:00 (28 -> 154), then the grids take over (x1.7 per min at 8-10:00).
 Army share (eco_sim, 8 seeds, income at 20:00, lab 3:30): 0% 8900, 10% 7716, 20% 6809, 35% 5440 -- about -20% income per +10% share.
 **With ARMY_SHARE_FIXED = 0.2 the air lab belongs at ~4:00** (2:30 6342, 3:00 6647, 3:30 6809, 4:00 7068, 4:30 6374, 5:00 5472, 6:00 4388; the peak is broad, 3:00-4:30 within noise); with no army it is 3:00-3:30. Set to 4:00.
+
+## Opening for a blitz (user 2026-10-27): no army to 4:00, 35% after, 8-nano spam at 1.3x -- machines/rows_default.lua
+The replay of the lost game (TreeServer infolog `[LED]`): army spend ~0 from 0:00 to 5:00 (share 1.0 never bound: the rows + air lab ate all metal, bank 1-10%), then a 5:30 raid; under_attack fired 46 s after first contact, the share went 1.0 but
+actual army spend fell 83 -> 41 -> 9 m/s (7:00-7:30) while 76-90 m/s went to rebuilding the 16k of lost builders/nanos. 25% of income to army to 10:00.
+Capacity math (ecosim/unitdefs.lua): lab 150 BP + 8 nanos x 200 = 1750 BP. Metal per build-power-second: Grunt 0.0344, Incisor 0.0522, Pounder 0.071, opening comp (6 Incisor : 1 Pounder) 0.0556.
+Nonstop spend of lab + 8 nanos: Grunts 60 m/s, opening comp 97 m/s, Pounders 124 m/s. 1.3x that: 78 / 126 / 161 m/s of metal income. One nano = 200 BP ~ 11 m/s of army.
+Machine `rows_default` (copy of core_default): share 0 until 4:00 (`open`), 35% from 4:00 (`start`), a `spam` node (75%) when metal income >= 126 (1.3x the opening comp's 97) until 9:00 -- slot_spine then sizes its active nanos (share x income / 11) = all 8;
+spam exits under 111 m/s or at 9:00. In eco_sim the income reaches 126 at ~7:20, so spam runs 7:23-9:05: army metal by 4:00 / 7:00 / 8:00 / 9:00 / 12:00 = 946 / 5.0k / 8.3k / 13.2k / 26.7k (CORE: 1.0k at 4:00, 5.7k at 7:00).
+Not changed: the first spine block still opens at 6:00 (VP2 wait) so the 8 nanos only stand from ~6:00-7:00; NANO_CAP 8 changed nothing in the sim (the need is share-driven). Income at 20:00 3.4k (6 seeds).

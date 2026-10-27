@@ -37,7 +37,7 @@ MACRO.Install(widget, WG, {
     SINK_UNIT   = "corcrwh",       -- the sink unit: a Dragon (the framework default, named here so it is visible)
     -- user 2026-10-26 (slimegirl game): nothing is known about the enemy at first, so the army share is 35% (SHARE.unscouted) and the units hold at home;
     -- once the enemy is located, game_plan's `scout` rule picks raid_open (weak enemy army) or stays on hold (strong), see strategy_hooks.game_plan
-    MACHINE    = "core_default",  -- state machines (machines/core_default.lua, machine_editor.html): when to switch stance and army share; the options below are the fallback if it fails to load
+    MACHINE    = "rows_default",  -- state machines (machines/core_default.lua, machine_editor.html): when to switch stance and army share; the options below are the fallback if it fails to load
     STANCE     = "hold",          -- opening game plan: hold until the enemy is located
     HOLD_STANCE = "hold",          -- after bad trades while behind (strategy_hooks.game_plan)
     PLAN        = { raid = "raid_open", hold = "hold", start_hold = true, scout = { min_stay = 1800 } },

@@ -1,0 +1,115 @@
+{
+ "tag": "opening7",
+ "seeds": "1-6",
+ "minutes": 14,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "deployed_core_default": {
+   "set": {
+    "macro": {
+     "MACHINE": "core_default"
+    }
+   }
+  },
+  "m_rows_default_gov_on": {
+   "set": {}
+  },
+  "m_rows_nogov": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false
+    }
+   }
+  },
+  "m_rows_nogov_novp2": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false,
+     "VP2": false
+    }
+   }
+  },
+  "m_rows_nogov_novp2_nano8": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false,
+     "VP2": false
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 12600
+     }
+    }
+   }
+  },
+  "m_rows_gov_novp2_nano8": {
+   "set": {
+    "line_transition": {
+     "VP2": false
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 12600
+     }
+    }
+   }
+  },
+  "m_rows_nogov_nano8": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 12600
+     }
+    }
+   }
+  },
+  "m_rows_nogov_novp2_nano8_lab5": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false,
+     "VP2": false,
+     "EARLIEST_FRAME": 9000,
+     "LATEST_FRAME": 9000
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 12600
+     }
+    }
+   }
+  }
+ }
+}

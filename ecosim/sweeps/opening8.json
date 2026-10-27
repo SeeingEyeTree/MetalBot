@@ -1,0 +1,73 @@
+{
+ "tag": "opening8",
+ "seeds": "1-6",
+ "minutes": 14,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "spam_gov_on": {
+   "set": {}
+  },
+  "spam_nogov": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false
+    }
+   }
+  },
+  "spam_nogov_nano8": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 14400
+     }
+    }
+   }
+  },
+  "spam_gov_nano8": {
+   "set": {
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 14400
+     }
+    }
+   }
+  },
+  "spam_nogov_nano8_novp2": {
+   "set": {
+    "macro": {
+     "GOV_ROWS": false
+    },
+    "line_transition": {
+     "SHARE_GOV": false,
+     "GOV_AIR_LAB": false,
+     "VP2": false
+    },
+    "slot_spine": {
+     "NANO_CAP": {
+      "max": 8,
+      "untilF": 14400
+     }
+    }
+   }
+  }
+ }
+}
