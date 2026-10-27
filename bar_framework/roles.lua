@@ -32,6 +32,7 @@ M.TABLE = {
         aa_flak_truck = "corsent",  aa_t2_bot  = "coraak",  aa_t1_veh  = "cormist", aa_t1_bot = "corcrash", aa_hover = "corah",
         nano         = "cornanotc",
         raider_veh   = "corgator",     -- the vehicle plant's cheap fast fighter (Incisor): early defence from the line's vp
+        pounder      = "corlevlr",     -- the T1 vehicle plant's screen (Pounder): the spine garrison (unit_runtime SPINE_GARRISON)
         grunt        = "corak",        -- the T1 bot lab's basic fighter (early defence from the starter lab)
         radar        = "corrad",       -- T1 radar tower (the commander's early radar)
         con_t1_bot   = "corck",     con_t1_veh = "corcv",   con_t1_air = "corca",

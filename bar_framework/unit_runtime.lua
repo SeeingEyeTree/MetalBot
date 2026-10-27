@@ -49,6 +49,10 @@ function M.ArmyMode(cur, x, o)
     local ratio = (x.enemy or 0) > 0 and (x.own or 0) / x.enemy or nil
     local own = x.own or 0
     local strong = own >= minV and ((ratio == nil and own >= 4 * minV) or (ratio ~= nil and ratio >= up))
+    -- av_rates (user 2026-10-27): the scouted ratio looked 1.57x while the enemy reinforced constantly.  Starting a push also needs the PROJECTED ratio
+    -- (both sides' army-value rates run ahead by horizon_s) to clear it (o.proj_ratio, default = ratio); without rates the raw ratio decides as before.
+    local projOK = x.projRatio == nil or x.projRatio >= (o.proj_ratio or up)
+    if not projOK then strong = false end
     if cur == "push" or cur == "raid" then
         local tr = x.trade
         local bad = tr ~= nil and (((tr.lost or 0) >= (o.bad_lost or 3000) and (tr.ratio or 1) < (o.bad_ratio or 0.4))
@@ -64,13 +68,14 @@ function M.ArmyMode(cur, x, o)
     end
     if (x.coolS or 1e9) < (o.cooldown_s or 60) then return "defend", ratio, "cooling down" end
     if strong then return "push", ratio, "ahead" end
-    if o.quiet ~= false and own >= minV and (x.raidV or 0) < (o.back_value or 600) and (x.quietS or 0) >= (o.quiet_s or 90) then
+    if o.quiet ~= false and own >= minV and (x.raidV or 0) < (o.back_value or 600) and (x.quietS or 0) >= (o.quiet_s or 90)
+       and (x.projRatio == nil or x.projRatio >= (o.raid_proj_ratio or 1.0)) then
         return "raid", ratio, "quiet"
     end
     return "defend", ratio
 end
 
-M.OPTIONS = { HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true }
+M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true }
 
 function M.Install(widget, WG, K)
 K = K or {}
@@ -223,6 +228,7 @@ local MECH = {
     HOME_FIGHTER_SHARE = 0.5,   -- share of fighters kept as home cover...
     HOME_FIGHTER_MIN   = 4,     -- ...at least this many
     HOME_GROUND_SHARE  = 0.2,   -- share of ground units kept as the home garrison...
+    HOME_GROUND_AFTER  = 0,     -- >0: no home garrison at all until this many ground units exist (the first ones go out; HOME_GROUND_MIN alone cannot do it: ceil keeps unit #1)
     HOME_GROUND_MIN    = 3,     -- ...at least this many...
     HOME_GROUND_MAX    = 8,     -- ...at most this many; the rest go to the line
     PUSH_RATIO         = 1.3,   -- an engaged node advances when we outvalue them by this
@@ -242,6 +248,10 @@ local NET = {
     radars = {},               -- [unitID] = defID: ground radar units
     struct = {},               -- [defID] = true/false: counts as part of our footprint (cache)
 }
+-- (two more fields on NET: the function has no local slots left)  av: av_rates module (.mod), tracker (.t), log frame; gar: SPINE_GARRISON units (.units[unitID]) + .Posts / .Count below
+NET.av  = { logF = -1e9 }
+NET.gar = { units = {} }
+NET.sq  = { units = {} }      -- RAID_SQUAD: the small raid squad that keeps raiding (click_army SetOnly) while the army holds; see NET.sq.Update
 local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")   -- unit roles per faction (C4)
 local RADAR_PLANE_NAMES = { [ROLES.Get("radar_plane")] = true, armawac = true }
 local radarPlanes = {}   -- [unitID] = true
@@ -1146,6 +1156,46 @@ local function UpdateGroundAA(frame)
     end
 end
 
+-- SPINE_GARRISON (user 2026-10-27: 6 Pounders, 3 on each side of the spine, hold the early T1 phase).  The flanks: the block row's ends along the spine's
+-- stacking direction (geo.px, geo.pz) plus FLANK_OFF, a little ahead of the row.  Before a block exists: either side of cell 1's anchor.
+function NET.gar.Posts()
+    local SG = K.SPINE_GARRISON
+    local SPN = WG and WG.Spine
+    if not (SG and SPN and SPN.Front) then return nil end
+    local geo, blocks = SPN.Front()
+    if not (geo and geo.px) then return nil end
+    local cx, cz, lo, hi = nil, nil, 0, 0
+    if blocks and #blocks > 0 then
+        local sx, sz = 0, 0
+        for _, b in ipairs(blocks) do sx, sz = sx + b.x, sz + b.z end
+        cx, cz = sx / #blocks, sz / #blocks
+        for _, b in ipairs(blocks) do
+            local t = (b.x - cx) * geo.px + (b.z - cz) * geo.pz
+            if t < lo then lo = t end
+            if t > hi then hi = t end
+        end
+    elseif baseX then
+        cx, cz = baseX + geo.dx * 600, baseZ + geo.dz * 600
+    else
+        return nil
+    end
+    local off = SG.FLANK_OFF or 330
+    local ahead = SG.AHEAD or 120
+    local function Post(t)
+        local x, z = cx + geo.px * t + geo.dx * ahead, cz + geo.pz * t + geo.dz * ahead
+        if MM then x, z = MM.Clamp(x, z, MAP_MARGIN) end
+        return { x = x, z = z }
+    end
+    return { Post(lo - off), Post(hi + off) }
+end
+function NET.gar.Count()
+    local n = 0
+    for uid in pairs(NET.gar.units) do
+        if spGetUnitDefID(uid) then n = n + 1 else NET.gar.units[uid] = nil end
+    end
+    return n
+end
+
 local function UpdateHomeGuard(frame)
     if not ARMY or not baseX then return end
 
@@ -1156,6 +1206,35 @@ local function UpdateHomeGuard(frame)
             if UQ.is_air(defID) then air[#air + 1] = uid else ground[#ground + 1] = uid end
         else
             homeGuards[uid] = nil
+        end
+    end
+
+    -- the spine garrison: its own posts, a loose cluster per flank; the rest of the guards use the base posts below
+    do
+        local posts = next(NET.gar.units) and NET.gar.Posts() or nil
+        if posts then
+            local mine, rest = {}, {}
+            for _, uid in ipairs(ground) do if NET.gar.units[uid] then mine[#mine + 1] = uid else rest[#rest + 1] = uid end end
+            table.sort(mine)
+            local HC0 = K.HOME_DEFENCE
+            for i, uid in ipairs(mine) do
+                local side = (i - 1) % 2 + 1
+                local k = math.floor((i - 1) / 2)
+                local oa = k * 2.4 + side
+                local px, pz = posts[side].x + math.cos(oa) * (30 + 45 * k), posts[side].z + math.sin(oa) * (30 + 45 * k)
+                local role, cmd = "HOME_GUARD", CMD_FIGHT
+                local ux, _, uz = spGetUnitPosition(uid)
+                local r = ARMY.RoleOf(uid)
+                local lash = (HC0 and HC0.LEASH or 250)
+                if ux and not responding[uid] then
+                    local d2 = (ux - px) ^ 2 + (uz - pz) ^ 2
+                    if (d2 > lash ^ 2 and (r == "HOME_RETURN" or r == "HOME_GUARD" or r == nil)) or (r == "HOME_RETURN" and d2 > (lash * 0.7) ^ 2) then
+                        role, cmd = "HOME_RETURN", CMD_MOVE
+                    end
+                end
+                ARMY.Claim(ARMY.PRIO.HOME_GUARD, uid, { role = role, cmd = cmd, x = px, z = pz, minHold = LINE_MIN_HOLD }, frame)
+            end
+            ground = rest
         end
     end
 
@@ -1595,6 +1674,12 @@ local function PublishState(frame)
         local defID = spGetUnitDefID(uid)
         if defID then n = n + 1; armyV = armyV + Value(defID) end
     end
+    if K.SPINE_GARRISON then mb.garrisonHave, mb.garrisonWant, mb.garrisonMade = NET.gar.Count(), K.SPINE_GARRISON.N or 6, NET.gar.made or 0 end   -- the labs' 'garrison' want reads these
+    if K.SPINE_GARRISON and (Spring.GetGameFrame() % 900 == 0) then
+        local p = NET.gar.Posts()
+        Spring.Echo(string.format("[GAR] %d:%02d garrison %d / %d Pounders, flank posts %s", math.floor(Spring.GetGameFrame() / 1800), math.floor(Spring.GetGameFrame() / 30) % 60,
+            mb.garrisonHave, mb.garrisonWant, p and string.format("(%d,%d) (%d,%d)", p[1].x, p[1].z, p[2].x, p[2].z) or "none yet"))
+    end
     mb.armyValue = armyV    -- metal value of our combat units (the army_share hook compares it with the scouted enemy's)
     -- RAID_BOT, for game_state: armed ground / air value (metal cost, as the enemy's is counted), the raids' trade, and
     -- the air trade of the last AIR_TRADE_WINDOW frames
@@ -1668,7 +1753,13 @@ function widget:Initialize()
     -- Round 4: per-unit command frequency (unit_clock.lua): 0.5 Hz scouts / quiet guards, 1 Hz the rest, 2 Hz raiding or
     -- with an enemy near; each unit's orders go out on its own frame instead of all on frame % 30 == 0.
     local okK, rK = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/unit_clock.lua")
-    if okK and rK then ARMY.SetClock(rK) else Spring.Echo("[UnitCtrl] unit_clock not loaded: " .. tostring(rK)) end
+    if okK and rK then
+        ARMY.SetClock(rK)
+        -- FAST_RAIDERS (user 2026-10-27): raiders (units in click_army groups, the raid squad) and raid defenders (responders) with an enemy near are commanded at 3 Hz
+        if K.FAST_RAIDERS and ARMY.SetFastFn then
+            ARMY.SetFastFn(function(uid) return responding[uid] ~= nil or NET.sq.units[uid] == true or (CA ~= nil and CA.InGroup ~= nil and CA.InGroup(uid)) end)
+        end
+    else Spring.Echo("[UnitCtrl] unit_clock not loaded: " .. tostring(rK)) end
     -- LINE_CLICK: scout_lanes.lua is scout_plan.lua with a lane sweep of the enemy half in FIND mode
     local okS, rS = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/scout_lanes.lua")
     if not okS then Spring.Echo("[UnitCtrl] ERROR loading scout_lanes: " .. tostring(rS)); return end
@@ -1695,6 +1786,8 @@ function widget:Initialize()
         return nil
     end
     EI = Load("enemy_intel")
+    NET.av.mod = Load("av_rates")
+    if NET.av.mod then NET.av.t = NET.av.mod.New() end
     if EI then EI.Init{ UQ = UQ, MM = MM, allyID = myAllyID } end
     SN = EI and Load("scout_net")
     if SN then
@@ -1713,7 +1806,12 @@ function widget:Initialize()
     LF = nil
     CA = EI and Load("click_army")
     if CA then
-        CA.Init{ cfg = Load("bot_config").Preset("click_army", "RAID"), label = "RAID_BOT",
+        CA.Init{ cfg = Load("bot_config").Preset("click_army", "RAID", K.CLICK_ARMY), label = "RAID_BOT",     -- CLICK_ARMY = { ... }: a variant's click_army tweaks (CORE_ROWS_ECO: the opening raid)
+                 unseen = function(x, z, f) return SP and SP.NextUnseen and SP.NextUnseen(x, z, f) end,
+                 holdHome = K.HOLD_HOME and function()
+                     local r = WG and WG.MetalBot and WG.MetalBot.raid
+                     return r ~= nil and Spring.GetGameFrame() - (r.frame or -1e9) <= 90 and (r.ground or 0) >= (K.HOLD_HOME.VALUE or 300)
+                 end or nil,
                  MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards,
                  muster = musterPool, scouts = scoutUnits, responding = responding, bombers = bombers,
                  isHunting = function() return EG and EG.Hunting() or false end,
@@ -1724,7 +1822,11 @@ function widget:Initialize()
     do
         local RRm = Load("raid_response")
         if RRm and ARMY and UQ then
-            RESP = RRm.New{ cfg = Load("bot_config").Preset("raid_response", "RAID", K.HOME_DEFENCE and { HOME_R = K.HOME_DEFENCE.R, HOME_SLACK = K.HOME_DEFENCE.SLACK } or nil), label = "RAID_BOT",
+            RESP = RRm.New{ cfg = Load("bot_config").Preset("raid_response", "RAID", (function()
+                                local t = K.HOME_DEFENCE and { HOME_R = K.HOME_DEFENCE.R, HOME_SLACK = K.HOME_DEFENCE.SLACK } or {}
+                                for k, v in pairs(K.RAID_RESPONSE or {}) do t[k] = v end     -- RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450 }: a variant's tweaks
+                                return t
+                            end)()), label = "RAID_BOT",
                             ARMY = ARMY, UQ = UQ, TM = TM, CA = CA,
                             combatUnits = combatUnits, musterPool = musterPool, responding = responding,
                             teamID = myTeamID, allyID = myAllyID, isCommander = IsCommander, lineAdvAt = LineAdvAt,
@@ -1826,6 +1928,7 @@ local function IsGroundDef(defID) return not UQ.is_air(defID) end
 
 -- Size of the ground garrison for a given number of ground units.
 local function GroundGarrison(all)
+    if (MECH.HOME_GROUND_AFTER or 0) > 0 and all < MECH.HOME_GROUND_AFTER then return 0 end      -- the first units are free (the opening raid)
     return math.min(MECH.HOME_GROUND_MAX,
         math.max(MECH.HOME_GROUND_MIN, math.ceil(all * MECH.HOME_GROUND_SHARE)))
 end
@@ -1839,11 +1942,11 @@ local function ReleaseSurplusGuards(frame)
     local keep = GroundGarrison(all)
     local HC = K.HOME_DEFENCE
     if HC and HC.EARLY_UNTIL and frame < HC.EARLY_UNTIL then keep = math.max(keep, HC.EARLY_MAX or 10) end   -- early units stay home
-    local surplus = home - keep
+    local surplus = home - NET.gar.Count() - keep
     if surplus <= 0 then return end
     local ids = {}
     for uid, defID in pairs(combatUnits) do
-        if homeGuards[uid] and spGetUnitDefID(uid) and IsGroundDef(defID) then
+        if homeGuards[uid] and not NET.gar.units[uid] and spGetUnitDefID(uid) and IsGroundDef(defID) then
             ids[#ids + 1] = uid
         end
     end
@@ -1915,8 +2018,68 @@ local function ApplyCAPush(plan)
 end
 
 push = { on = false, mode = "defend", since = nil, ratio = nil, lastRaidF = 0, logF = -1e9, caDef = nil, peak = nil, backF = -1e9 }
+-- av_rates: sampled once a second whatever the plan; published as mb.avOwnRate / avEnemyRate / avProjRatio (the fsm signals own_av_rate, enemy_av_rate, proj_ratio)
+function NET.av.Update(frame)
+    local AVR, avT = NET.av.mod, NET.av.t
+    if not (avT and WG and WG.MetalBot) then return end
+    local mb = WG.MetalBot
+    local enemy = EI and EI.GroundValue and EI.GroundValue(frame) or 0
+    local own = mb.armyGround or 0
+    AVR.Sample(avT, frame, own, enemy)
+    local r = AVR.Rates(avT, frame)
+    local proj = AVR.Project(own, enemy, r, (WG.AvHorizonS or AVR.CFG.HORIZON_S))
+    mb.avOwnRate, mb.avEnemyRate, mb.avProjRatio = r.own, r.enemy, proj
+    if r.own and frame - NET.av.logF >= 900 then
+        NET.av.logF = frame
+        Spring.Echo(string.format("[AV] %d:%02d own ground %.0f (%+.1f m/s) enemy scouted %.0f (reinforcing %.1f m/s) -> projected ratio %s (raw %s)",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, own, r.own, enemy, r.enemy,
+            proj and string.format("%.2f", proj) or "?", enemy > 0 and string.format("%.2f", own / enemy) or "?"))
+    end
+end
+
+-- RAID_SQUAD (user 2026-10-27: "always have a small raid group even when defending, like 5 gators that steer away from the enemy and find exposed eco"): while the plan is a
+-- maneuver / hold plan (the blobs are the army), up to N raider-type units are taken out of the blobs and given to click_army alone (CA.SetOnly) with SURVIVE on; they launch as a
+-- group from the stage like in the raid opening and are refilled from the blobs as they die.  In a raid plan click_army has every unit and no squad is kept.
+function NET.sq.Update(frame)
+    local SQ = K.RAID_SQUAD
+    if not (SQ and CA and CA.SetOnly) then return end
+    if not (NET.sq.isManeuver and NET.sq.isManeuver()) or not MD then
+        CA.SetOnly(nil)
+        local mb0 = WG and WG.MetalBot
+        if mb0 then mb0.squadWant = 0 end
+        return
+    end      -- ManeuverPlan is defined further down: set below it
+    local n = 0
+    for uid in pairs(NET.sq.units) do
+        if spGetUnitDefID(uid) then n = n + 1 else NET.sq.units[uid] = nil end
+    end
+    local want = SQ.N or 5
+    if n < want then
+        local raider = ROLES.Get("raider_veh")
+        local cands = {}
+        for uid, u in pairs(MD.units) do
+            local d = UnitDefs[u.defID]
+            if d and d.name == raider and spGetUnitDefID(uid) and not (MD.responding and MD.responding[uid]) then cands[#cands + 1] = uid end
+        end
+        table.sort(cands, function(a, b) return a > b end)
+        for _, uid in ipairs(cands) do
+            if n >= want then break end
+            MDm.Remove(MD, uid)
+            if ARMY then ARMY.Release(uid) end
+            NET.sq.units[uid] = true
+            NET.sq.made = (NET.sq.made or 0) + 1
+            n = n + 1
+        end
+    end
+    local mb = WG and WG.MetalBot
+    if mb then mb.squadHave, mb.squadWant, mb.squadMade = n, want, NET.sq.made or 0 end         -- the labs' 'raid-squad' want reads these
+    CA.SetOnly(NET.sq.units)
+end
+
 local function UpdatePush(frame)
+    NET.av.Update(frame)
     local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
+    if CA and CA.SetSurvive then CA.SetSurvive((plan and plan.survive) or (K.RAID_SQUAD ~= nil and plan ~= nil and plan.army ~= "raid")) end        -- the stance's plan.survive (raid_start): click_army steers away and dives only into holes
     if not DefendPlan(plan) then push.on, push.mode, push.since = false, "defend", nil; return end
     local o = plan.push or {}
     local holdF = (o.hold_s or 20) * 30
@@ -1937,7 +2100,8 @@ local function UpdatePush(frame)
     local prod = ArmyProduction()
     push.prod = prod
     local want, ratio, why = M.ArmyMode(push.mode, { own = own, enemy = enemy, quietS = quietS, raidV = raidV, trade = trade,
-                                                     peak = push.peak, coolS = (frame - push.backF) / 30, prod = prod }, o)
+                                                     peak = push.peak, coolS = (frame - push.backF) / 30, prod = prod,
+                                                     projRatio = WG.MetalBot and WG.MetalBot.avProjRatio }, o)
     push.ratio = ratio
     if frame - push.logF >= 1800 then
         push.logF = frame
@@ -1972,6 +2136,8 @@ local function ManeuverPlan()
     if DefendPlan(plan) then return not push.on end
     return plan.army == "maneuver"
 end
+
+NET.sq.isManeuver = ManeuverPlan
 
 local function MDBaseCfg(plan)
     -- unit_runtime: the plan army "defend" plays long-range support as support (maneuver_defence SUPPORT_ROLE) unless its stance says not
@@ -2085,6 +2251,18 @@ local function StanceHandover(frame)
     end
     if MD then for uid, u in pairs(MD.units) do list[uid] = u.defID end end
     for uid, defID in pairs(shadowUnits) do list[uid] = defID end
+    -- RAID_SQUAD: raiders already out in click_army groups stay out (up to N): they are not handed to the blobs, so a stance change does not pull a raid group home
+    if K.RAID_SQUAD and now and CA and CA.InGroup then
+        local raider, kept = ROLES.Get("raider_veh"), 0
+        for uid in pairs(NET.sq.units) do if spGetUnitDefID(uid) then kept = kept + 1 end end
+        for uid, defID in pairs(list) do
+            if kept >= (K.RAID_SQUAD.N or 5) then break end
+            local d = UnitDefs[defID]
+            if d and d.name == raider and spGetUnitDefID(uid) and CA.InGroup(uid) then
+                NET.sq.units[uid] = true; list[uid] = nil; kept = kept + 1
+            end
+        end
+    end
     -- unit_runtime: a "raid" leaves a garrison (plan.push.keep, the slowest units) in the blobs; it is not handed to click_army
     local garrison = {}
     if push.mode == "raid" and MD then
@@ -2224,6 +2402,20 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         return
     end
 
+    -- SPINE_GARRISON: the first N Pounders stay as the spine's garrison.  This must come before the maneuver blobs and the slow group, which take every Pounder
+    -- (the first real game: 6 Pounders built, garrison 0 / 6 all game)
+    do
+        local SG = K.SPINE_GARRISON
+        if SG and d.name == ROLES.Get("pounder") and d.weapons and #d.weapons > 0 and NET.gar.Count() < (SG.N or 6) then
+            NET.gar.units[unitID] = true
+            NET.gar.made = (NET.gar.made or 0) + 1      -- ever made: the labs' 'garrison' want counts orders against it
+            combatUnits[unitID] = unitDefID
+            homeGuards[unitID] = true
+            if HOST and WG and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end
+            return
+        end
+    end
+
     if ManeuverPlan() and ManeuverTake(unitID, unitDefID, d) then return end
 
     -- Lashers and Pounders are never registered with the army/guard/retreat/respond/muster controllers:
@@ -2279,6 +2471,10 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
         elseif attackerTeam == myTeamID and IsGroundArmy(attackerDefID) and Out(attackerID) then
             NoteGroundTrade(f, v, 0)
         end
+        -- av_rates: every armed enemy unit we kill (the enemy's reinforcement rate = change in the scouted value + what we killed)
+        if NET.av.t and teamID ~= myTeamID and attackerTeam == myTeamID and d and not d.isBuilder and (d.weapons and #d.weapons > 0) and (d.speed or 0) > 0 then
+            NET.av.mod.NoteKill(NET.av.t, f, v)
+        end
     end
     -- our air unit shot down by an enemy fighter (armed air that is not a bomber): the labs answer with fighters
     if teamID == myTeamID and attackerID and UQ and UQ.is_air(unitDefID) then
@@ -2315,6 +2511,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
     musterPool[unitID]    = nil
     responding[unitID]    = nil
     homeGuards[unitID]    = nil
+    NET.gar.units[unitID] = nil
     radarPlanes[unitID]   = nil
     bombers[unitID]       = nil
     antiRaid[unitID]      = nil
@@ -2485,7 +2682,13 @@ function widget:GameFrame(frame)
                     mb.blobs = bl
                 end
             end
+            if K.RAID_SQUAD and CA then            -- the raid squad: click_army commands only these units
+                NET.sq.Update(frame)
+                CA.SetMode("raid", frame)
+                CA.Update(frame)
+            end
         elseif CA then
+            if K.RAID_SQUAD and CA.SetOnly then CA.SetOnly(nil) end
             -- unit_runtime: always raid here.  plan army = "hold" used to park the whole army at the stage point (click_army
             -- hold mode); now "hold" / "defend" run the maneuver blobs and reach this branch only while pushing.
             -- A "defend" push runs click_army's slow group (plan.push.slow, default 50: Mammoths / Pounders screen, Sheldons
@@ -2509,6 +2712,12 @@ function widget:GameFrame(frame)
 
     -- Half-step planning pass while any unit is in the clock's HIGH tier (raiding / an enemy near): the groups, retreats
     -- and responses are re-planned at 2 Hz instead of 1 Hz, so the 2 Hz units have fresh orders to send.
+    -- FAST_RAIDERS: while any unit is in the FAST tier, groups and responders are also re-planned at frames 10 and 20 of every second (with 0 and 15 that is 4 passes a second)
+    if K.FAST_RAIDERS and (frame % 30 == 10 or frame % 30 == 20) and ARMY.Clock() and ARMY.Clock().AnyFast and ARMY.Clock().AnyFast() then
+        ARMY.Sweep(frame)
+        if RESP then RESP.Dispatch(frame) end
+        if CA then CA.Update(frame) end
+    end
     if frame % 30 == 15 and ARMY.Clock() and ARMY.Clock().AnyHigh() then
         ARMY.Sweep(frame)
         UpdateRetreats(frame)
@@ -2544,9 +2753,10 @@ function widget:GameFrame(frame)
         local n, byRole = ARMY.Stats()
         local parts = {}
         for role, c in pairs(byRole) do parts[#parts + 1] = role .. "=" .. c end
-        Spring.Echo(string.format("[UC/army] %d:%02d units=%d orders=%d %s",
+        local clk = ARMY.Clock()
+        Spring.Echo(string.format("[UC/army] %d:%02d units=%d orders=%d fast=%d %s",
             math.floor(frame / 1800), math.floor(frame / 30) % 60,
-            n, ARMY.OrdersIssued(), table.concat(parts, " ")))
+            n, ARMY.OrdersIssued(), clk and clk.CountFast and clk.CountFast() or 0, table.concat(parts, " ")))
     end
 end
 end

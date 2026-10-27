@@ -5,7 +5,7 @@ M.name = "t2_push"
 M.intent = [=[T2 raid: Tigers and Heat Tigers hit build power and eco, Banishers kite behind, a few Incisors / Brutes for speed.]=]
 M.control = [=[click_army groups; Banishers kite at the edge of their range.]=]
 M.suggestedShare = [=[55]=]
-M.plan = { army = "raid" }
+M.plan = { army = "raid", support = "unless_raided" }
 M.units = {
   { n = "correap", share = 0.4000, ratio = 0.1041, perK = 0.480, cost = 832.9, note = [=[Tiger]=] },
   { n = "corsent", share = 0.0500, ratio = 0.0175, perK = 0.081, cost = 620.0, max = 40, note = [=[Fury: flak escort]=] },

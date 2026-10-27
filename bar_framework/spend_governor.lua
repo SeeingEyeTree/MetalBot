@@ -81,7 +81,7 @@ local function StopEcoBuilders(T)
     local function stop(id)
         if id and Spring.GetUnitDefID(id) then Spring.GiveOrderToUnit(id, 0, {}, {}) end    -- CMD.STOP
     end
-    for _, gs in ipairs(T.gridStates) do stop(gs.builderID); gs.currentTask = nil end
+    if not T.CFG.GOV_KEEP_GRIDS then for _, gs in ipairs(T.gridStates) do stop(gs.builderID); gs.currentTask = nil end end   -- GOV_KEEP_GRIDS: mex grids keep building while the eco is paused
     for _, us in ipairs(T.upgradeStates) do stop(us.builderID); us.currentTask = nil end
     for _, cs in ipairs(T.consolidateJobs) do stop(cs.builderID); cs.currentTask = nil end
 end

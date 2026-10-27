@@ -27,7 +27,7 @@ M.SCHEMA = {
         homeX = "number", homeZ = "number", foeX = "number", foeZ = "number", axisX = "number", axisZ = "number",
         foeDist = "number", threats = "table", raid = "table", airLosses = "number", intel = "table",
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
-        armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number",
+        armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number", squadHave = "number", squadWant = "number", squadMade = "number", garrisonHave = "number", garrisonWant = "number", garrisonMade = "number", avOwnRate = "number", avEnemyRate = "number", avProjRatio = "number",
         trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", pushMode = "string", blobs = "table",
     } },
     Strategy    = { kind = "table", open = true },                  -- strategy.lua object: Name / Plan / Assign / Pick / Note

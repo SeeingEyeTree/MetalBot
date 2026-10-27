@@ -5,7 +5,7 @@ M.name = "t2_hold"
 M.intent = [=[T2 hold: Tigers and Mammoths screen, Banishers and Sheldons kite behind them, a few T1 bodies, flak / AA.]=]
 M.control = [=[maneuver blobs ~1100 elmos out; Sheldons kite, Banishers kite at the edge of their range.]=]
 M.suggestedShare = [=[30]=]
-M.plan = { army = "hold", bombers = 0.4, maneuver = { R_MIN = 1100 } }
+M.plan = { army = "hold", support = "unless_raided", bombers = 0.4, maneuver = { R_MIN = 900, WATCH = 600, OUT_EXTRA = 400 } }
 M.units = {
   { n = "corsumo", share = 0.3500, ratio = 0.0503, perK = 0.130, cost = 2700.0, note = [=[Mammoth: T2 bot lab, the screen]=], tag = "quality" },
   { n = "corban", share = 0.2747, ratio = 0.0803, perK = 0.207, cost = 1328.6, note = [=[Banisher: kites at range edge]=], tag = "quality", behaviors = { "range_kite" } },

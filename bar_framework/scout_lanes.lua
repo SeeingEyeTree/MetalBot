@@ -162,6 +162,22 @@ local function NearestSector(x, z)
     return bestKey
 end
 
+-- UNSEEN_FIRST (click_army): the nearest sector of the enemy half nobody has looked at (or not for FIND_FRESH) from (x, z) -> its centre, or nil.  A blind raid group heads there
+-- instead of the mirror guess: unscouted ground is where the enemy is most likely to be.
+function M.NextUnseen(x, z, frame)
+    EnsureSectors()
+    if not sectors then return nil end
+    local best, bestD
+    for _, s in pairs(sectors) do
+        if not MM.IsOurHalf(s.x, s.z) and Unseen(s, frame) then
+            local d = (s.x - x) ^ 2 + (s.z - z) ^ 2
+            if not bestD or d < bestD then best, bestD = s, d end
+        end
+    end
+    if best then return best.x, best.z end
+    return nil
+end
+
 -- Give a new scout a lane: -1 if free, else +1, else alternate.
 local function AssignLane(uid, scoutIDs)
     if laneOf[uid] then return end

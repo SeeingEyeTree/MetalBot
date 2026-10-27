@@ -5,7 +5,7 @@ M.name = "t1_push"
 M.intent = [=[T1 raid: Incisors and Brutes in small fast groups hit enemy build power and eco; Grunts and Pounders fill out the groups.]=]
 M.control = [=[click_army groups (early launch, commit to build power or escape); no kiting.]=]
 M.suggestedShare = [=[55]=]
-M.plan = { army = "raid" }
+M.plan = { army = "raid", support = "unless_raided" }
 M.units = {
   { n = "corraid", share = 0.9000, ratio = 0.8635, perK = 3.342, cost = 269.3, note = [=[Brute: tougher fast vehicle]=] },
   { n = "cormist", share = 0.1000, ratio = 0.1365, perK = 0.528, cost = 189.3, note = [=[Lasher: T1 AA escort]=] },

@@ -18,15 +18,16 @@
 
 local M = {}
 
-M.LOW, M.NORMAL, M.HIGH = 1, 2, 3
-M.PERIOD = { [1] = 60, [2] = 30, [3] = 15 }    -- frames between sends: 0.5 Hz, 1 Hz, 2 Hz
+M.LOW, M.NORMAL, M.HIGH, M.FAST = 1, 2, 3, 4
+M.PERIOD = { [1] = 60, [2] = 30, [3] = 15, [4] = 10 }    -- frames between sends: 0.5 Hz, 1 Hz, 2 Hz, 3 Hz
+M.FAST_HOLD = 60          -- frames a unit stays FAST after the last trigger (raiders and raid defenders with an enemy near, army_broker SetFastFn)
 M.HIGH_HOLD = 90          -- frames a unit stays HIGH after the last trigger (no flapping at the edge of a threat)
 M.ENEMY_R   = 1200        -- an enemy contact this close makes a unit "enemy near"
 M.CONTACT_MAX_AGE = 300   -- frames; older contacts are not counted
 M.PHASES    = 60
 
-local tier, highUntil = {}, {}
-local nHigh = 0
+local tier, highUntil, fastUntil = {}, {}, {}
+local nHigh, nFast = 0, 0
 
 -- The unit's slot: its id spread over PHASES frames (consecutive ids land on different frames).
 function M.Phase(uid) return (uid * 7) % M.PHASES end
@@ -37,15 +38,18 @@ function M.Period(uid) return M.PERIOD[tier[uid] or M.NORMAL] end
 local function Set(uid, t)
     local old = tier[uid] or M.NORMAL
     if old == t then return end
-    if old == M.HIGH then nHigh = nHigh - 1 end
-    if t == M.HIGH then nHigh = nHigh + 1 end
+    if old >= M.HIGH then nHigh = nHigh - 1 end              -- FAST counts as HIGH for AnyHigh (the half-step planning pass)
+    if t >= M.HIGH then nHigh = nHigh + 1 end
+    if old == M.FAST then nFast = nFast - 1 end
+    if t == M.FAST then nFast = nFast + 1 end
     tier[uid] = (t ~= M.NORMAL) and t or nil
 end
 function M.SetTier(uid, t) Set(uid, t) end
 
 function M.Forget(uid)
-    if tier[uid] == M.HIGH then nHigh = nHigh - 1 end
-    tier[uid], highUntil[uid] = nil, nil
+    if (tier[uid] or 0) >= M.HIGH then nHigh = nHigh - 1 end
+    if tier[uid] == M.FAST then nFast = nFast - 1 end
+    tier[uid], highUntil[uid], fastUntil[uid] = nil, nil, nil
 end
 
 -- True on this unit's frames.
@@ -61,13 +65,17 @@ end
 
 function M.AnyHigh() return nHigh > 0 end
 function M.CountHigh() return nHigh end
+function M.AnyFast() return nFast > 0 end
+function M.CountFast() return nFast end
 
 -- info: scout (a scouting duty), raiding (a raid / commit / escape group), urgent (retreat, respond), enemyNear.
 -- HIGH for raiding, urgent or an enemy near (held HIGH_HOLD frames); LOW for a scout or an idle guard with no enemy near;
 -- else NORMAL.
 function M.Classify(uid, info, frame)
     if info.raiding or info.urgent or info.enemyNear then highUntil[uid] = frame + M.HIGH_HOLD end
-    if (highUntil[uid] or -1) >= frame then Set(uid, M.HIGH)
+    if info.fast then fastUntil[uid] = frame + M.FAST_HOLD end
+    if (fastUntil[uid] or -1) >= frame then Set(uid, M.FAST)
+    elseif (highUntil[uid] or -1) >= frame then Set(uid, M.HIGH)
     elseif info.scout or info.quiet then Set(uid, M.LOW)
     else Set(uid, M.NORMAL) end
     return tier[uid] or M.NORMAL
@@ -106,6 +114,6 @@ function M.EnemyNear(x, z, r)
     return false
 end
 
-function M.Reset() tier, highUntil, grid, nHigh = {}, {}, {}, 0 end
+function M.Reset() tier, highUntil, fastUntil, grid, nHigh, nFast = {}, {}, {}, {}, 0, 0 end
 
 return M

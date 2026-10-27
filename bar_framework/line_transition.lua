@@ -34,7 +34,7 @@ local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")   -- sp
 local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
 local RegisterJobs                                                       -- defined below the jobs it registers
 
-LT.NIL_OPTIONS = { "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+LT.NIL_OPTIONS = { "ARMY_NANOS_FROM", "ARMY_NANOS_UNTIL", "NANO_CREW_PAUSE_SHARE", "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
     NANO_FIRST     = nil,         -- n: every grid's first jobs are n nanos, chained (a nano a finished nano reaches first); nil = the blueprint's order
@@ -122,6 +122,7 @@ LT.CFG = {
     SHARE_GOV_ALPHA_CAP = nil,    -- the governor's target share is at most this (nil = the spine's share as it is)
     SHARE_GOV_ALPHA_FLOOR = nil,  -- ... and it always asks for at least this share of actual spending (nil = the spine's share)
     SHARE_GOV_MIN_ALPHA = nil,    -- ... and it does nothing under this share (nil = always)
+    GOV_KEEP_GRIDS = false,       -- user 2026-10-27: the governor's eco pause leaves the mex grids (new grids, grid builders, their helpers) running; it pauses only retrofits, consolidation, energy, silos ...
     SHARE_GOV = false,            -- bar_framework/spend_governor.lua: make the spine army share bind (pauses grids / tunes the spine)
     FAST_OPEN_CAP = nil,          -- max grids opening at once in the fast-income path (nil = no cap)
     COLLECT_DONE_ONLY = false,    -- new cells only next to grids whose nanos are up (DRAGON_BOT's rule), not next to every assigned grid
@@ -171,6 +172,8 @@ LT.CFG = {
     RETROFIT_MEX_DONE = false,
     AUDIT_EVERY = false, AUDIT_FULL_MOHO = 18, AUDIT_FULL_FUS = 4, AUDIT_FULL_NANOS = 12,
     NANO_CREW = false, NANO_CREW_AFTER = 6, NANO_CREW_SIZE = 4, NANO_CREW_NANOS = 2, NANO_CREW_GRIDS = false, NANO_CREW_MIN = 1,
+    NANO_CREW_PAUSE_SHARE = nil,   -- a share (0.5): the nano crew stops and releases its cons while the spine's army share is at least this, or the governor holds the eco paused (nil: only recruiting stops under the governor)
+    NANO_CREW_PAUSE_HOLD = 600,    -- frames the pause is held once it starts
     NANO_CREW_GROUP = 4,      -- the crew works in groups of this many cons, each group on its OWN grid
     NANO_CREW_SIZE_FULL = false,   -- a number (16): once every grid is open (no new grid can open) the crew grows to this many, so new air cons go to nanos
     NANO_CREW_FULL = false,   -- a number (12): once every open grid has NANO_CREW_NANOS, the crew works grids up to this many nanos
@@ -212,6 +215,9 @@ LT.CFG = {
     VP2 = false, VP2_AFTER_S = 10, VP2_MIN_FRAME = 4 * 60 * 30 + 30 * 30, VP2_WAIT_MAX_S = 90, SPINE_DELAY_S = 20,
     RAID_FOCUS = false, RAID_FOCUS_VALUE = 500, RAID_FOCUS_HOLD_S = 15,
     VP_NANO_ASSIST = false,
+    ARMY_NANOS_FROM = nil,        -- frame range in which every nano in reach of an army lab guards one (UpdateArmyNanos); nil = off
+    ARMY_NANOS_UNTIL = nil,
+    ARMY_NANOS_KEEP_LINE = 0,      -- nanos (nearest the line's builders) left to the line while it still has slots to build
     VP_ASSIST_SHARE = 0.6,
     VP_ASSIST_UNTIL = 7 * 60 * 30,
     VP_FIRST      = 2,
@@ -679,8 +685,9 @@ local function UpdateGrids(T, frame, res)
     end
     -- every job's build sessions run now (grids, retrofits, fusions, silos, cells, the second lab); a finished one frees its con
     CB.RunSessions(T.CB, frame, res)
-    if not T.ecoPaused then UpdateGridHelpers(T, frame) end
-    if not T.ecoPaused then ReleaseCandidates(T, frame, res) end
+    local gridsPaused = T.ecoPaused and not T.CFG.GOV_KEEP_GRIDS
+    if not gridsPaused then UpdateGridHelpers(T, frame) end
+    if not gridsPaused then ReleaseCandidates(T, frame, res) end
     CheckCapPressure(T, res, frame)
     if not T.ecoPaused then
         UpdateRetrofits(T, frame, res)
@@ -1183,6 +1190,118 @@ local function UpdateRaidFocus(T, frame)
     end
 end
 
+
+-- ARMY_NANOS_FROM / ARMY_NANOS_UNTIL (user 2026-10-27: the line's, the labs' and the spine's nanos have ONE job in the opening -- getting the army built): between those
+-- frames every nano in reach of an army lab (VP, VP2, the rez lab, the spine's labs; not the air labs) guards one, at PRIO.ARMY, whatever the army share is.  A nano in reach of
+-- several labs goes to the one with the fewest nanos (the split is 4 and 4 on two labs); an assignment is kept while its lab stands.  Released at UNTIL.
+local function UpdateArmyNanos(T, frame)
+    local C = T.CFG
+    if not (C.ARMY_NANOS_FROM and frame % 30 == 0) then return end
+    local NANO = T.BP.NANO
+    if not NANO then return end
+    T.anNanos = T.anNanos or {}
+    local on = frame >= C.ARMY_NANOS_FROM and frame < (C.ARMY_NANOS_UNTIL or math.huge)
+    if not on then
+        if next(T.anNanos) then
+            for nid in pairs(T.anNanos) do NANO.Release(nid) end
+            T.anNanos = {}
+            Spring.Echo(string.format("[LT] %s army nanos: window over, nanos released", Clock(frame)))
+        end
+        return
+    end
+    local labs, seen = {}, {}
+    local function Add(id) if id and not seen[id] then seen[id] = true; labs[#labs + 1] = id end end
+    Add(T.vpID); Add(T.vp2ID)
+    Add(T.WG and T.WG.RezLab and T.WG.RezLab.id)
+    local ss = T.spineMod and T.spineMod.State and T.spineMod.State()
+    if ss and ss.labs then for id in pairs(ss.labs) do Add(id) end end
+    -- ARMY_NANOS_KEEP_LINE (user 2026-10-27: all the nanos went to the army, lanes 2-4 sat at 4 mexes for minutes and metal floated): while the line still has slots to build, this many nanos
+    -- (the ones nearest to the line's builders / the commander) are NOT claimed -- the engine's auto-assist gives them to the line cons
+    local keepFree = {}
+    if (C.ARMY_NANOS_KEEP_LINE or 0) > 0 and T.crew and T.LC and T.LC.SlotsRemaining and T.LC.SlotsRemaining(T.L) > 0 then
+        local bx, bz, nb = 0, 0, 0
+        for id in pairs(T.crew.cons or {}) do
+            local x, _, z = Spring.GetUnitPosition(id)
+            if x then bx, bz, nb = bx + x, bz + z, nb + 1 end
+        end
+        if nb > 0 then
+            bx, bz = bx / nb, bz / nb
+            local cand = {}
+            for nid in pairs(T.BP.AllNanos and T.BP.AllNanos() or {}) do cand[#cand + 1] = nid end
+            if #cand == 0 then                                       -- no list of every nano: the ones in reach of a lab
+                local seenN = {}
+                for _, id in ipairs(labs) do
+                    local x, _, z = Spring.GetUnitPosition(id)
+                    if x then for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do if not seenN[nid] then seenN[nid] = true; cand[#cand + 1] = nid end end end
+                end
+            end
+            table.sort(cand, function(a, b)
+                local ax, _, az = Spring.GetUnitPosition(a)
+                local cx2, _, cz2 = Spring.GetUnitPosition(b)
+                if not (ax and cx2) then return a < b end
+                return (ax - bx) ^ 2 + (az - bz) ^ 2 < (cx2 - bx) ^ 2 + (cz2 - bz) ^ 2
+            end)
+            for i = 1, math.min(C.ARMY_NANOS_KEEP_LINE, #cand) do keepFree[cand[i]] = true end
+        end
+        for nid in pairs(keepFree) do                                -- a nano claimed earlier is given back to the line
+            if T.anNanos[nid] then NANO.Release(nid); T.anNanos[nid] = nil end
+        end
+    end
+    -- army nanos are claimed only from the line's nanos beyond the free ones: with n line nanos and the line still building, at most n - ARMY_NANOS_KEEP_LINE go to the army (none below
+    -- KEEP + 1 nanos): the line always keeps its general nanos to build itself out
+    local maxArmy = math.huge
+    if next(keepFree) or ((C.ARMY_NANOS_KEEP_LINE or 0) > 0 and T.LC and T.LC.SlotsRemaining and T.LC.SlotsRemaining(T.L) > 0) then
+        maxArmy = math.max(0, ((T.crew and T.crew.nNano) or 0) - (C.ARMY_NANOS_KEEP_LINE or 0))
+    end
+    local count, reach, valid = {}, {}, {}
+    for _, id in ipairs(labs) do
+        local did = Spring.GetUnitDefID(id)
+        local d = did and UnitDefs[did]
+        if d and not AIR_LABS[d.name] and not Spring.GetUnitIsBeingBuilt(id) then
+            local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(id, 0)
+            local x, _, z = Spring.GetUnitPosition(id)
+            if x and not (type(q) == "number" and q <= 0) then
+                valid[id], count[id] = true, 0
+                for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do
+                    reach[nid] = reach[nid] or {}
+                    reach[nid][#reach[nid] + 1] = id
+                end
+            end
+        end
+    end
+    -- keep the standing assignments first, so the split does not churn
+    for nid, lab in pairs(T.anNanos) do
+        if valid[lab] and reach[nid] then count[lab] = count[lab] + 1 else T.anNanos[nid] = nil end
+    end
+    local nids = {}
+    for nid in pairs(reach) do nids[#nids + 1] = nid end
+    table.sort(nids)
+    local nClaimed = 0
+    for _, nid in ipairs(nids) do
+        local lab = T.anNanos[nid]
+        if keepFree[nid] or nClaimed >= maxArmy then
+            if T.anNanos[nid] then NANO.Release(nid); T.anNanos[nid] = nil end
+            lab = nil
+        elseif not lab then
+            for _, cand in ipairs(reach[nid]) do
+                if not lab or count[cand] < count[lab] then lab = cand end
+            end
+            if lab then count[lab] = count[lab] + 1 end
+        end
+        if lab and not keepFree[nid] and NANO.Guard(NANO.PRIO.ARMY, nid, lab) then T.anNanos[nid] = lab; nClaimed = nClaimed + 1 end
+    end
+    if frame - (T.anLogF or -1e9) >= 900 then
+        T.anLogF = frame
+        local parts, n = {}, 0
+        for id, c in pairs(count) do
+            parts[#parts + 1] = string.format("%d on %s", c, UnitDefs[Spring.GetUnitDefID(id) or -1] and UnitDefs[Spring.GetUnitDefID(id)].name or "?")
+            n = n + c
+        end
+        table.sort(parts)
+        Spring.Echo(string.format("[LT] %s army nanos: %d nanos on %d army labs (%s)", Clock(frame), n, #parts, table.concat(parts, ", ")))
+    end
+end
+
 -- ── Entry points ─────────────────────────────────────────────────────────────
 
 function LT.Update(T, frame, res)
@@ -1233,6 +1352,7 @@ function LT.Update(T, frame, res)
     UpdateVpNanoAssist(Vp2(T), frame)
     UpdateSpineOpen(T, frame)
     UpdateRaidFocus(T, frame)
+    UpdateArmyNanos(T, frame)
     if T.spineOn then T.spineMod.Update(frame, res) end
 end
 

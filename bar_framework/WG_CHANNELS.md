@@ -52,6 +52,7 @@ Published by `unit_controller.PublishState` unless noted. All are plain values o
 | `ringRadarWant` | ring radar units the T2 labs should trickle | `lab_controller` |
 | `callScouts` | Hawks the attack groups have called | `lab_controller` |
 | `armyCount`, `armyValue`, `armyGround`, `armyAir` | our combat units, their metal value, split ground / air (ground AA counts) | `lab_controller`, `strategy_hooks`, `game_state` |
+| `avOwnRate`, `avEnemyRate`, `avProjRatio` | army-value derivatives (m/s, m/s, ratio 60 s ahead); nil until ~25 s of samples (`av_rates.lua`) | `unit_runtime` -> `game_state` / fsm signals |
 | `blobs` | the maneuver plan's blob posts `{ {x, z, n}, ... }` (nil under other plans) | `line_transition` (radar posts) |
 | `trade` | click_army's raid trade summary | `strategy_hooks` (game plan) |
 | `airKills`, `airLost` | air value killed / lost over the last 2 min | `lab_controller` (air superiority) |

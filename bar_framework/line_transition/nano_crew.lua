@@ -28,10 +28,26 @@ function M.Install(X)
         return n
     end
 
+    -- NANO_CREW_PAUSE_SHARE (user 2026-10-27: 36 grid nanos / 8k metal at 9:35 and almost no eco, the army was starving): the crew's build power only makes sense while the
+    -- eco is what the metal goes to.  Paused while the governor holds the eco pipeline paused, or while the army share is at least this (the spine's share: the
+    -- machine's attack node is 1.0, a push 0.55, the opening spam 0.75, hold 0.22).  Held PAUSE_HOLD frames once it starts so a flapping share does not recruit and release.
+    local function NanoCrewPaused(T, frame)
+        local K = T.CFG
+        if T.ecoPaused then T.crewPausedUntil = frame + (K.NANO_CREW_PAUSE_HOLD or 600); return true end
+        local lim = K.NANO_CREW_PAUSE_SHARE
+        if lim then
+            local sp = T.spineMod
+            local share = (sp and sp.Share and sp.Share()) or 0
+            if share >= lim then T.crewPausedUntil = frame + (K.NANO_CREW_PAUSE_HOLD or 600); return true end
+        end
+        return T.crewPausedUntil ~= nil and frame < T.crewPausedUntil
+    end
+
     -- Crew size wanted now (0 until NANO_CREW_AFTER grids are open); cached for 15 frames.
     local function NanoCrewTarget(T, frame)
         local K = T.CFG
         if not K.NANO_CREW or T.consolidateOn or T.gridsAssigned < K.NANO_CREW_AFTER then return 0 end
+        if NanoCrewPaused(T, frame) then T.crewTarget = 0; return 0 end
         if K.NANO_CREW_SIZE_FULL and T.gridsFull then T.crewTarget = K.NANO_CREW_SIZE_FULL; return T.crewTarget end
         if not K.NANO_CREW_GRIDS then T.crewTarget = K.NANO_CREW_SIZE; return T.crewTarget end
         if not T.crewTargetAt or frame - T.crewTargetAt >= 15 then
@@ -50,7 +66,7 @@ function M.Install(X)
 
     -- The nanocrew job: members are recruited from the free pool AHEAD of pending grids (user, 2026-10-12) and stay crew.
     local function NanoCrewWant(T, frame)
-        if T.ecoPaused then return 0 end
+        if T.ecoPaused or NanoCrewPaused(T, frame) then return 0 end
         return math.max(0, NanoCrewTarget(T, frame) - CB.HeldCount(T.CB, "nanocrew"))
     end
 
@@ -103,6 +119,19 @@ function M.Install(X)
             return
         end
         local target = NanoCrewTarget(T, frame)
+        -- paused (see NanoCrewPaused): every member stops what it is building and goes back to the pool; the unbuilt nano items stay open for later
+        if NanoCrewPaused(T, frame) then
+            if frame % 15 == 0 and next(T.nanoCrew) then
+                local n = 0
+                for id, m in pairs(T.nanoCrew) do
+                    if Spring.GetUnitDefID(id) then Spring.GiveOrderToUnit(id, 0, {}, {}) end      -- CMD.STOP
+                    NanoCrewRelease(T, id, true); n = n + 1
+                end
+                T.crewGridOf = {}
+                Spring.Echo(string.format("[LT] %s nano crew paused (army share / governor): %d members released", Clock(frame), n))
+            end
+            return
+        end
         -- (recruiting is the nanocrew job's: the crew has PRIORITY over new grids, user 2026-10-12)
         if frame % 15 ~= 0 then return end
         -- shrink: a member with no job for NANO_CREW_IDLE frames goes back to the pool while the crew is over its target

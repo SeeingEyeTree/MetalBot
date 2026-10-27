@@ -36,6 +36,8 @@
 -- stage/reinforce values while waiting, bomber runs, and a once-a-minute total.
 
 local M = {}
+local unseenFn, holdHomeFn          -- Init hooks (UNSEEN_FIRST, holdHome)
+local onlySet                       -- SetOnly: when set, only these units are commanded (the small raid squad that raids while the army holds)
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
 local CFG = {
@@ -258,6 +260,27 @@ local CFG = {
     -- requests are a point SCOUT_AHEAD along the way it is actually going (toward its hole / flank waypoint, not straight
     -- at the target), the target itself, and the unseen ring points round it (HOLE_FIND).
     SCOUT_ROUTE        = false,
+    -- SURVIVE (user 2026-10-27, "raids should still move in and attack but steer away more aggressively and not dive unless there is a big hole"): switched on per stance
+    -- (plan.survive, M.SetSurvive).  While on, SURVIVE_SET overrides the values it names (earlier escape, wider steering, harsher defended-target penalty, a group is spent at half
+    -- its peak), and inside ATTACK_SWITCH of the target the group dives only if the armed value round the target is <= SURVIVE_HOLE_FRAC x the core (and no big enemy army
+    -- cluster stands by it); otherwise it skirmishes: it stands off SURVIVE_STANDOFF from the target (SET_TARGET fires in range) and steps back SURVIVE_STEP away from the
+    -- nearest armed enemy when the threat round the core passes SURVIVE_THREAT_FRAC x the core (resuming under half of that), holding SURVIVE_HOLD frames per step.
+    -- Units under SURVIVE_UNIT_HP with an armed enemy near leave the group for the hurt-squad retreat.
+    SURVIVE            = false,
+    SURVIVE_SET        = { ESCAPE_RATIO = 1.0, COMMIT_RATIO = 0.8, ESCAPE_LOSS_FRAC = 0.15, SURROUND_SECTORS = 2, ENGAGE_R = 1100, FALL_FRAC = 0,
+                           DEF_PENALTY = 0.05, TARGET_DEF_MAX = 0.6, FLANK_PENALTY = 0.05, HOLE_N = 16, HOLE_R = 1800, HOLE_REPICK_FRAC = 0.25,
+                           FLANK_MIN_FRAC = 0.25, FLANK_CLEAR = 2400, CMDR_OPEN_FRAC = 0.15, ENEMY_NEAR_R = 1500 },
+    SURVIVE_R          = 1200,
+    SURVIVE_STEP       = 500,
+    SURVIVE_HOLE_FRAC  = 0.10,     -- dive only when the armed value round the target is under this x the core (0.35 dived into 2-3 defenders)
+    SURVIVE_EVADE_D    = 900,      -- an evade picks the least-threat heading of 12 at this distance
+    SURVIVE_ORBIT_STEP = 0.6,      -- radians the standoff point moves round the target per tick (a raider never stands still)
+    SURVIVE_AVOID_S    = 60,       -- seconds a target the group evaded from is shunned
+    SURVIVE_THREAT_FRAC = 0.5,
+    SURVIVE_STANDOFF   = 250,
+    SURVIVE_HOLD       = 120,
+    SURVIVE_UNIT_HP    = 0.45,
+    UNSEEN_FIRST       = false,   -- blind groups (the enemy not located: the mirror guess) head for the nearest never-seen enemy-half sector (Init o.unseen) instead of the mirror lane point
 }
 M.CFG = CFG
 -- The slow group's speed line at run time (unit_runtime: the plan army "defend" turns the slow group on while it pushes, so
@@ -336,6 +359,7 @@ function M.Init(o)
     combat, guards, muster = o.combat, o.guards, o.muster
     scouts, responding, bombers = o.scouts, o.responding, o.bombers
     if o.isHunting then isHunting = o.isHunting end
+    unseenFn, holdHomeFn = o.unseen, o.holdHome      -- scout_lanes' NextUnseen(x, z, frame); unit_runtime's 'a ground raid is on the base' test
     isHeld = o.isHeld or NotHeld
     groups, byId, unitGroup, squad, slowCache = {}, {}, {}, {}, {}
     nextId, lastBombF, lastWaitLog = 1, -99999, -99999
@@ -357,6 +381,26 @@ function M.SetMode(m, frame)
     return true
 end
 function M.Mode() return mode end
+
+-- A table { [uid] = true }: click_army commands only these units (RAID_SQUAD: five gators keep raiding while the army defends).  nil = every free unit.
+function M.SetOnly(t) onlySet = t end
+
+-- SURVIVE on / off (plan.survive of the current stance): swaps the values of CFG.SURVIVE_SET in and out, once per change.
+local surviveBase
+function M.SetSurvive(on)
+    on = on and true or false
+    if on == (surviveBase ~= nil) then return false end
+    if on then
+        surviveBase = {}
+        for k, v in pairs(CFG.SURVIVE_SET) do surviveBase[k] = CFG[k]; CFG[k] = v end
+    else
+        for k, v in pairs(surviveBase) do CFG[k] = v end
+        surviveBase = nil
+    end
+    CFG.SURVIVE = on
+    Spring.Echo("[CK] survive mode " .. (on and "ON" or "off"))
+    return true
+end
 
 -- What the attack groups traded over the last `window` frames (default TRADE_WINDOW): value killed near a group (any
 -- enemy unit, army included), value lost from groups, and how many of the most recent ended groups in a row were
@@ -577,6 +621,7 @@ local function PickTarget(frame, g, groupValue)
     for _, t in ipairs(EI.RaidTargets(frame)) do
         local score = DamageValue(t) / (1 + Dist(g.cx, g.cz, t.x, t.z) / scale)
         if t.mobile then score = score * CFG.MOBILE_FACTOR end
+        if g.avoid and g.avoid[t.uid] and frame < g.avoid[t.uid] then score = score * 0.02 end      -- SURVIVE: a target the group just evaded from
         if EI.ThreatAt(frame, t.x, t.z, "ground") > defMax * groupValue then
             score = score * CFG.DEF_PENALTY
         end
@@ -631,7 +676,7 @@ end
 local function Members()
     local ground, air = {}, {}
     for uid, defID in pairs(combat) do
-        if Alive(uid) and not guards[uid] and not muster[uid] and not scouts[uid]
+        if Alive(uid) and not guards[uid] and not muster[uid] and not scouts[uid] and (not onlySet or onlySet[uid])
            and not responding[uid] and (CFG.DIRECT or not squad[uid]) then
             local role = ARMY.RoleOf(uid)
             -- DIRECT: a hurt squad (role RETREAT, squad[uid]) stays in the list so the squad_retreat behaviour can release it
@@ -1339,8 +1384,44 @@ local function CommitOrders(frame, g, list, t)
     end
 end
 
+-- SURVIVE (user 2026-10-27: "the escape logic does not take into account where enemy units are, they just got a move order away"; "raiding units should never fight / command, they always
+-- stay moving"): danger no longer commits (no attack order) and no longer ends the group or sends it to a fixed point.  It EVADES: the least-threat heading of 12 round the core
+-- (armed enemy value near each point), a mild pull toward the target so the raid goes on, shuns the target for SURVIVE_AVOID_S, and holds that heading SURVIVE_HOLD frames.
+local function EngageSurvive(frame, g, list, cx, cz, fightV)
+    g.engage = nil
+    if g.evadeUntil and frame < g.evadeUntil then return true end
+    local T, sectors = LocalThreat(frame, cx, cz, CFG.ENGAGE_R, CFG.SECTOR_MIN_FRAC * fightV)
+    local loss = RecentLoss(g, frame)
+    local lossFrac = loss / math.max(1, fightV + loss)
+    local danger = (sectors >= CFG.SURROUND_SECTORS and T >= CFG.SURROUND_MIN_FRAC * fightV) or lossFrac >= CFG.ESCAPE_LOSS_FRAC or T >= CFG.COMMIT_RATIO * fightV
+    if not danger then return nil end
+    local tx, tz = g.target and g.target.x, g.target and g.target.z
+    local bx, bz, bc
+    for i = 0, 11 do
+        local a = i * math.pi / 6
+        local px, pz = MM.Clamp(cx + math.cos(a) * CFG.SURVIVE_EVADE_D, cz + math.sin(a) * CFG.SURVIVE_EVADE_D, CFG.MARGIN)
+        local c = SteerValueNear(frame, px, pz, CFG.ENEMY_NEAR_R)
+        if tx then c = c + 0.1 * fightV * Dist(px, pz, tx, tz) / 3000 end
+        if not bc or c < bc then bx, bz, bc = px, pz, c end
+    end
+    g.evadeUntil = frame + CFG.SURVIVE_HOLD
+    if g.target then
+        g.avoid = g.avoid or {}
+        g.avoid[g.target.uid] = frame + 30 * CFG.SURVIVE_AVOID_S
+        g.target = nil
+    end
+    CancelSetTargets(g)
+    Log(frame, "group #%d EVADES to (%d,%d): threat %d vs core %d, %d sectors, lost %d%% (heading threat %d)", g.id, bx, bz, T, fightV, sectors, math.floor(lossFrac * 100), bc)
+    for i, u in ipairs(list) do
+        local x, z = RingPos(40 * g.id + i - 1, bx, bz)
+        Claim(frame, u.uid, CMD_MOVE, x, z, nil, true)
+    end
+    return true
+end
+
 -- Returns "done" (escape finished: end the group), true (orders given this tick), or nil (advance as usual).
 local function Engage(frame, g, list, cx, cz, fightV)
+    if CFG.SURVIVE then return EngageSurvive(frame, g, list, cx, cz, fightV) end
     if g.engage == "escape" then
         local ex, ez = MM.PointAt(CFG.ESCAPE_FRAC * MM.Dist(), 0)
         ex, ez = MM.Clamp(ex, ez, CFG.MARGIN)
@@ -1388,6 +1469,21 @@ local function Engage(frame, g, list, cx, cz, fightV)
 end
 
 local function UpdateAttack(frame, g, list)
+    -- SURVIVE: a badly hurt unit with an armed enemy near leaves for the hurt-squad retreat (UpdateSquads moves it home and releases it at SQUAD_RELEASE hp / calm)
+    if CFG.SURVIVE and not g.slow then
+        local keep, hurt = {}, 0
+        for _, u in ipairs(list) do
+            if u.hp < CFG.SURVIVE_UNIT_HP and ArmedValueNear(frame, u.x, u.z, CFG.ENEMY_NEAR_R) > 0 then
+                squad[u.uid] = frame; unitGroup[u.uid] = nil; hurt = hurt + 1
+            else
+                keep[#keep + 1] = u
+            end
+        end
+        if hurt > 0 then
+            list = keep
+            Log(frame, "group #%d: %d hurt unit(s) retreat (hp < %.2f)", g.id, hurt, CFG.SURVIVE_UNIT_HP)
+        end
+    end
     local n = #list
     if n > g.peakN then g.peakN = n end
     if n == 0 or n < math.max(1, math.floor(g.peakN * CFG.FALL_FRAC)) then
@@ -1462,7 +1558,13 @@ local function UpdateAttack(frame, g, list)
         local px, pz = MM.Perp()
         local off = (g.lane - 2) * CFG.LANE_SPACING
         tx, tz = MM.Clamp(fx + px * off, fz + pz * off, CFG.MARGIN)
-        if Dist(cx, cz, tx, tz) < CFG.NO_TARGET_R then
+        -- UNSEEN_FIRST: the enemy is not located yet (the foe is the mirror guess): go where nobody has looked, the likeliest place for it
+        local usx, usz
+        if CFG.UNSEEN_FIRST and unseenFn and MM.FoeSource and MM.FoeSource() == "mirror" then
+            usx, usz = unseenFn(cx, cz, frame)
+            if usx then tx, tz = MM.Clamp(usx, usz, CFG.MARGIN) end
+        end
+        if not usx and Dist(cx, cz, tx, tz) < CFG.NO_TARGET_R then
             g.arrivedF = g.arrivedF or frame
             if frame - g.arrivedF >= CFG.LOOK_FRAMES then return EndGroup(frame, g, "nothing to hit", n) end
         end
@@ -1497,6 +1599,57 @@ local function UpdateAttack(frame, g, list)
             Log(frame, "group #%d set-target on %d unit(s) while moving (%d in the core)", g.id, nset, #core)
         end
     end
+    -- SURVIVE: inside ATTACK_SWITCH dive only into a big hole, otherwise skirmish (see CFG.SURVIVE)
+    if CFG.SURVIVE and g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH then
+        local defNear = ArmedValueNear(frame, tx, tz, CFG.ENGAGE_R, nil, g.target.uid)
+        local ecx, ecz, ecv = EnemyArmyCluster(frame)
+        local hole = defNear <= CFG.SURVIVE_HOLE_FRAC * fightV
+                     and not (ecx and ecv >= 0.5 * fightV and Dist(ecx, ecz, tx, tz) <= CFG.FLANK_CLEAR)
+        if not hole then
+            if g.holdUntil and frame < g.holdUntil then return end         -- a step back is under way
+            local threat = SteerValueNear(frame, cx, cz, CFG.SURVIVE_R, g.target.uid)
+            local lim = CFG.SURVIVE_THREAT_FRAC * fightV
+            if threat > (g.skirmishBack and 0.5 * lim or lim) then
+                local foe = NearestEnemy(frame, cx, cz, CFG.SURVIVE_R)
+                local ax, az = cx - (foe and foe.x or tx), cz - (foe and foe.z or tz)
+                local d = math.sqrt(ax * ax + az * az)
+                if d < 1 then ax, az, d = cx - tx, cz - tz, math.max(1, Dist(cx, cz, tx, tz)) end
+                local bx, bz = MM.Clamp(cx + ax / d * CFG.SURVIVE_STEP, cz + az / d * CFG.SURVIVE_STEP, CFG.MARGIN)
+                for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, bx, bz, nil, true) end
+                g.holdUntil, g.skirmishBack = frame + CFG.SURVIVE_HOLD, true
+                if frame - (g.svLogF or -99999) >= 450 then
+                    g.svLogF = frame
+                    Log(frame, "group #%d steps back %dm: threat %d vs core %d at the target (defence there %d)", g.id, CFG.SURVIVE_STEP, threat, fightV, defNear)
+                end
+                return
+            end
+            g.skirmishBack = nil
+            -- orbit the target at SURVIVE_STANDOFF, ALWAYS MOVING (never a FIGHT / ATTACK order: SetTargets above shoots what is in weapon range while the units keep going)
+            local dT = math.max(1, Dist(cx, cz, tx, tz))
+            local ang = math.atan2(cz - tz, cx - tx)
+            if dT > CFG.SURVIVE_STANDOFF + 150 then
+                local sx, sz = MM.Clamp(tx + math.cos(ang) * CFG.SURVIVE_STANDOFF, tz + math.sin(ang) * CFG.SURVIVE_STANDOFF, CFG.MARGIN)
+                for i, u in ipairs(core) do local x, z = RingPos(i - 1, sx, sz); Claim(frame, u.uid, CMD_MOVE, x, z) end
+            else
+                g.orbitDir = g.orbitDir or 1
+                local function Pt(dir)
+                    local a = ang + dir * CFG.SURVIVE_ORBIT_STEP
+                    return MM.Clamp(tx + math.cos(a) * CFG.SURVIVE_STANDOFF, tz + math.sin(a) * CFG.SURVIVE_STANDOFF, CFG.MARGIN)
+                end
+                local p1x, p1z = Pt(g.orbitDir)
+                local p2x, p2z = Pt(-g.orbitDir)
+                if SteerValueNear(frame, p1x, p1z, CFG.SURVIVE_R, g.target.uid) > 1.5 * SteerValueNear(frame, p2x, p2z, CFG.SURVIVE_R, g.target.uid) + 1 then
+                    g.orbitDir, p1x, p1z = -g.orbitDir, p2x, p2z
+                end
+                for i, u in ipairs(core) do local x, z = RingPos(i - 1, p1x, p1z); Claim(frame, u.uid, CMD_MOVE, x, z) end
+            end
+            return
+        end
+        if frame - (g.svLogF or -99999) >= 450 then
+            g.svLogF = frame
+            Log(frame, "group #%d dives: a hole at the target (defence %d vs core %d)", g.id, defNear, fightV)
+        end
+    end
     if g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH and CFG.SET_TARGET then
         -- run through and past the target instead of stopping to ATTACK it
         local dx, dz = tx - cx, tz - cz
@@ -1511,7 +1664,7 @@ local function UpdateAttack(frame, g, list)
             if visible then Claim(frame, u.uid, CMD_ATTACK, tx, tz, g.target.uid)
             else Claim(frame, u.uid, CMD_FIGHT, tx, tz) end
         end
-    elseif CFG.FORWARD_CORE and CFG.CORE_WAIT_FRAC and #far > 0
+    elseif CFG.FORWARD_CORE and CFG.CORE_WAIT_FRAC and #far > 0 and not CFG.SURVIVE
            and fightV < CFG.CORE_WAIT_FRAC * (fightV + NearValue(far, cx, cz, CFG.CORE_WAIT_R)) then
         -- the front is a small part of what is about to arrive: hold and let it catch up.  Units further
         -- than CORE_WAIT_R (fresh from the factory) do not hold the front back.
@@ -1831,6 +1984,10 @@ function M.Update(frame)
     else
         rest = free
     end
+
+    --  holdHome (unit_runtime HOLD_HOME): a ground raid is on the base -- new production is not added to the groups or sent to the stage; it stays where it is (role nil), which
+    --  raid_response answers with (units inside a group never respond)
+    if holdHomeFn and holdHomeFn() then rest = {} end
 
     --  2. With all MAX_GROUPS fast groups out, a fast unit goes straight to the weakest of them.
     local toStage = rest

@@ -88,6 +88,7 @@ function M.Collect(frame, o)
     s.foe = mb.foeX and { x = mb.foeX, z = mb.foeZ } or nil
     s.foeDist = mb.foeDist
     s.airKills, s.airLost = mb.airKills, mb.airLost
+    s.avOwnRate, s.avEnemyRate, s.avProjRatio = mb.avOwnRate, mb.avEnemyRate, mb.avProjRatio   -- av_rates (unit_runtime): army-value derivatives, nil until ~25 s of samples
     s.airRaid, s.pushMode = mb.airRaid, mb.pushMode      -- bombers in our half (unit_runtime AIRDEF); army mode defend | push | raid
     if s.armyAir then
         s.airSuperior = s.armyAir > 0 and s.armyAir >= 1.5 * s.enemyAir and (s.airKills or 0) >= (s.airLost or 0)

@@ -87,6 +87,7 @@ M.DEFAULTS = {
     -- match an attack group dove into the base at 9:30, found the commander building its lane with 9 enemies near
     -- and few guards, and killed it at 9:39 (instant loss).  Once it is in its lane, the commander walks away from
     -- armed enemies (the crew gets it back when the area is quiet) and cloaks whenever energy allows.
+    CMDR_TO_SPINE       = false,     -- the commander leaves the line when its lane is done and stands at the spine (guards the nearest lab; see UpdateCommanderToSpine)
     CMDR_EVADE          = true,
     CMDR_CLOAK          = false,     -- v3b: off (cloak rarely affordable, and it toggled in the opening)
     -- ...and once its lane is done, or from this frame on, it retires: leaves the line (game_mechanics 1.5: after the
@@ -113,7 +114,7 @@ M.DEFAULTS = {
 }
 
 -- Options whose default is nil on purpose (a key set to nil is "absent", so these are the only ones not in M.DEFAULTS).
-M.NIL_OPTIONS = { ARMY_SHARE_FIXED = true, ROW_MAX = true, SITE_K_LAST = true, ESTOR_KMAX = true, MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
+M.NIL_OPTIONS = { UNIT_SWAP = true, ARMY_SHARE_FIXED = true, ROW_MAX = true, SITE_K_LAST = true, ESTOR_KMAX = true, MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
 
 function M.Install(widget, WG, K)
 local CFG = {}
@@ -615,6 +616,46 @@ local function UpdateCommanderSafety(frame, res)
     end
 end
 
+-- CMDR_TO_SPINE (user 2026-10-27: "move the commander to the spine after it finishes its part of the row, that is where we are trying to protect"): once the
+-- commander's lane (lane 1) is done it leaves the line, walks to the spine's first block (a little behind its anchor) and guards the nearest spine lab, so its
+-- 300 build power adds to the units and it stands where the garrison and the army are.  No evading from then on (it stays with the garrison).
+local function UpdateCommanderToSpine(frame)
+    if not (CFG.CMDR_TO_SPINE and crew and commanderID and SPINE and SPINE.Front and TS.cmdPhase == "lane") then return end
+    if not (crew.lanesDone and crew.lanesDone[1] ~= nil) and not TS.cmdAtSpine then return end
+    local geo, blocks = SPINE.Front()
+    if not (geo and blocks and blocks[1]) then return end
+    local b = blocks[1]
+    local tx, tz = b.x - geo.dx * 150, b.z - geo.dz * 150
+    local cx, _, cz = spGetUnitPosition(commanderID)
+    if not cx then return end
+    if not TS.cmdAtSpine then
+        TS.cmdAtSpine = frame
+        TS.cmdEvading = nil
+        LC.Release(crew, commanderID)
+        Spring.GiveOrderToUnit(commanderID, 10, { tx, Spring.GetGroundHeight(tx, tz) or 0, tz }, {})       -- CMD.MOVE
+        Spring.Echo(string.format("[LN] %s commander's lane is done: it moves to the spine at (%d, %d)", Clock(frame), tx, tz))
+        return
+    end
+    -- every 5 s: standing idle near the spine -> guard the nearest standing lab there (its build power helps the units)
+    if frame % 150 ~= 0 then return end
+    local cmds = Spring.GetUnitCommands(commanderID, 1)
+    if cmds and #cmds > 0 then return end
+    local best, bd
+    for _, uid in ipairs(Spring.GetUnitsInCylinder(tx, tz, 700, myTeamID) or {}) do
+        local ud = UnitDefs[spGetUnitDefID(uid) or -1]
+        if ud and ud.isFactory and not Spring.GetUnitIsBeingBuilt(uid) then
+            local ux, _, uz = spGetUnitPosition(uid)
+            local d = (ux - tx) ^ 2 + (uz - tz) ^ 2
+            if not bd or d < bd then best, bd = uid, d end
+        end
+    end
+    if best then
+        spGiveOrderToUnit(commanderID, CMD_GUARD, { best }, {})
+    elseif (cx - tx) ^ 2 + (cz - tz) ^ 2 > 200 ^ 2 then
+        Spring.GiveOrderToUnit(commanderID, 10, { tx, Spring.GetGroundHeight(tx, tz) or 0, tz }, {})
+    end
+end
+
 -- ── Callbacks ────────────────────────────────────────────────────────────────
 
 function widget:Initialize()
@@ -726,6 +767,7 @@ function widget:Initialize()
                 switches = { function() local r = WG and WG.StanceRequest; if r and r ~= (STRAT and STRAT:Name()) then return r end end }
             end
             STRAT = ST.New{
+                swap = CFG.UNIT_SWAP,      -- { corgator = "corraid" }: stance units built as another unit (stance_loader Prepare)
                 stances = StanceList(), initial = (BUNDLE and BUNDLE.stanceMachine and BUNDLE.InitialStance()) or CFG.STANCE, capFilter = CFG.CAP_T1_FRAC or nil,
                 -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
                 -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
@@ -943,7 +985,8 @@ function widget:GameFrame(frame)
     EarlyGrunts(frame)
     ReleaseCon1(frame)
     if TS.cmdEvading == nil then UpdateCommander(frame, res) end
-    if frame % 30 == 0 then UpdateCommanderSafety(frame, res) end
+    if frame % 30 == 0 then UpdateCommanderToSpine(frame) end
+    if frame % 30 == 0 and not TS.cmdAtSpine then UpdateCommanderSafety(frame, res) end
     LC.PAUSED = (CFG.GOV_LINE and trans and trans.ecoPaused) and true or false
     LC.Update(crew, frame, res)
     CheckFloat(frame, res)

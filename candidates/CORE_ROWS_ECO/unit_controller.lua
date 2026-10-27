@@ -17,4 +17,15 @@ end
 local UNIT = VFS.Include("LuaUI/Widgets/bar_framework/unit_runtime.lua")
 
 -- Creep scouts (scout_net CREEP) and the rez broker (REZ_BROKER) are unit_runtime defaults, so this stays the plain CORE controller.
-UNIT.Install(widget, WG, {})
+-- RAID_RESPONSE (user 2026-10-27): responders shrink to 1.5x the raid's value (was 3x) and a raid not seen for 15 s (was 30 s) is over, so units do not over-chase.
+-- The opening raid (user 2026-10-27; stance raid_start, army = "raid" + survive): units leave as soon as they are made, no early home guards, the first three ground units are free,
+-- a small garrison after that; new production stays home while a ground raid is on the base (HOLD_HOME), six ground scouts first (FIND_SCOUTS), blind groups go to unseen ground.
+UNIT.Install(widget, WG, {
+    RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450 },
+    HOME_DEFENCE = { R = 700, SLACK = 150, POST_R = 550, LEASH = 250, GROUP_UNDER = 6, EARLY_UNTIL = 0, EARLY_MAX = 0 },
+    MECH = { HOME_GROUND_AFTER = 3, HOME_GROUND_MIN = 0, HOME_GROUND_SHARE = 0.15, HOME_GROUND_MAX = 4, FIND_SCOUTS = 6 },
+    CLICK_ARMY = { EARLY_LAUNCH = { f0 = 7200, av0 = 130, f1 = 25200, av1 = 1800 }, LAUNCH_RATIO_EARLY = 0, MIN_GROUP_UNITS = 1, STAGE_FRAC = 0.12, MAX_GROUPS = 2, UNSEEN_FIRST = true },
+    HOLD_HOME = { VALUE = 300 },
+    FAST_RAIDERS = true,        -- user 2026-10-27: raiders and raid defenders with an enemy near get orders at 3 Hz (unit_clock FAST tier)
+    RAID_SQUAD = { N = 5 },     -- user 2026-10-27: five gators keep raiding (survive-first) while the army holds, refilled from the blobs
+})

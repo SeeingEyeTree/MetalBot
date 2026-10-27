@@ -6,7 +6,7 @@ M.name = "core_start"
 M.intent = [=[Opening: Incisors (fast, cheap) with a Pounder screen, ~4k army value by 6:00, then hold or push by what the scouts found.]=]
 M.control = [=[maneuver blobs hold a ring a little out from the base (plan army "hold"); nothing leaves.]=]
 M.suggestedShare = [=[60]=]
-M.plan = { army = "hold", maneuver = { R_MIN = 1100 } }
+M.plan = { army = "hold", support = "unless_raided", maneuver = { R_MIN = 900, WATCH = 600, OUT_EXTRA = 400 } }
 M.units = {
   { n = "corgator", share = 0.76, note = [=[Incisor: 6 of every 7 units]=] },
   { n = "corlevlr", share = 0.24, note = [=[Pounder: the slow screen, 1 of every 7]=] },

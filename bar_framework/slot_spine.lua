@@ -59,6 +59,8 @@ M.CFG = {
     CORE_NANOS      = 4,      -- nanos built when a block opens; the rest are released as the spend needs them
     NANO_HEADROOM   = 1.15,   -- nano capacity kept over what the spend absorbs
     BUILD_AHEAD     = 1.0,    -- nanos are sized for this share of income whatever the army share (1 = all of it) ...
+    NANO_SHARE_CAP  = nil,    -- user 2026-10-27 (8k metal of idle nanos; the machine's attack share is 1.0): nanos are sized for at most this share of income
+    NANO_BUILD_UTIL = 0,      -- >0: no NEW nano is built (past LAB_MIN_NANOS' floor) while fewer than this share of the standing nanos are building something
     NANO_UTIL_GATE  = 0,      -- CORE (user 2026-10-26): >0 = build-ahead sizing and every lab beyond the first of its type wait until this share of the
                               -- standing nanos is building something (smoothed, NanoUtil); 0 = off.  Labs/nanos still follow the army share.
     BUILD_AHEAD_INCOME = 500, -- ... but only from this metal income; below it nanos/labs follow the army share alone, so the
@@ -110,6 +112,8 @@ M.CFG = {
     -- user 2026-10-26 (slimegirl game: ~5 ground cons far too early): until EARLY_CONS_UNTIL (frame) or EARLY_CONS_LABS labs stand, the spine keeps at most
     -- EARLY_CONS ground cons (one is enough to place the nanos and the labs).  0 = off.
     EARLY_CONS      = 0,
+    CON_CAP         = 0,                  -- >0: until CON_CAP_UNTIL (frame) the spine has at most this many ground cons in total (residents and every order kind count)
+    CON_CAP_UNTIL   = 10 * 60 * 30,
     EARLY_CONS_LABS = 2,
     EARLY_CONS_UNTIL = 6 * 60 * 30,
     -- the first FIRST_VP spine labs are vehicle plants (VP_NAME), and each waits until FIRST_LAB_NANOS spine nanos stand ("two nanos, vp, then two
@@ -479,9 +483,10 @@ function M.PoolGive(uid, owner)
     return true
 end
 -- The host asked this lab for cons first (AdoptLab conWant) and it has not made them all yet.
+local ConCapReached        -- defined below (CON_CAP)
 function M.FirstConWanted(labID)
     local L = S and S.labs[labID]
-    return L ~= nil and not L.leaving and L.conWant ~= nil and (L.conMade or 0) < L.conWant
+    return L ~= nil and not L.leaving and L.conWant ~= nil and (L.conMade or 0) < L.conWant and not ConCapReached()
 end
 function M.PoolCount()
     local total, idle = 0, 0
@@ -536,12 +541,21 @@ local function AliveGroundCons()
     end
     return n
 end
+-- CON_CAP (user 2026-10-27: 6 vehicle cons made for no reason, one is enough for the spine): until CON_CAP_UNTIL the spine has at most CON_CAP ground cons in
+-- all, counting residents and every kind of order (AdoptLab quotas, a job's wanted con, block residents).  A lost con is replaced (the count drops).
+ConCapReached = function()
+    local K = Cfg()
+    if (K.CON_CAP or 0) <= 0 or S.frame >= K.CON_CAP_UNTIL then return false end
+    local n = 0
+    for uid in pairs(S.cons) do if Alive(uid) then n = n + 1 end end
+    return n + math.max(0, S.conOrders - S.conOut) >= K.CON_CAP
+end
 
 -- A resident con a block still lacks and this lab can make: returns defID, block, role (nil if none).  An order is remembered
 -- (b.conOrdered) for CON_ORDER_TTL so one lab does not order it twice.
 local function ResidentWanted(ld)
     local K = Cfg()
-    if not K.BLOCK_CONS or EarlyConCap() then return nil end
+    if not K.BLOCK_CONS or EarlyConCap() or ConCapReached() then return nil end
     local opt = BT.Options(ld.id)
     for _, b in ipairs(S.blocks) do
         b.cons, b.conOrdered = b.cons or {}, b.conOrdered or {}
@@ -724,6 +738,7 @@ local function ThrottleNanos()
     local ready = (not S.env.MexGridsReady) or S.mexReady
     local ahead = (ready and S.income >= K.BUILD_AHEAD_INCOME and UtilOpen()) and K.BUILD_AHEAD or 0
     local nanoShare = math.max(S.share, S.nanoFloor, ahead)
+    if K.NANO_SHARE_CAP then nanoShare = math.min(nanoShare, K.NANO_SHARE_CAP) end
     local mult = S.freeRun and K.FLOAT_MULT or 1
     local need = math.ceil(K.NANO_HEADROOM * nanoShare * S.income * mult / math.max(S.nanoRate, 1e-6) - 1e-9)
     if (S.spendFloor or 0) > 0 then
@@ -750,6 +765,18 @@ local function ThrottleNanos()
     -- NANO_CAP = { max, untilF }: until that frame at most `max` spine nanos are built (a nano is 230 metal that is not army)
     local cap = K.NANO_CAP
     if cap and S.frame < (cap.untilF or 0) then buildNeed = math.min(buildNeed, cap.max) end
+    -- NANO_BUILD_UTIL: the standing nanos are mostly idle (a lab waiting for its next order, or metal short): more nanos would only add idle ones
+    if (K.NANO_BUILD_UTIL or 0) > 0 and allowed > 0 then
+        local u = NanoUtil()
+        if u ~= nil and u < K.NANO_BUILD_UTIL then
+            local floorNeed = (K.LAB_MIN_NANOS or 0) > 0 and K.LAB_MIN_NANOS * (1 + (function() local p = 0; for _, slot in ipairs(S.slots) do if slot.state == "build" or slot.state == "lab" then p = p + 1 end end return p end)()) or 0
+            buildNeed = math.min(buildNeed, math.max(allowed, floorNeed))
+            if S.frame - (S.utilLogF or -1e9) >= 900 and need > allowed then
+                S.utilLogF = S.frame
+                Log("nano gate: %d nanos stand, %.0f%% building (< %.0f%%): none of the %d more wanted are built", allowed, u * 100, K.NANO_BUILD_UTIL * 100, need - allowed)
+            end
+        end
+    end
     S.nanoBuildNeed = buildNeed
     if allowed >= buildNeed then return end
     local k = math.min(K.NANO_BATCH, buildNeed - allowed, K.NANO_INFLIGHT - inflight)
@@ -1198,7 +1225,7 @@ local function PlanLabs()
         end
     end
     local ahead = (((not S.env.MexGridsReady) or S.mexReady) and S.income >= K.BUILD_AHEAD_INCOME and UtilOpen()) and K.BUILD_AHEAD or 0
-    local spend = S.income * math.max(S.share, S.nanoFloor, ahead) * (S.freeRun and K.FLOAT_MULT or 1)
+    local spend = S.income * math.min(math.max(S.share, S.nanoFloor, ahead), K.NANO_SHARE_CAP or 1) * (S.freeRun and K.FLOAT_MULT or 1)
     local need = M.Counts(S.units, plan, tab, spend)
     -- FIRST_VP: until that many labs stand (or are building), the missing ones are vehicle plants, whatever the comp says
     local forcedVp, forcedNeed = false, 0
@@ -1871,7 +1898,7 @@ function M.NextOrder(labID, labDefID)
         end
         local target = math.min(Cfg().CONS_MAX, Cfg().CONS_MIN + math.floor(S.income / Cfg().CONS_PER_INCOME))
         if EarlyConCap() then target = math.min(target, Cfg().EARLY_CONS) end
-        if alive + math.max(0, S.conOrders - S.conOut) < target then
+        if alive + math.max(0, S.conOrders - S.conOut) < target and not ConCapReached() then
             -- the con that can place the most wanted job; else any ground con this lab makes
             local best
             for _, od in ipairs(BT.ConsMadeBy(ld)) do
@@ -1882,15 +1909,17 @@ function M.NextOrder(labID, labDefID)
             if best then S.conOrders = S.conOrders + 1; return best.id end
         end
     end
-    if L.conWant and L.conMade < L.conWant then          -- the cons the host asked this lab for first
+    if L.conWant and L.conMade < L.conWant and not ConCapReached() then          -- the cons the host asked this lab for first
         local od = BT.ConMadeBy(ld, { name = L.conName })
         if od then
             L.conMade = L.conMade + 1
+            if (Cfg().CON_CAP or 0) > 0 then S.conOrders = S.conOrders + 1 end
             return od.id
         end
     end
     for wanted in pairs(S.conWanted) do
         for _, od in ipairs(BT.ConsMadeBy(ld)) do
+            if ConCapReached() then break end
             if EarlyConCap() and AliveGroundCons() + math.max(0, S.conOrders - S.conOut) >= Cfg().EARLY_CONS then break end
             if BT.CanBuild(od.id, wanted) and not S.conPending[od.id] then
                 S.conPending[od.id] = S.frame

@@ -84,6 +84,13 @@ local DECOY_MIN        = O("DECOY_MIN", 8)
 local DECOY_PER_LAB    = O("DECOY_PER_LAB", 32)
 local DECOY_ORDER_TTL  = O("DECOY_ORDER_TTL", 3600)
 
+local SCOUTS_FIRST      = O("SCOUTS_FIRST", 0)         -- >0: the first N scouts are inserted at the HEAD of a lab's queue (ahead of the army): the ground scouts (corfav) go out first and look for the enemy
+local ARMY_QUEUE_MIN   = O("ARMY_QUEUE_MIN", 0)          -- army want keeps at least this many orders queued (0 = the old "refill when empty")
+local ARMY_TOPUP_GRACE  = O("ARMY_TOPUP_GRACE", 30)      -- frames between top-ups of the army want (the default grace is 120)
+local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- raiders ordered / adopted, for the raid-squad want (unit_runtime RAID_SQUAD)
+local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
+local GARRISON_START = O("GARRISON_START_FRAME", 4 * 60 * 30)   -- SPINE_GARRISON (unit_runtime): the unit controller posts the first N Pounders on the spine's flanks (mb.garrisonWant);
+                                                                -- from this frame the labs make them first, ahead of the other picks, until they stand
 local SCOUT_AHEAD  = O("SCOUT_AHEAD", true)       -- a busy lab gets a scout inserted ahead of its queue when scouts are short (the empty-queue rule alone never fired)
 local AIR_SCOUTS_EARLY = O("AIR_SCOUTS_EARLY", 0)   -- user 2026-10-26: the first 3 scouts are air scouts (much faster), at the highest lab priority; 0 = off
 local SCOUT_TARGET = O("SCOUT_TARGET", 2)       -- until the unit controller publishes scoutWant
@@ -107,7 +114,7 @@ local ARMY_PICKS = {
     fighter  = {ROLES.Get("fighter_t1"), ROLES.Get("fighter_t2")},   -- T1 air lab / T2 air lab
     -- corvp.  corgator (speed 85) and corraid (72) are fast enough to RESPOND to a
     -- raid; corwolv/cormist are longer-ranged but too slow to chase anything.
-    vcheap   = {"corgator"},
+    vcheap   = {O("VCHEAP_UNIT", "corgator")},   -- the vehicle plant's cheap defence / floor unit (CORE_ROWS_ECO: the Brute, user 2026-10-27)
     vmain    = {"corraid"},
     -- Standing roles (game_mechanics 7): a radar plane over the army, and bombers,
     -- which are only built to hunt the commander once the game is won (9).
@@ -1190,13 +1197,38 @@ RegisterWants = function()
          end }
     -- user 2026-10-26 (slimegirl game: "no scout"): the first AIR_SCOUTS_EARLY scouts are air scouts, ahead of any queue in any lab that can build one
     -- (outranks the air-con queue, the floors and the army).  C.scoutsHave counts scouts alive, building and ordered (Have), so labs do not over-order.
+    -- SCOUTS_FIRST (user 2026-10-27): six ground scouts are the first units out of the vehicle plant -- inserted ahead of the queue every tick until N exist (alive + queued)
+    add{ name = "scout-first", prio = 142, mode = "ahead", grace = 15, noPending = true, ignorePending = true, why = "scout-first",
+         applies = function(lab) return SCOUTS_FIRST > 0 and C.scoutsHave < SCOUTS_FIRST and lab.canScout and not lab.isSink and not lab.isRezLab end,
+         pick = function(lab) if C.scoutsHave < SCOUTS_FIRST then return CheapestScout(lab.cache.scouts) end end }
     add{ name = "air-scout-early", prio = 140, mode = "ahead", why = "air-scout",
          applies = function(lab)
-             return AIR_SCOUTS_EARLY > 0 and C.scoutsHave < AIR_SCOUTS_EARLY and not lab.isSink and LabCanBuild(lab.defID, ROLES.Get("scout_air"))
+             return AIR_SCOUTS_EARLY > 0 and not C.noSupport and C.scoutsHave < AIR_SCOUTS_EARLY and not lab.isSink and LabCanBuild(lab.defID, ROLES.Get("scout_air"))
          end,
          pick = function()
              local ud = UnitDefNames[ROLES.Get("scout_air")]
              if ud and C.scoutsHave < AIR_SCOUTS_EARLY then return ud.id end
+         end }
+    -- the spine garrison (user 2026-10-27): the first Pounders go to the two flanks of the spine; ahead of the queue in any lab that can build one
+    add{ name = "raid-squad", prio = 123, mode = "ahead", why = "raid-squad", grace = 60,
+         applies = function(lab) return (C.squadRoom or 0) > 0 and not lab.isSink and not lab.isRezLab and LabCanBuild(lab.defID, ROLES.Get("raider_veh")) end,
+         pick = function()
+             local ud = UnitDefNames[ROLES.Get("raider_veh")]
+             if ud and (C.squadRoom or 0) > 0 then
+                 C.squadRoom = C.squadRoom - 1
+                 SQUAD.ordered, SQUAD.lastOrder = SQUAD.ordered + 1, C.frame or 0
+                 return ud.id
+             end
+         end }
+    add{ name = "garrison", prio = 124, mode = "ahead", why = "garrison",
+         applies = function(lab) return (C.garrisonRoom or 0) > 0 and not lab.isSink and not lab.isRezLab and LabCanBuild(lab.defID, ROLES.Get("pounder")) end,
+         pick = function()
+             local ud = UnitDefNames[ROLES.Get("pounder")]
+             if ud and (C.garrisonRoom or 0) > 0 then
+                 C.garrisonRoom = C.garrisonRoom - 1
+                 GARRISON.ordered, GARRISON.lastOrder = GARRISON.ordered + 1, C.frame or 0
+                 return ud.id
+             end
          end }
     add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
          applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
@@ -1272,7 +1304,7 @@ RegisterWants = function()
     add{ name = "radar-pool", prio = 90, mode = "ahead", applies = picks,
          pick = function(lab)
              local p = lab.picks
-             if lab.id == C.scoutLab and p.radar and C.radarHave < RAID.RADAR_POOL and not C.stalled then return p.radar end
+             if lab.id == C.scoutLab and p.radar and C.radarHave < RAID.RADAR_POOL and not C.stalled and not C.noSupport then return p.radar end
          end }
     -- ONE early scout outranks the floor so the spawn search starts at once; every scout after it waits behind defence.
     -- (Only when the lab can actually build it: letting it block the busy-lab branch deadlocked a busy air lab.)
@@ -1321,9 +1353,16 @@ RegisterWants = function()
          pick = function(lab, frame) return RingWant(lab.defID, frame) end }
 
     -- ── the army ── the vehicle lab on the spine keeps making the dive army (the spine's share gates it)
-    add{ name = "army", prio = 40, mode = "empty", log = false, noteAll = true,
+    -- ARMY_QUEUE_MIN (user 2026-10-27: "with a bunch of BP on a lab the wait for a new unit is significant"): >0 = the army want TOPS UP instead of waiting for an empty
+    -- queue, so the lab always has at least that many orders (and the stance depth, if deeper) and a short grace between top-ups; the nanos never wait for the next order.
+    add{ name = "army", prio = 40, mode = ARMY_QUEUE_MIN > 0 and "topup" or "empty", log = false, noteAll = true,
+         grace = ARMY_QUEUE_MIN > 0 and ARMY_TOPUP_GRACE or nil,
          -- a lab with this much build power behind it eats one cheap unit per tick: queue a few (the spine's QUEUE_DEPTH)
-         depth = function() local SP = C.SP; return (WG and WG.Strategy and SP and SP.CFG) and SP.CFG.QUEUE_DEPTH or 1 end,
+         depth = function()
+             local SP = C.SP
+             local d = (WG and WG.Strategy and SP and SP.CFG) and SP.CFG.QUEUE_DEPTH or 1
+             return math.max(d, ARMY_QUEUE_MIN)
+         end,
          applies = function(lab) return lab.picks and lab.t1Spine and not C.stalled end,
          pick = function(lab)
              -- STANCE_BOT: the stance decides (this includes the line's first vehicle plant, adopted by the spine)
@@ -1515,6 +1554,51 @@ function widget:GameFrame(frame)
 
     RR.room = ((mb and mb.ringRadarWant) or 0) - Have("ringradar", frame)
     RR.ok   = not C.stalled and metalCur >= RR.MIN_METAL
+
+    -- stance plan.support (user 2026-10-27, lost the spine's nanos while the labs kept making scouts and AA): false = no support units (scouts, radar, ring radar,
+    -- the standing AA floor); "unless_raided" = none while a real attack is on us (the under_attack signal: raid worth >= 800 seen within 10 s).  Rez bots, the raid
+    -- answers (Shuriken / stun / fighters / the large air raid's AA rush) and the army stay.
+    do
+        local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
+        local sup = plan and plan.support
+        local rr = mb and mb.raid
+        local underAttack = rr ~= nil and frame - (rr.frame or -1e9) <= 300 and (rr.value or 0) >= 800
+        local off = sup == false or (sup == "unless_raided" and underAttack)
+        if off ~= (C.noSupport == true) then
+            local sec = math.floor(frame / 30)
+            Spring.Echo(string.format("[LabCtrl] %d:%02d support units %s (plan.support=%s)", math.floor(sec / 60), sec % 60, off and "OFF" or "on", tostring(sup)))
+        end
+        C.noSupport = off
+        if off then
+            C.scoutRoom, C.bombScoutRoom, C.radarRoom, C.aaFloorRoom, RR.room = 0, 0, 0, 0, 0
+        end
+    end
+    -- the raid squad (unit_runtime RAID_SQUAD, only while the army holds): raiders still missing = wanted - in the squad - ordered but not yet adopted
+    C.squadRoom = 0
+    do
+        local want = mb and mb.squadWant
+        if want and want > 0 then
+            local made = mb.squadMade or 0
+            if made ~= SQUAD.made then SQUAD.made, SQUAD.moved = made, frame end
+            if SQUAD.ordered < made then SQUAD.ordered = made end
+            if SQUAD.ordered > made and frame - math.max(SQUAD.moved, SQUAD.lastOrder) > 5400 then SQUAD.ordered = made end
+            C.squadRoom = want - (mb.squadHave or 0) - (SQUAD.ordered - made)
+        end
+    end
+    -- the spine garrison: Pounders still missing = wanted - standing - ordered but not yet made.  Orders are counted against mb.garrisonMade (units ever made),
+    -- not the Have window (a queued Pounder outlives it and was ordered again: 15 orders for 6 units); a stalled order is forgotten after 3 minutes.
+    C.garrisonRoom = 0
+    do
+        local want = mb and mb.garrisonWant
+        if want and want > 0 and frame >= GARRISON_START then
+            local made = mb.garrisonMade or 0
+            local G = GARRISON
+            if made ~= G.made then G.made, G.moved = made, frame end
+            if G.ordered < made then G.ordered = made end
+            if G.ordered > made and frame - math.max(G.moved, G.lastOrder) > 5400 then G.ordered = made end
+            C.garrisonRoom = want - (mb.garrisonHave or 0) - (G.ordered - made)
+        end
+    end
 
     if C.sink then C.sink.Tick(frame, metalIncome) end
     for labID, labDefID in pairs(labs) do

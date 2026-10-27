@@ -5,7 +5,7 @@ M.name = "t1_hold"
 M.intent = [=[T1 hold: Pounders and Grunts screen, Aggravators / Wolverines give range, a ring that holds further out from the base.]=]
 M.control = [=[maneuver blobs on a perimeter ~1100 elmos out; long-range units stand behind their blob; the army only pushes when it clearly outweighs the scouted enemy.]=]
 M.suggestedShare = [=[30]=]
-M.plan = { army = "hold", bombers = 0.3, maneuver = { R_MIN = 1100 } }
+M.plan = { army = "hold", support = "unless_raided", bombers = 0.3, maneuver = { R_MIN = 900, WATCH = 600, OUT_EXTRA = 400 } }
 M.units = {
   { n = "corlevlr", share = 0.4000, ratio = 0.2890, perK = 1.556, cost = 257.1, note = [=[Pounder: the screen]=], tag = "mass" },
   { n = "corthud", share = 0.3950, ratio = 0.4691, perK = 2.525, cost = 156.4, note = [=[Thug: tough bot]=] },

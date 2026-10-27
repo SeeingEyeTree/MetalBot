@@ -540,8 +540,8 @@ function M.Install(X)
     X.jobs = X.jobs or {}
     X.jobs.grid = function(T, cb)
         CB.AddJob(cb, { name = "grid", section = "grid", prio = 70, tier = "t1", useReserve = true,
-            sessions = T.gridStates, paused = function() return T.ecoPaused end,
-            want = function() return T.ecoPaused and 0 or #T.pendingGrids end,
+            sessions = T.gridStates, paused = function() return T.ecoPaused and not T.CFG.GOV_KEEP_GRIDS end,
+            want = function() return (T.ecoPaused and not T.CFG.GOV_KEEP_GRIDS) and 0 or #T.pendingGrids end,
             start = function(id, frame) return StartGrid(T, id, frame) end,
             onDone = function(st)
                 if st.builderID and Spring.GetUnitDefID(st.builderID) then CB.Release(cb, st.builderID) end

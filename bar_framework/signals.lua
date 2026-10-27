@@ -48,6 +48,11 @@ M.list = {
     { "enemy_silos",     "number", "scouted enemy nuke silos", "", function(s) return Intel(s).silos end },
     { "enemy_antinuke",  "bool",   "enemy has an anti-nuke", "", function(s) return s.enemyHasAntiNuke end },
     { "enemy_radar",     "bool",   "enemy has radar", "", function(s) return s.enemyRadar end },
+    -- army-value derivatives (av_rates.lua; nil until ~25 s of samples)
+    { "own_av_rate",     "number", "d(our ground army value)/dt over ~60 s (net of losses)", "m/s", function(s) return s.avOwnRate end },
+    { "enemy_av_rate",   "number", "rough enemy reinforcement rate: d(scouted enemy ground value)/dt + what we killed, ~60 s", "m/s", function(s) return s.avEnemyRate end },
+    { "proj_ratio",      "number", "our ground / enemy ground value 60 s ahead, each projected with its own rate (nil without rates or a scouted enemy)", "",
+      function(s) return s.avProjRatio end },
     -- fights
     { "trade_killed",    "number", "enemy value our raids killed (click_army trade window)", "metal", function(s) return Tr(s).killed end },
     { "trade_lost",      "number", "own value the raids lost (same window)", "metal", function(s) return Tr(s).lost end },

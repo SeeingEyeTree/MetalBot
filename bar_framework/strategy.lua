@@ -43,7 +43,7 @@ function M.New(o)
     local list = o.stances or {}
     for k, v in pairs(list) do
         local name, st
-        if type(k) == "number" then name, st = v, loader.Load(v) else name, st = k, loader.Load(v) end
+        if type(k) == "number" then name, st = v, loader.Load(v, o.swap) else name, st = k, loader.Load(v, o.swap) end
         if st then st.name = name; s.stances[name] = st
         else Spring.Echo("[STRAT] stance not loaded: " .. tostring(name)) end
     end

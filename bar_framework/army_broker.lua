@@ -56,6 +56,7 @@ M.PRIO = {
 -- one per unit per tick is both wasteful and counterproductive.
 M.ORDER_MIN_INTERVAL    = 90   -- floor between orders to the same unit
 M.ORDER_URGENT_INTERVAL = 30   -- RETREAT/RESPOND may preempt this fast
+M.ORDER_FAST_INTERVAL   = 10   -- a unit in the clock's FAST tier (raiders / raid defenders with an enemy near, SetFastFn)
 M.ORDER_HEARTBEAT       = 300  -- re-state a standing order this often
 M.ORDER_MOVE_EPS        = 250  -- target must move this far to be worth re-issuing
 M.STUCK_FRAMES          = 150  -- no progress for this long ...
@@ -180,7 +181,8 @@ function M.Claim(prio, unitID, spec, frame)
         and M.ORDER_URGENT_INTERVAL or M.ORDER_MIN_INTERVAL
     if CLK then
         local t = CLK.Tier(unitID)
-        if t == CLK.HIGH then interval = M.ORDER_URGENT_INTERVAL
+        if t == CLK.FAST then interval = M.ORDER_FAST_INTERVAL
+        elseif t == CLK.HIGH then interval = M.ORDER_URGENT_INTERVAL
         elseif t == CLK.LOW and prio > M.PRIO.RESPOND and not spec.urgent then interval = M.ORDER_LOW_INTERVAL end
     end
     local needs = NeedsOrder(d, spec, unitID, frame)
@@ -219,7 +221,8 @@ function M.Flush(frame)
         elseif frame - pending[unitID] >= CLK.Wait(unitID, pending[unitID]) then
             -- the unit's first frame at or after the claim has come (or been skipped by a coarse caller)
             local t = CLK.Tier(unitID)
-            local interval = (d.prio <= M.PRIO.RESPOND or t == CLK.HIGH) and M.ORDER_URGENT_INTERVAL
+            local interval = (t == CLK.FAST) and M.ORDER_FAST_INTERVAL
+                             or (d.prio <= M.PRIO.RESPOND or t == CLK.HIGH) and M.ORDER_URGENT_INTERVAL
                              or (t == CLK.LOW and M.ORDER_LOW_INTERVAL or M.ORDER_MIN_INTERVAL)
             if (not d.lastOrderFrame) or frame - d.lastOrderFrame >= interval then
                 local spec = d.pendingSpec
@@ -233,6 +236,9 @@ end
 -- Re-tier every unit that holds a duty (call about once a second, with the threat map's contacts): raiding / urgent duties
 -- or an enemy within the clock's ENEMY_R -> HIGH (2 Hz); scouts and quiet standing duties with no enemy near -> LOW (0.5 Hz);
 -- the rest NORMAL (1 Hz).  Does nothing without a clock.
+local fastFn
+-- SetFastFn(fn(unitID, duty) -> bool): the units that go FAST (3 Hz orders, a 10-frame gap) while an enemy is near them (unit_runtime FAST_RAIDERS: group raiders, the raid squad, raid responders)
+function M.SetFastFn(fn) fastFn = fn end
 local RAIDING = { RAID = true, STRIKE = true, PUSH = true, FOCUS = true, BOMBRUN = true, BLOB = true }
 local SCOUTING = { SCOUT = true, SCOUT_CALL = true, RADAR = true }
 local QUIET = { HOME_GUARD = true, MUSTER = true, AA_SCREEN = true, REZ = true, BOMBER_WAIT = true }
@@ -246,6 +252,7 @@ function M.UpdateClock(frame, contacts)
             raiding = RAIDING[d.role] or d.prio <= M.PRIO.RAID,
             urgent = d.prio <= M.PRIO.RESPOND,
             enemyNear = near,
+            fast = near and fastFn ~= nil and fastFn(unitID, d) or false,
             scout = SCOUTING[d.role],
             quiet = QUIET[d.role],
         }, frame)

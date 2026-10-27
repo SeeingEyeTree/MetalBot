@@ -2,11 +2,11 @@
 -- File format: machines/README.md.  Signals: bar_framework/signals.lua.  v2 (user 2026-10-26): T1 / T2 hold and push stances, a 4k opening.
 --
 -- STANCE MACHINE
---   start     core_start  6 Incisors : 1 Pounder, held just out from the base, for the first 6:00
+--   start     raid_start  Incisors only, army = raid + survive: out to find and raid the enemy as soon as made; stays until the raids fail (2026-10-27)
 --   t1_hold   T1 defend, ring ~1100 out          t1_push   T1 raid groups (Incisor / Brute)
 --   t2_hold   T2 defend, ~18% T1 filler          t2_push   T2 raid groups (Tiger), ~23% T1
 --   late      Demons + Tigers (the Dragon sink is separate); permanent once the unit cap fills
---   at 6:00: enemy well scouted and little army value seen -> push, otherwise hold.  hold <-> push follows the scouted enemy's value
+--   start -> hold only on a bad trade / projected ratio < 0.9.  hold <-> push follows the scouted enemy's value
 --   against ours and bad trades; a real attack on us pulls a push stance back to hold.  T2 stances once income >= 500.
 -- SHARE MACHINE (army share, reads the stance through `stance` / `stance_army`)
 --   start     big share so ~4k of army stands at 6:00 (nanos guard the lab at share >= 0.8: slot_spine RUSH_SHARE)
@@ -19,7 +19,7 @@ return {
   stance_machine = {
     initial = "start",
     nodes = {
-      start   = { stance = "core_start", x = 60,   y = 260 },
+      start   = { stance = "raid_start", x = 60,   y = 260 },
       t1_hold = { stance = "t1_hold",    x = 560,  y = 100 },
       t1_push = { stance = "t1_push",    x = 560,  y = 420 },
       t2_hold = { stance = "t2_hold",    x = 1060, y = 100 },
@@ -27,18 +27,25 @@ return {
       late    = { stance = "core_late",  x = 1560, y = 260 },
     },
     edges = {
-      -- 6:00: well scouted and the enemy army is small next to ours -> push; otherwise hold (also when nothing was scouted)
-      { from = "start", to = "t1_push", prio = 20, note = "6:00: enemy scouted, little army value seen -> raid",
-        when = { all = { { sig = "minute", op = ">=", val = 6 }, { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.6 }, { ["not"] = { sig = "under_attack" } } } } },
-      { from = "start", to = "t1_hold", prio = 10, note = "6:00: otherwise hold",
-        when = { sig = "minute", op = ">=", val = 6 } },
+      -- the opening is a raid (user 2026-10-27): it stays out until the raids fail -- a bad trade, or the projected ratio (both sides' army-value rates 60 s ahead) under 0.9.  No recall on an attack
+      -- on the base: raid response, the new production kept home (holdHome) and the commander at the spine answer it.
+      { from = "start", to = "t1_hold", prio = 20, min_stay_s = 60, note = "the raids trade badly",
+        when = { all = { { sig = "bad_trade" }, { sig = "army_ratio", op = "<", val = 0.85 } } } },
+      { from = "start", to = "t1_hold", prio = 15, hold_s = 20, min_stay_s = 60, note = "the enemy adds army faster than we do (projected ratio < 0.9)",
+        when = { sig = "proj_ratio", op = "<", val = 0.9 } },
+      { from = "start", to = "t2_push", prio = 5, hold_s = 20, min_stay_s = 60, note = "T2 income: keep raiding with T2",
+        when = { all = { { sig = "minute", op = ">=", val = 8 }, { sig = "metal_income", op = ">=", val = 500 } } } },
+      { from = "start", to = "t1_hold", prio = 1, hold_s = 20, note = "7:00 and the projected ratio is not clearly good (or nothing is scouted): stop raiding -- the high start share would starve the eco",
+        when = { all = { { sig = "minute", op = ">=", val = 7 }, { ["not"] = { sig = "proj_ratio", op = ">=", val = 1.5 } } } } },
       -- T1: hold <-> push
       { from = "t1_hold", to = "t1_push", prio = 10, hold_s = 30, min_stay_s = 60, note = "enemy army small next to ours",
-        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { ["not"] = { sig = "under_attack" } } } } },
+        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { sig = "proj_ratio", op = ">=", val = 2.0 }, { ["not"] = { sig = "under_attack" } } } } },
       { from = "t1_push", to = "t1_hold", prio = 30, min_stay_s = 45, note = "real attack on us: come home",
         when = { sig = "under_attack" } },
       { from = "t1_push", to = "t1_hold", prio = 20, min_stay_s = 90, note = "raids trade badly",
         when = { all = { { sig = "bad_trade" }, { sig = "army_ratio", op = "<", val = 0.85 } } } },
+      { from = "t1_push", to = "t1_hold", prio = 15, hold_s = 20, min_stay_s = 45, note = "the enemy adds army faster than we do: projected ratio under 0.9",
+        when = { sig = "proj_ratio", op = "<", val = 0.9 } },
       { from = "t1_push", to = "t1_hold", prio = 10, hold_s = 20, min_stay_s = 60, note = "the enemy army is as big as ours",
         when = { all = { { sig = "enemy_located" }, { sig = "enemy_vs_army", op = ">", val = 0.9 } } } },
       -- T1 -> T2 on income (keeps the hold / push mode)
@@ -48,11 +55,13 @@ return {
         when = { all = { { sig = "minute", op = ">=", val = 8 }, { sig = "metal_income", op = ">=", val = 500 } } } },
       -- T2: hold <-> push
       { from = "t2_hold", to = "t2_push", prio = 10, hold_s = 30, min_stay_s = 60, note = "enemy army small next to ours",
-        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { ["not"] = { sig = "under_attack" } } } } },
+        when = { all = { { sig = "enemy_scouted" }, { sig = "enemy_vs_army", op = "<", val = 0.5 }, { sig = "proj_ratio", op = ">=", val = 2.0 }, { ["not"] = { sig = "under_attack" } } } } },
       { from = "t2_push", to = "t2_hold", prio = 30, min_stay_s = 45, note = "real attack on us: come home",
         when = { sig = "under_attack" } },
       { from = "t2_push", to = "t2_hold", prio = 20, min_stay_s = 90, note = "raids trade badly",
         when = { all = { { sig = "bad_trade" }, { sig = "army_ratio", op = "<", val = 0.85 } } } },
+      { from = "t2_push", to = "t2_hold", prio = 15, hold_s = 20, min_stay_s = 45, note = "the enemy adds army faster than we do: projected ratio under 0.9",
+        when = { sig = "proj_ratio", op = "<", val = 0.9 } },
       { from = "t2_push", to = "t2_hold", prio = 10, hold_s = 20, min_stay_s = 60, note = "the enemy army is as big as ours",
         when = { all = { { sig = "enemy_located" }, { sig = "enemy_vs_army", op = ">", val = 0.9 } } } },
     },
@@ -66,9 +75,9 @@ return {
   share_machine = {
     initial = "open",
     nodes = {
-      -- user 2026-10-27: no army until 4:00 (the eco and the labs' build power come first; the starter lab's few Grunts are the lab rules'), then 35% of actual spending
+      -- user 2026-10-27: no army until 4:40 (the eco and the labs' build power come first; the starter lab's few Grunts are the lab rules'), then 35% of actual spending
       open      = { share = 0.0,  ramp_s = 1, x = 60,   y = 100 },
-      start     = { share = 0.35, ramp_s = 5, x = 60,   y = 260 },
+      start     = { share = 0.6,  ramp_s = 5, x = 60,   y = 260 },   -- 0.6 (was 0.35, user 2026-10-27): the army-only nanos can absorb ~99 m/s on two plants, the queue must not throttle them
       -- one lab + 8 nanos = 150 + 8 x 200 = 1750 build power; making the opening comp (6 Incisors : 1 Pounder, 0.0556 metal per build-power-second) nonstop that
       -- spends ~97 m/s.  Once metal income is 1.3x that (126 m/s) the eco can carry it: the share jumps to 75% so all 8 nanos assist the lab (slot_spine sizes its active nanos
       -- from share x income / 11 m/s per nano)
@@ -92,9 +101,9 @@ return {
       { from = "spam", to = "hold_low", prio = 8, hold_s = 20, note = "income fell under 1.15x what 8 nanos spend (111 m/s): back to the hold share",
         when = { sig = "metal_income", op = "<", val = 111 } },
       { from = "start", to = "push_high", prio = 20, note = "the stance machine chose a push stance",
-        when = { all = { { sig = "stance", op = "!=", val = "core_start" }, { sig = "stance_army", op = "==", val = "raid" } } } },
+        when = { all = { { sig = "stance", op = "!=", val = "raid_start" }, { sig = "stance_army", op = "==", val = "raid" } } } },
       { from = "start", to = "hold_low", prio = 10, note = "the stance machine chose a hold stance",
-        when = { sig = "stance", op = "!=", val = "core_start" } },
+        when = { sig = "stance", op = "!=", val = "raid_start" } },
       { from = "hold_low", to = "push_high", prio = 10, note = "raiding: keep the share relatively high",
         when = { sig = "stance_army", op = "==", val = "raid" } },
       { from = "push_high", to = "hold_low", prio = 10, note = "holding: lower the share",

@@ -25,19 +25,21 @@ end
 M.Value = Value
 
 -- Tolerates a stance given as a table already (tests) and a missing VFS.
-function M.Load(name)
-    if type(name) == "table" then return M.Prepare(name) end
+function M.Load(name, swap)
+    if type(name) == "table" then return M.Prepare(name, swap) end
     local chunk
     for _, dir in ipairs(DIRS) do
         local ok, r = pcall(function() return VFS.Include(dir .. name .. ".lua") end)
         if ok and type(r) == "table" then chunk = r; break end
     end
     if not chunk then return nil end
-    return M.Prepare(chunk)
+    return M.Prepare(chunk, swap)
 end
 
 -- Resolves unit names to defIDs, drops unknown units and renormalises the shares.
-function M.Prepare(raw)
+-- swap (optional, a variant's UNIT_SWAP = { corgator = "corraid" }): every unit of the stance named as a key is built as the value instead
+-- (user 2026-10-27: Brutes trade much better than Incisors); a stance that lists both gets the two shares added on the substitute.
+function M.Prepare(raw, swap)
     if type(raw) ~= "table" or type(raw.units) ~= "table" then return nil end
     -- plan (optional): the game plan the stance stands for, read by the bot through Strategy:Plan(), e.g.
     -- { army = "raid" | "hold", bombers = 0..1 } (RAID_BOT: click_army mode and the air labs' bomber want)
@@ -46,14 +48,25 @@ function M.Prepare(raw)
                  plan = type(raw.plan) == "table" and raw.plan or nil,
                  units = {}, byName = {}, byDef = {}, extras = {}, extraByDef = {} }
     local sum = 0
-    for _, u in ipairs(raw.units) do
+    local seenSwap = {}
+    for _, u0 in ipairs(raw.units) do
+        local u = u0
+        if swap and swap[u0.n] then
+            u = {}
+            for k, v in pairs(u0) do u[k] = v end
+            u.n = swap[u0.n]
+        end
         local ud = UnitDefNames and UnitDefNames[u.n]
-        if ud and (u.share or 0) > 0 then
+        if ud and seenSwap[u.n] then
+            seenSwap[u.n].share = seenSwap[u.n].share + (u.share or 0)      -- the substitute is already in the comp: add the shares
+            sum = sum + (u.share or 0)
+        elseif ud and (u.share or 0) > 0 then
             -- behaviors = {"kite", ...} and cfg = {kite = {step = 400}} plug the unit into behavior_host (strategy.lua)
             -- tag = "mass" | "quality" (optional): strategy_hooks.income_mix tilts the share by income
             -- max = n (optional): no more of this unit once n are alive (strategy.lua Pick / UnitList); the share of the others grows
             st.units[#st.units + 1] = { n = u.n, defID = ud.id, share = u.share, note = u.note,
                                         behaviors = u.behaviors, cfg = u.cfg, tag = u.tag, max = tonumber(u.max) }
+            seenSwap[u.n] = st.units[#st.units]
             sum = sum + u.share
         end
     end
