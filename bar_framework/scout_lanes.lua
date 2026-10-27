@@ -162,6 +162,22 @@ local function NearestSector(x, z)
     return bestKey
 end
 
+-- Give a new scout a lane: -1 if free, else +1, else alternate.
+local function AssignLane(uid, scoutIDs)
+    if laneOf[uid] then return end
+    local used = { [-1] = 0, [1] = 0 }
+    for _, other in ipairs(scoutIDs) do
+        if other ~= uid and laneOf[other] then used[laneOf[other]] = used[laneOf[other]] + 1 end
+    end
+    laneOf[uid] = (used[-1] <= used[1]) and -1 or 1
+end
+
+-- Worth a look: never seen, or not seen for FIND_FRESH.  (lastScouted starts at 0, so "frame - 0 >
+-- FIND_FRESH" alone would leave every sector off limits for the first three minutes.)
+local function Unseen(s, frame)
+    return s.lastScouted == 0 or frame - s.lastScouted > M.FIND_FRESH
+end
+
 -- UNSEEN_FIRST (click_army): the nearest sector of the enemy half nobody has looked at (or not for FIND_FRESH) from (x, z) -> its centre, or nil.  A blind raid group heads there
 -- instead of the mirror guess: unscouted ground is where the enemy is most likely to be.
 function M.NextUnseen(x, z, frame)
@@ -178,21 +194,6 @@ function M.NextUnseen(x, z, frame)
     return nil
 end
 
--- Give a new scout a lane: -1 if free, else +1, else alternate.
-local function AssignLane(uid, scoutIDs)
-    if laneOf[uid] then return end
-    local used = { [-1] = 0, [1] = 0 }
-    for _, other in ipairs(scoutIDs) do
-        if other ~= uid and laneOf[other] then used[laneOf[other]] = used[laneOf[other]] + 1 end
-    end
-    laneOf[uid] = (used[-1] <= used[1]) and -1 or 1
-end
-
--- Worth a look: never seen, or not seen for FIND_FRESH.  (lastScouted starts at 0, so "frame - 0 >
--- FIND_FRESH" alone would leave every sector off limits for the first three minutes.)
-local function Unseen(s, frame)
-    return s.lastScouted == 0 or frame - s.lastScouted > M.FIND_FRESH
-end
 
 local function FindTarget(uid, frame, taken)
     local ux, _, uz = Spring.GetUnitPosition(uid)
