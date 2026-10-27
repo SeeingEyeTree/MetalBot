@@ -1,0 +1,57 @@
+{
+ "tag": "rows_eco_lab",
+ "seeds": "1-8",
+ "minutes": 20,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "lab3.5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 6300,
+     "LATEST_FRAME": 6300
+    }
+   }
+  },
+  "lab4": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 7200,
+     "LATEST_FRAME": 7200
+    }
+   }
+  },
+  "lab4.5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 8100,
+     "LATEST_FRAME": 8100
+    }
+   }
+  },
+  "lab5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 9000,
+     "LATEST_FRAME": 9000
+    }
+   }
+  },
+  "lab5.5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 9900,
+     "LATEST_FRAME": 9900
+    }
+   }
+  },
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "rows6_army": {
+   "bot": "candidates/CORE_ROWS6"
+  }
+ }
+}

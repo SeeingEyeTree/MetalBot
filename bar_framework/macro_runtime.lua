@@ -54,6 +54,7 @@ M.DEFAULTS = {
     CON_HOLD_VALUE      = 800,             -- a live ground raid worth at least this holds new air/T2 con orders
     LATE_CAP_FRAC       = 0.75,        -- ... cap share at which it is taken (not before LATE_MINUTE)
     LATE_MINUTE         = 12,
+    ARMY_SHARE_FIXED    = nil,       -- a number 0..1: the army share is ALWAYS this (pure-economy tests: 0 = no army); nil = the share machine / hooks
     SHARE               = {},        -- strategy_hooks.v16_share / match_enemy options (start, floor, hold, ratio, ...)
     CAP_T1_FRAC         = 0.6,       -- user 2026-10-25: from this unit-cap fill the stances' T1 combat units are dropped (strategy.lua CapFiltered:
                                      -- room for Tigers / Demons / eco instead of hundreds of Grunts); false = never
@@ -61,6 +62,18 @@ M.DEFAULTS = {
                                      -- into the AA the labs are rushing; false = no lift
     LINE_NANO_CAP       = nil,       -- { max = n, untilF = frame }: at most n nanos on the line before that frame (CORE_6K); nil = no cap
     LANE_MAX_K          = nil,       -- { [lane] = last column built } shrinks the line (CORE_6K); nil = the full line
+    SCALE_ROWS          = false,     -- CORE_ROWS: no fixed lane count -- a con with no free lane makes a new row (two halves running east / west from the middle of the line, line_crew LC.GrowRow); rows stop at the map edge or ROW_UNIT_FRAC of the unit cap
+    HELP_LANES          = false,     -- a line builder whose lane is done guards a builder on a lane still being built (line_crew LC.HELP_LANES)
+    ROW_BOTH            = true,      -- SCALE_ROWS: false = each row is ONE lane running east (ROW_COLS columns); true = two halves, east and west
+    ROW_MAX             = nil,       -- SCALE_ROWS: most rows made (nil = until the map edge / unit cap)
+    ROW_CONS            = 3,         -- builders on each half of a grown row
+    ROW_COLS            = 16,        -- columns in each half of a grown row
+    ROW_UNIT_FRAC       = 0.5,       -- SCALE_ROWS: no new con once the team has this share of the unit cap
+    EXTRA_LANES         = 0,         -- CORE_LONGLINE: extra lanes beyond the 4 (line_crew LC.AddLanes), on the side away from the enemy; each is served by LANE_CONS builders
+    LANE_CONS           = 3,         -- builders sharing each extra lane (con #4.. fill the extra lanes in order, LANE_CONS at a time)
+    LINE_K_LAST         = 15,        -- last slot column (15 = the 16-column line; 31 doubles it)
+    SITE_K_LAST         = nil,       -- the rez / T2 bot / decoy lab sites count back from this column (nil = the line's end)
+    ESTOR_KMAX          = nil,       -- the energy storages stay at or below this column of the commander row (nil = the line's end)
     ESTOR_SLOTS         = 0,         -- user 2026-10-26: the last N slots of the commander lane's near row hold energy storage (line_crew LC.ESTOR_SLOTS); 0 = mex / wind as before
     HOME_DEFENCE        = true,      -- user 2026-10-26: nanos / cons reclaim enemy units in reach and nanos repair cons under attack (home_defence.lua); table = its options; false = off
     MATCH               = true,      -- army share follows the scouted enemy army (humans); false = plain v16_share for bot-vs-bot
@@ -97,7 +110,7 @@ M.DEFAULTS = {
 }
 
 -- Options whose default is nil on purpose (a key set to nil is "absent", so these are the only ones not in M.DEFAULTS).
-M.NIL_OPTIONS = { MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
+M.NIL_OPTIONS = { ARMY_SHARE_FIXED = true, ROW_MAX = true, SITE_K_LAST = true, ESTOR_KMAX = true, MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
 
 function M.Install(widget, WG, K)
 local CFG = {}
@@ -107,6 +120,10 @@ for k, v in pairs(K or {}) do
     if M.DEFAULTS[k] == nil and not M.NIL_OPTIONS[k] and not tostring(k):find("^SINK_") then      -- same warning bot_config.lua gives the framework modules
         Spring.Echo("[CFG] macro_runtime (" .. tostring(CFG.NAME) .. "): option '" .. tostring(k) .. "' is not in the defaults (typo, or default nil?)")
     end
+end
+-- eco_sim.py --set macro.KEY=value: the runner sets this global so a sweep can vary macro options without a bot folder per variant
+if SIM_MACRO_OVERRIDES then
+    for k, v in pairs(SIM_MACRO_OVERRIDES) do CFG[k] = v end
 end
 -- macro_controller.lua  ─  LINE_BOT: build the line as fast as it can scale (COR)
 --
@@ -218,6 +235,13 @@ local function StartBuildOrder()
     local cx, _, cz = spGetUnitPosition(commanderID)
     if not cx then return end
     LC.ESTOR_SLOTS = CFG.ESTOR_SLOTS or 0
+    LC.ESTOR_KMAX = CFG.ESTOR_KMAX
+    LC.ROW_BOTH = CFG.ROW_BOTH
+    LC.HELP_LANES = CFG.HELP_LANES
+    LC.GROW, LC.ROW_CONS, LC.ROW_COLS, LC.ROW_MAX = CFG.SCALE_ROWS and true or false, CFG.ROW_CONS, CFG.ROW_COLS, CFG.ROW_MAX
+    LC.SITE_K_LAST = CFG.SITE_K_LAST
+    if (CFG.EXTRA_LANES or 0) > 0 then LC.AddLanes(CFG.EXTRA_LANES, CFG.LANE_CONS) end
+    if (CFG.LINE_K_LAST or 15) ~= 15 then LC.SetLength(CFG.LINE_K_LAST) end
     LC.LANE_MAX_K = CFG.LANE_MAX_K
     LC.NANO_CAP = CFG.LINE_NANO_CAP
     layout = LC.Layout(cx, cz, (Game and Game.mapSizeX) or 8192, (Game and Game.mapSizeZ) or 8192, BUILD_ORDER)
@@ -378,6 +402,12 @@ local function MaybeQueueNextCon(frame, res)
     if TS.conOrderOpen or not TS.lastConFrame or not TS.conDefID then return end
     if not (TS.botLabID and spGetUnitDefID(TS.botLabID)) then return end
     if TS.queuedCount >= CFG.MAX_CONS then return end
+    if CFG.SCALE_ROWS and crew and TS.queuedCount >= 3 then
+        -- rows scale with the unit cap and the map: no con without a lane for it, none past ROW_UNIT_FRAC of the cap
+        local maxU, cnt = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID), Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
+        if maxU and cnt and cnt >= maxU * CFG.ROW_UNIT_FRAC then return end
+        if not LC.FreeConLane(crew) and not LC.GrowRow(crew) then return end
+    end
     local n = TS.queuedCount + 1                    -- the con about to be queued
     local since = frame - TS.lastConFrame
     if since < (CFG.CON_GAP[n] or 0) then return end
@@ -402,7 +432,7 @@ local function ReclaimStarterLab(frame)
     if not (lab and spGetUnitDefID(lab)) then TS.labReclaimDone = TS.labReclaimStart ~= nil; return end
     if not TS.labReclaimStart then
         if TS.conOrderOpen or TS.queuedCount < CFG.MAX_CONS or FactoryBusy(lab) then return end
-        if not (trans and trans.labFrame) then return end           -- the air lab has not been queued yet
+        if not (trans and (trans.labFrame or trans.CFG.AIR_LAB == false)) then return end           -- the air lab has not been queued yet (AIR_LAB = false: none comes)
     end
     local NANO = BP_PLACER.NANO
     if not NANO then return end
@@ -703,6 +733,7 @@ function widget:Initialize()
                                       return base0(state, strat)
                                   end
                               end
+                              if CFG.ARMY_SHARE_FIXED then local fx = CFG.ARMY_SHARE_FIXED; base = function() return fx end end
                               if not CFG.MANUAL_STANCES then return base end
                               -- a person sets the share (stance_panel.lua writes WG.ArmyShareRequest, 0..1; nil = automatic)
                               return function(state, strat)

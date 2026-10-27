@@ -56,6 +56,7 @@ return function(args)
     -- ── config overrides: wrap every bot_config instance ────────────────────
     local setOv = args.set or {}
     local presetOv = args.presets or {}
+    SIM_MACRO_OVERRIDES = setOv.macro        -- macro_runtime.Install merges these over the bot's own options (--set macro.KEY=value)
     local applied = {}
     local function Wrap(BC)
         if type(BC) ~= "table" or BC._simWrapped then return BC end

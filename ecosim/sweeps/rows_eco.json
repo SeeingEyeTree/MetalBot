@@ -1,0 +1,28 @@
+{
+ "tag": "rows_eco_cmp",
+ "seeds": "1-6",
+ "minutes": 20,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "rows_eco": {},
+  "rows6_army": {
+   "bot": "candidates/CORE_ROWS6"
+  },
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "stance_eco2": {
+   "bot": "candidates/STANCE_ECO2"
+  },
+  "rows_eco_share35": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.35
+    }
+   }
+  }
+ }
+}

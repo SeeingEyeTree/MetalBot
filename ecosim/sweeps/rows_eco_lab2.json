@@ -1,0 +1,43 @@
+{
+ "tag": "rows_eco_lab2",
+ "seeds": "1-8",
+ "minutes": 20,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "lab2": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 3600,
+     "LATEST_FRAME": 3600
+    }
+   }
+  },
+  "lab2.5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 4500,
+     "LATEST_FRAME": 4500
+    }
+   }
+  },
+  "lab3": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 5400,
+     "LATEST_FRAME": 5400
+    }
+   }
+  },
+  "lab3.5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 6300,
+     "LATEST_FRAME": 6300
+    }
+   }
+  }
+ }
+}

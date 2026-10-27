@@ -51,16 +51,50 @@ LC.LANES = {
     { id = 2, name = "con1",      z = -104, rows = { -160, -224 }, nano = true },
     { id = 3, name = "con2",      z =  296, rows = {  240,  176 } },
     { id = 4, name = "con3",      z = -408, rows = { -352, -288 } },
-}LC.CON_LANES = { 2, 3, 4 }
+}
+LC.CON_LANES = { 2, 3, 4 }
+LC.LANE_CONS = {}        -- { [lane] = builders that share it } (default 1); LC.AddLanes gives the extra lanes 3 each
+LC.SITE_K_LAST = nil     -- last column the rez / T2 bot / decoy sites count back from (nil = K_LAST); a longer line keeps them where they were
+LC.MAP_MARGIN = 96       -- row halves (LC.GrowRow) never build closer than this to the map edge
+LC.ROW_CONS = 3          -- builders on each half of a grown row
+LC.GROW = false          -- true: a con with no free lane makes a new row (LC.GrowRow), see LC.NextConLane
+LC.HELP_LANES = false    -- true: a builder whose lane is done guards a builder on a lane still being built
+LC.ROW_BOTH = true      -- true: a grown row is two lanes (east and west of the middle); false: one lane running east
+LC.ROW_MAX = nil         -- most rows GrowRow makes (nil = no limit)
+LC.ROW_COLS = 16         -- columns in each half of a grown row
+LC.ESTOR_KMAX = nil      -- the energy storages go on the last ESTOR_SLOTS near-row slots at or below this column (nil = the whole row)
 LC.NANO_CAP = nil        -- { max = n, untilF = frame }: at most n line nanos before that frame (nil = no cap)
 LC.LANE_MAX_K = nil      -- nil = every column
 LC.ESTOR_SLOTS = 0        -- slots at the far end of the commander lane's near row that hold energy storage, not a mex / wind (0 = none)
+
+-- 2026-10-26 (CORE_LONGLINE): a longer line and extra lanes, set before LC.Layout.
+-- Extra lanes sit on the side AWAY from the enemy (b-z): lane 4 + i has its corridor at z = -408 - 176 i and its two rows
+-- on the side facing the line (corridor + 56, corridor + 120), the same shape as lane 4.  `cons` builders share each of them.
+function LC.AddLanes(n, cons)
+    for i = 1, n do
+        local id = 4 + i
+        local have = false
+        for _, d in ipairs(LC.LANES) do if d.id == id then have = true end end
+        if not have then
+            local zc = -408 - 176 * i
+            LC.LANES[#LC.LANES + 1] = { id = id, name = "extra" .. i, z = zc, rows = { zc + 56, zc + 120 } }
+            LC.CON_LANES[#LC.CON_LANES + 1] = id
+        end
+        LC.LANE_CONS[id] = cons or 3
+    end
+end
+
+-- Columns 0 .. klast; the nano row is stretched to match (it is 48 elmos per nano against 64 per slot column).
+function LC.SetLength(klast)
+    LC.K_LAST = klast
+    LC.NANO_J = { 0, math.floor((64 * (klast + 1) - 16) / 48) - 1 }
+end
 
 local ORDER_TIMEOUT = 450
 local MOVE_TIMEOUT  = 600
 local MAX_RETRIES   = 3
 local ARRIVE        = 16     -- elmos from a stop that count as standing on it
-local CMD_STOP, CMD_MOVE, CMD_REPAIR = 0, 10, 40
+local CMD_STOP, CMD_MOVE, CMD_REPAIR, CMD_GUARD = 0, 10, 40, 25
 
 -- Transition (line_transition.lua): an outer lane's builder places the air lab on the closest 6 open slots
 -- (3 columns x 2 rows) and two nanos on open slots beside it.  Nothing is reserved ahead of time.
@@ -142,19 +176,25 @@ function LC.Layout(comX, comZ, mapX, mapZ, starter, rotOverride)
     local boxes = {}
     for _, it in ipairs(starter and starter.layout or {}) do boxes[#boxes + 1] = ItemBox(it) end
 
-    for _, def in ipairs(LC.LANES) do
+    local function MakeLane(def)
         local lane = { id = def.id, name = def.name, z = def.z, nano = def.nano, rows = def.rows,
                        slots = {}, stops = {}, done = false }
         -- Walk stops: the midpoint of each pair of slot columns (0,1) (2,3) ... (14,15), in order of x.
         -- A builder only ever moves from one stop to a later one.
-        for i = 1, 8 do
-            local k0, k1 = 2 * (i - 1), 2 * (i - 1) + 1
-            local bx = LC.X0 + 64 * (k0 + 0.5)
+        -- A row half (def.dir = -1 west / +1 east, def.cols columns) runs outward from the middle of the line: east columns 0, 1, 2 ..,
+        -- west columns -1, -2, ..; its stops are in walking order, so a builder always walks away from the middle.
+        local dir = def.dir or 1
+        local cols = def.cols or (LC.K_LAST - LC.K_FIRST + 1)
+        local function KOf(i) return dir > 0 and (LC.K_FIRST + i - 1) or (-i) end      -- the i-th column outward (1-based)
+        for i = 1, math.floor(cols / 2) do
+            local k0, k1 = KOf(2 * i - 1), KOf(2 * i)
+            local bx = LC.X0 + 64 * (k0 + k1) / 2
             local wx, wz = LC.World(L, bx, def.z)
             lane.stops[i] = { idx = i, bx = bx, bz = def.z, wx = wx, wz = wz, lane = def.id, k0 = k0, k1 = k1 }
         end
         for r, rz in ipairs(def.rows) do
-            for k = LC.K_FIRST, LC.K_LAST do
+            for i = 1, cols do
+                local k = KOf(i)
                 local bx = LC.X0 + 64 * k
                 local wx, wz = LC.World(L, bx, rz)
                 local box = { x0 = bx - 32, x1 = bx + 32, z0 = rz - 32, z1 = rz + 32 }
@@ -162,6 +202,10 @@ function LC.Layout(comX, comZ, mapX, mapZ, starter, rotOverride)
                             row = r, state = "free", retries = 0 }
                 for _, b in ipairs(boxes) do
                     if Hits(box, b) then s.state = "starter" end
+                end
+                -- a row half that runs off the map: those slots are never built (LC.MAP_MARGIN)
+                if def.dir and (wx < LC.MAP_MARGIN or wz < LC.MAP_MARGIN or wx > mapX - LC.MAP_MARGIN or wz > mapZ - LC.MAP_MARGIN) then
+                    s.state = "dead"
                 end
                 lane.slots[#lane.slots + 1] = s
                 L.slots[#L.slots + 1] = s
@@ -175,12 +219,15 @@ function LC.Layout(comX, comZ, mapX, mapZ, starter, rotOverride)
         -- user 2026-10-26: the last LC.ESTOR_SLOTS slots of the commander lane's near row are reserved for energy storage (corestor)
         if def.id == 1 and (LC.ESTOR_SLOTS or 0) > 0 then
             local near = {}
-            for _, s in ipairs(lane.slots) do if s.row == 1 and s.state == "free" then near[#near + 1] = s end end
+            for _, s in ipairs(lane.slots) do if s.row == 1 and s.state == "free" and s.k <= (LC.ESTOR_KMAX or LC.K_LAST) then near[#near + 1] = s end end
             table.sort(near, function(a, b) return a.k < b.k end)
             for i = math.max(1, #near - LC.ESTOR_SLOTS + 1), #near do near[i].reserve = "estor" end
         end
         L.lanes[def.id] = lane
+        return lane
     end
+    L.makeLane = MakeLane
+    for _, def in ipairs(LC.LANES) do MakeLane(def) end
     for j = LC.NANO_J[1], LC.NANO_J[2] do
         local bx = LC.NANO_X0 + 48 * j
         local wx, wz = LC.World(L, bx, LC.NANO_Z)
@@ -222,13 +269,65 @@ local function LaneOwner(crew, laneID)
     return nil
 end
 
-function LC.LaneFree(crew, laneID) return LaneOwner(crew, laneID) == nil end
+local function LaneCount(crew, laneID)
+    local n = 0
+    for _, c in pairs(crew.cons) do
+        if c.lane.id == laneID then n = n + 1 end
+    end
+    return n
+end
 
--- The next lane for a con (lane 2 first: it has the nano column), or nil.
-function LC.NextConLane(crew)
+-- A lane is free while it has fewer builders than LC.LANE_CONS[lane] (default 1).
+function LC.LaneFree(crew, laneID) return LaneCount(crew, laneID) < (LC.LANE_CONS[laneID] or 1) end
+
+-- The first lane with room for another builder (lane 2 first: it has the nano column), or nil.
+function LC.FreeConLane(crew)
     for _, id in ipairs(LC.CON_LANES) do
         if LC.LaneFree(crew, id) and not (crew.reserved and crew.reserved[id]) then return id end
     end
+    return nil
+end
+
+-- CORE_ROWS: one more row on the side away from the enemy, as two halves that run east and west from the middle of the line, each with
+-- LC.ROW_CONS builders.  A row that would be all off the map is not made (returns false: the line cannot grow any further).
+function LC.GrowRow(crew)
+    local L = crew.L
+    if crew.rowsExhausted or not L.makeLane then return false end
+    if LC.ROW_MAX and (crew.rowsGrown or 0) >= LC.ROW_MAX then return false end
+    local i = (crew.rowsGrown or 0) + 1
+    local zc = -408 - 176 * i
+    local top = 0
+    for id in pairs(L.lanes) do if id > top then top = id end end
+    local made = {}
+    for h, dir in ipairs(LC.ROW_BOTH and { 1, -1 } or { 1 }) do      -- LC.ROW_BOTH = false: one lane per row, running east only
+        made[h] = L.makeLane({ id = top + h, name = "row" .. i .. (dir > 0 and "E" or "W"), z = zc, rows = { zc + 56, zc + 120 },
+                               dir = dir, cols = LC.ROW_COLS })
+    end
+    local live, usable = 0, {}
+    for _, lane in ipairs(made) do
+        local n = 0
+        for _, sl in ipairs(lane.slots) do if sl.state == "free" then n = n + 1 end end
+        live = live + n
+        if n >= 4 then usable[#usable + 1] = lane end      -- a half that is (nearly) all off the map gets no builders
+    end
+    crew.rowsGrown = i
+    if #usable == 0 then                          -- (the lanes stay in L.lanes, all dead; they are never offered to a con)
+        crew.rowsExhausted = true
+        Spring.Echo(string.format("[LN] row %d would be off the map: the line stops growing at %d rows", i, i - 1))
+        return false
+    end
+    for _, lane in ipairs(usable) do
+        LC.CON_LANES[#LC.CON_LANES + 1] = lane.id
+        LC.LANE_CONS[lane.id] = LC.ROW_CONS or 3
+    end
+    Spring.Echo(string.format("[LN] row %d made (lanes %d%s, %d live slots)", i, made[1].id, made[2] and ("/" .. made[2].id) or "", live))
+    return true
+end
+
+function LC.NextConLane(crew)
+    local id = LC.FreeConLane(crew)
+    if id then return id end
+    if LC.GROW and LC.GrowRow(crew) then return LC.FreeConLane(crew) end
     return nil
 end
 
@@ -405,6 +504,26 @@ local function FocusNanosOnWind(crew, res)
     end
 end
 
+-- The builder that started the item it is on (a leader), nearest first: on the con's own lane, or (anyLane) on any other lane that still has slots.
+-- The con guards it (follows it and assists what it builds; the engine's normal way to help another builder).  Returns true if it did.
+function LC.GuardLeader(crew, c, anyLane)
+    local x, _, z = Spring.GetUnitPosition(c.id)
+    if not x then return false end
+    local lead, bd = nil, math.huge
+    for _, o in pairs(crew.cons) do
+        local t = o ~= c and not o.cmdr and (anyLane or o.lane.id == c.lane.id) and not o.guard and o.phase == "build" and o.target
+        if t and t.owner == o.id and (t.state == "ordered" or t.state == "building") and Spring.GetUnitDefID(o.id) then
+            local ox, _, oz = Spring.GetUnitPosition(o.id)
+            local d = ox and Dist(x, z, ox, oz) or 0
+            if d < bd then lead, bd = o, d end
+        end
+    end
+    if not lead then return false end
+    Spring.GiveOrderToUnit(c.id, CMD_GUARD, { lead.id }, {})
+    c.guard, c.guardSince, c.idleLead, c.phase = lead.id, crew.frame, nil, "guard"
+    return true
+end
+
 -- Next job for an idle builder standing at (x, z).  Returns true if it ordered a build.
 local function Decide(crew, c, res)
     local x, _, z = Spring.GetUnitPosition(c.id)
@@ -412,7 +531,7 @@ local function Decide(crew, c, res)
     local reach = ReachOf(c.id)
     local um, ue = crew.BP.Utilization(res)
     local U = crew.BP.BALANCE_BP_U or 0.8
-    local slot = Nearest(crew.L.slots, x, z, reach, c.lane.id)
+    local slot = Nearest(c.lane.slots, x, z, reach)
 
     -- Build power: neither resource under pressure -> money goes unspent, so spend capacity is short.
     -- Only the nano lane can reach the nano column; the commander cannot build nanos at all.
@@ -429,6 +548,11 @@ local function Decide(crew, c, res)
             return Decide(crew, c, res)
         end
     end
+
+    -- Lanes shared by several builders (LC.LANE_CONS > 1): the builder that STARTED an item is its leader; the others GUARD it (they follow it and
+    -- assist whatever it builds, the engine's normal way to help another builder) instead of each picking a slot of its own.  A mate that is
+    -- not building anything for a moment keeps its guards for 2 s; after that they pick their own slots (and one of them leads).
+    if (LC.LANE_CONS[c.lane.id] or 1) > 1 and LC.GuardLeader(crew, c, false) then return true end
 
     if slot and slot.reserve == "estor" then
         if IssueBuild(crew, c, slot, "estor") then return true end
@@ -463,7 +587,7 @@ local function NextStop(crew, c)
     local from = c.ptr or 1          -- builders only walk AHEAD, away from the start of the line, never back
     for _, st in ipairs(c.lane.stops) do
         if st.idx >= from and not (c.skip and c.skip[st.idx])
-           and Nearest(crew.L.slots, st.wx, st.wz, reach, c.lane.id) then return st end
+           and Nearest(c.lane.slots, st.wx, st.wz, reach) then return st end
     end
     -- Below the nano floor (LC.MIN_NANOS) the nano lane goes for the nano row BEFORE its slots are done.
     if c.lane.nano and not c.cmdr and (LC.MIN_NANOS or 0) > 0 and LC.NanoFloorShort(crew) then
@@ -612,9 +736,21 @@ local function Step(crew, c, res)
     end
     if c.phase == "move" then
         local x, _, z = Spring.GetUnitPosition(c.id)
-        if x and Dist(x, z, c.stop.wx, c.stop.wz) <= ARRIVE then
-            c.phase = "idle"
-        elseif x and crew.frame - c.moveFrame > MOVE_TIMEOUT then
+        -- Builders that share a lane are sent to the SAME stop: they cannot all stand on one point, and the engine ends a move order whose point
+        -- is taken as soon as the unit is blocked by the others -- standing 20-45 elmos short, so the old 16-elmo test never passed and they stood
+        -- idle until the move timeout (real game 2026-10-27).  So: near enough (a stop is 128 elmos from the next and reach is ~146), or stopped
+        -- for 20 frames within 150 elmos of it, counts as arrived.
+        local d = x and Dist(x, z, c.stop.wx, c.stop.wz)
+        local shared = (LC.LANE_CONS[c.lane.id] or 1) > 1 or LC.HELP_LANES
+        local still = false
+        if x and shared then
+            local _, _, _, sp = Spring.GetUnitVelocity(c.id)
+            if sp and sp < 0.3 then c.stillSince = c.stillSince or crew.frame else c.stillSince = nil end
+            still = c.stillSince ~= nil and crew.frame - c.stillSince >= 20 and crew.frame - c.moveFrame >= 45
+        end
+        if x and (d <= ARRIVE or (shared and (d <= 64 or (still and d <= 150)))) then
+            c.phase, c.stillSince = "idle", nil
+        elseif x and crew.frame - c.moveFrame > (c.moveTimeout or MOVE_TIMEOUT) then
             -- Never arrived (blocked path, cliff, wreck in the corridor).  Retrying the same stop forever left builders
             -- "walking" for minutes without placing anything; after two timeouts the stop is skipped and the builder
             -- places whatever is in reach of where it stands.
@@ -632,6 +768,18 @@ local function Step(crew, c, res)
         else
             return
         end
+    end
+    if c.phase == "guard" then          -- helping the builder that started the item (see Decide)
+        local L = crew.cons[c.guard]
+        local t = L and L.target
+        if L and Spring.GetUnitDefID(c.guard) and L.phase ~= "suspended" and not L.guard and t and (t.state == "ordered" or t.state == "building") then
+            c.idleLead = nil
+            return
+        end
+        c.idleLead = c.idleLead or crew.frame
+        if L and Spring.GetUnitDefID(c.guard) and not L.guard and crew.frame - c.idleLead < 60 then return end    -- between two items: keep guarding
+        c.guard, c.idleLead, c.phase = nil, nil, "idle"
+        Spring.GiveOrderToUnit(c.id, CMD_STOP, {}, {})
     end
     if c.phase == "build" then
         local s = c.target
@@ -656,7 +804,7 @@ local function Step(crew, c, res)
     if stop then
         local x, _, z = Spring.GetUnitPosition(c.id)
         local d = x and Dist(x, z, stop.wx, stop.wz) or 0
-        if d <= ARRIVE then
+        if d <= ARRIVE or ((LC.LANE_CONS[c.lane.id] or 1) > 1 and d <= 64) then
             -- Standing on the stop and Decide found nothing in reach.  Nano lane with the nano rule gated
             -- off: wait.  Otherwise the stop has nothing this builder can place (a slot Nearest sees from
             -- the stop but not from here): skip the stop for good instead of waiting on it forever.
@@ -668,7 +816,8 @@ local function Step(crew, c, res)
             end
             return
         end
-        c.stop, c.phase, c.moveFrame, c.ptr = stop, "move", crew.frame, stop.idx
+        c.stop, c.phase, c.moveFrame, c.ptr, c.stillSince = stop, "move", crew.frame, stop.idx, nil
+        c.moveTimeout = MOVE_TIMEOUT + 2 * d            -- a con's first walk to a far lane of the long line takes minutes, not 20 s
         c.walks = (c.walks or 0) + 1
         Spring.GiveOrderToUnit(c.id, CMD_MOVE, { stop.wx, Spring.GetGroundHeight(stop.wx, stop.wz) or 0, stop.wz }, {})
         return
@@ -682,6 +831,8 @@ local function Step(crew, c, res)
             left > 0 and (", " .. left .. " slots left behind") or ""))
         if crew.onLaneDone then pcall(crew.onLaneDone, c.lane.id, c.id) end
     end
+    -- LC.HELP_LANES: a builder whose lane is done helps (guards) a builder on a lane that is still being built, instead of standing at the far end
+    if LC.HELP_LANES and not c.cmdr and crew.frame % 30 == 0 then LC.GuardLeader(crew, c, true) end
 end
 
 function LC.Update(crew, frame, res)

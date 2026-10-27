@@ -1,0 +1,72 @@
+{
+ "tag": "rows4_sweep",
+ "seeds": "1-6",
+ "minutes": 18,
+ "base": {
+  "bot": "candidates/CORE_ROWS4",
+  "vacuum": false
+ },
+ "variants": {
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "lab6": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 10800,
+     "LATEST_FRAME": 10800
+    }
+   }
+  },
+  "lab7": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 12600,
+     "LATEST_FRAME": 12600
+    }
+   }
+  },
+  "lab8": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 14400,
+     "LATEST_FRAME": 14400
+    }
+   }
+  },
+  "lab9": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 16200,
+     "LATEST_FRAME": 16200
+    }
+   }
+  },
+  "lab10": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 18000,
+     "LATEST_FRAME": 18000
+    }
+   }
+  },
+  "rows6_lab8": {
+   "set": {
+    "macro": {
+     "ROW_MAX": 6
+    }
+   }
+  },
+  "rows6_lab9": {
+   "set": {
+    "macro": {
+     "ROW_MAX": 6
+    },
+    "line_transition": {
+     "EARLIEST_FRAME": 16200,
+     "LATEST_FRAME": 16200
+    }
+   }
+  }
+ }
+}

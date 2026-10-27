@@ -12,6 +12,7 @@ local M = {}
 
 function M.Install(X)
     local CB, LT, Clock, Key = X.CB, X.LT, X.Clock, X.Key
+    local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")     -- unit roles per faction (nano)
     local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")     -- spend / energy / unit-cap questions (C3)
     local HALF_GRID, LINE_BOX = X.HALF_GRID, X.LINE_BOX
     local QueueAirCon, AssignCons = X.QueueAirCon, X.AssignCons     -- con_orders
@@ -164,6 +165,15 @@ function M.Install(X)
                         check = function(state) return EcoBuilt(state) >= (GS.eco or 4) and NanosBuilt(state) < (GS.nanos or 1) end }
                     intr = own
                 end
+                -- NANO_FIRST (user 2026-10-26): every grid's first jobs are NANO_FIRST nanos (build power before anything else; the first grid with
+                -- GRID_START already does this), in chain order: a nano a finished nano reaches first, then the one nearest the one before
+                if T.CFG.NANO_FIRST and not (GS and T.gridsAssigned == 0 and not g.recover) then
+                    local own = {}
+                    for _, it in ipairs(intr) do own[#own + 1] = it end
+                    own[#own + 1] = { name = "nano_first", priority = 5, buildType = "nano", noPreempt = true,
+                                      check = function(state) return #state.nanoUnitIDs < T.CFG.NANO_FIRST end }
+                    intr = own
+                end
                 local st = T.BP.New(T.gridBP, conID, g.anchorX, g.anchorZ, g.rotation, intr)
                 if GS and T.gridsAssigned == 0 and not g.recover and T.airLabID then
                     local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
@@ -175,6 +185,7 @@ function M.Install(X)
                         end)
                     end
                 end
+                if T.CFG.NANO_FIRST then X.NanoFirstQueue(T, st, conID, g) end
                 -- The grid's own factory is the last thing built, unless metal piles up unspent.
                 st.deferFactories, st.handoffProgress = true, T.CFG.GRID_HANDOFF
                 if T.CFG.GRID_INTR_MIN_NANOS then st.interruptMinNanos = T.CFG.GRID_INTR_MIN_NANOS end
@@ -210,6 +221,81 @@ function M.Install(X)
             end
     end
 
+    -- NANO_FIRST: put the grid's nano items first, in chain order (an item a finished nano reaches first, then each next the nearest to the one before:
+    -- the nanos assist each other as they go up).  GRID_BRIDGE: when none of this grid's nano spots is in reach of a finished nano, the con first builds a
+    -- "bridge" nano in the nearest grid beside it -- the unbuilt nano spot (that grid's own item, taken off its queue) which a finished nano reaches
+    -- and which is nearest to this grid's nano spots -- so the nanos already standing assist it, and it then reaches this grid's spots: the chain grows grid by grid.
+    local function Cover(T, it) return #(T.BP.NanosInRange(it.wx, it.wz) or {}) end
+    function X.NanoFirstQueue(T, st, conID, g)
+        local nanos, rest = {}, {}
+        for _, it in ipairs(st.queue) do
+            if it.cls == "nano" and it.act ~= "reclaim" then nanos[#nanos + 1] = it else rest[#rest + 1] = it end
+        end
+        if #nanos == 0 then return end
+        local ordered, cur = {}, nil
+        while #nanos > 0 do
+            local bi, bs
+            for i, it in ipairs(nanos) do
+                local sc = cur and ((it.wx - cur.wx) ^ 2 + (it.wz - cur.wz) ^ 2) or -Cover(T, it)
+                if not bs or sc < bs then bi, bs = i, sc end
+            end
+            cur = table.remove(nanos, bi)
+            ordered[#ordered + 1] = cur
+        end
+        -- GRID_REACH: the first nanos face the free neighbour cells (one nano per neighbour, nearest first), so a finished nano of this grid reaches a
+        -- nano spot of the next grid and that grid can open (a nano on the far side of the grid reaches nothing new)
+        if T.CFG.GRID_REACH and g and g.anchorX then
+            local sp, picked, front = T.BP.GRID_SPACING or 480, {}, {}
+            for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+                local nx, nz = g.anchorX + d[1] * sp, g.anchorZ + d[2] * sp
+                if not T.assigned[Key(nx, nz)] and not InsideLine(T, nx, nz) and not T.OnEnemySide(T, nx, nz) then
+                    local bi, bd
+                    for i, it in ipairs(ordered) do
+                        if not picked[it] then
+                            local dd = (it.wx - nx) ^ 2 + (it.wz - nz) ^ 2
+                            if not bd or dd < bd then bi, bd = i, dd end
+                        end
+                    end
+                    if bi then picked[ordered[bi]] = true; front[#front + 1] = { it = ordered[bi], d = bd } end
+                end
+            end
+            table.sort(front, function(a, b) return a.d < b.d end)
+            if #front > 0 then
+                local out = {}
+                for _, f in ipairs(front) do out[#out + 1] = f.it end
+                for _, it in ipairs(ordered) do if not picked[it] then out[#out + 1] = it end end
+                ordered = out
+            end
+        end
+        local covered = Cover(T, ordered[1]) > 0
+        for i = #st.queue, 1, -1 do st.queue[i] = nil end
+        for _, it in ipairs(ordered) do st.queue[#st.queue + 1] = it end
+        for _, it in ipairs(rest) do st.queue[#st.queue + 1] = it end
+        if covered or not T.CFG.GRID_BRIDGE or T.gridsAssigned == 0 then return end
+        -- no spot of this grid is in reach of a finished nano: find the bridge among the other grids' open nano spots
+        local cx, cz = 0, 0
+        for _, it in ipairs(ordered) do cx, cz = cx + it.wx, cz + it.wz end
+        cx, cz = cx / #ordered, cz / #ordered
+        local best, bd
+        for _, gs in ipairs(T.gridStates) do
+            if gs ~= st and not gs.done then
+                for _, it in ipairs(gs.queue) do
+                    if it.cls == "nano" and it.act ~= "reclaim" and it.status == "pending" and not it.built and Cover(T, it) > 0 then
+                        local d = (it.wx - cx) ^ 2 + (it.wz - cz) ^ 2
+                        if not bd or d < bd then best, bd = it, d end
+                    end
+                end
+            end
+        end
+        if not best or bd > (T.CFG.GRID_BRIDGE_RANGE or 700) ^ 2 then return end
+        best.status = "skipped"        -- the neighbour's builder leaves this spot to the bridge
+        best.bridge = conID
+        local wy = Spring.GetGroundHeight(best.wx, best.wz) or 0
+        Spring.GiveOrderToUnit(conID, -best.defID, { best.wx, wy, best.wz, best.f or 0 }, {})
+        Spring.Echo(string.format("[LT] %s grid (%d, %d): no nano reaches it -- con %d builds a bridge nano at (%d, %d) in the next grid first",
+            Clock(T.frame or 0), g.anchorX, g.anchorZ, conID, best.wx, best.wz))
+    end
+
     -- The first grid: GAP elmos beyond the line's outer edge, centred on the lab (or the next cell along the line).
     local function OpenFirstGrid(T, frame, labX, labZ)
         local LC = T.LC
@@ -243,6 +329,21 @@ function M.Install(X)
             end
         end
         Spring.Echo("[LT] no valid first grid cell beyond the line; grids off")
+        return false
+    end
+
+    -- GRID_REACH: does a finished nano reach one of this candidate cell's nano spots?
+    function X.GridReachable(T, r)
+        local ang = r.rotation or 0
+        for _, it in ipairs(T.gridBP.layout or {}) do
+            if it.n == ROLES.Get("nano") then
+                local ox, oz = it.x, it.z
+                if     ang == 1 then ox, oz = -it.z,  it.x
+                elseif ang == 2 then ox, oz = -it.x, -it.z
+                elseif ang == 3 then ox, oz =  it.z, -it.x end
+                if #(T.BP.NanosInRange(r.anchorX + ox, r.anchorZ + oz) or {}) > 0 then return true end
+            end
+        end
         return false
     end
 
@@ -329,14 +430,43 @@ function M.Install(X)
         -- GRID_COMPACT: open the candidate nearest the line's centre (fewer open grids in a tighter blob = less to defend),
         -- not the first one found.
         local pick = 1
+        -- GRID_REACH (user 2026-10-26): after the first grid a cell opens only if a FINISHED nano reaches one of its nano spots (its starting nano gets
+        -- help from the nanos already standing; a grid whose first nano is built alone is slow).  Waits for one; after GRID_REACH_WAIT frames of
+        -- waiting it opens the best cell anyway (so a map where nothing reaches cannot freeze the expansion).
+        local pool = nil
+        if T.CFG.GRID_REACH and (#T.allAnchors + #T.pendingGrids) >= 1 then
+            pool = {}
+            local checked = 0
+            for i, c in ipairs(T.gridCands) do
+                if checked >= 30 then break end
+                checked = checked + 1
+                if X.GridReachable(T, c) then pool[#pool + 1] = i end
+            end
+            if #pool == 0 then
+                T.reachWaitFrom = T.reachWaitFrom or frame
+                if frame - T.reachWaitFrom < (T.CFG.GRID_REACH_WAIT or 3600) then
+                    if frame - (T.reachLogF or -1e9) >= 900 then
+                        T.reachLogF = frame
+                        Spring.Echo(string.format("[LT] %s grid held: no finished nano reaches a nano spot of any of the %d waiting cells", Clock(frame), #T.gridCands))
+                    end
+                    if not T.CFG.GRID_REACH_FALLBACK_OK then return end
+                end
+                pool = nil
+            else
+                T.reachWaitFrom = nil
+            end
+        end
         if T.CFG.GRID_COMPACT then
             local lb = T.lineBox
             local cx, cz = (lb.x0 + lb.x1) / 2, (lb.z0 + lb.z1) / 2
             local best = math.huge
-            for i, c in ipairs(T.gridCands) do
+            for _, i in ipairs(pool or (function() local all = {}; for i = 1, #T.gridCands do all[i] = i end; return all end)()) do
+                local c = T.gridCands[i]
                 local d = (c.anchorX - cx) ^ 2 + (c.anchorZ - cz) ^ 2
                 if d < best then best, pick = d, i end
             end
+        elseif pool then
+            pick = pool[1]
         end
         local r = table.remove(T.gridCands, pick)
         T.pendingGrids[#T.pendingGrids + 1] = r

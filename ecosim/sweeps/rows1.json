@@ -1,0 +1,91 @@
+{
+ "tag": "rows_sweep1",
+ "seeds": "1-6",
+ "minutes": 14,
+ "base": {
+  "bot": "candidates/CORE_ROWS",
+  "vacuum": false
+ },
+ "variants": {
+  "bank300": {
+   "set": {
+    "macro": {}
+   }
+  },
+  "bank100": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 100
+    }
+   }
+  },
+  "bank150": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 150
+    }
+   }
+  },
+  "bank600": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 600
+    }
+   }
+  },
+  "timer5s": {
+   "set": {
+    "macro": {
+     "CON_FALLBACK_FRAMES": 150
+    }
+   }
+  },
+  "timer15s": {
+   "set": {
+    "macro": {
+     "CON_FALLBACK_FRAMES": 450
+    }
+   }
+  },
+  "bank150_c2": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 150,
+     "ROW_CONS": 2
+    }
+   }
+  },
+  "bank150_c4": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 150,
+     "ROW_CONS": 4
+    }
+   }
+  },
+  "bank150_cols12": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 150,
+     "ROW_COLS": 12
+    }
+   }
+  },
+  "bank150_cols24": {
+   "set": {
+    "macro": {
+     "CON_BANK_TRIGGER": 150,
+     "ROW_COLS": 24
+    }
+   }
+  },
+  "timer5s_cols24": {
+   "set": {
+    "macro": {
+     "CON_FALLBACK_FRAMES": 150,
+     "ROW_COLS": 24
+    }
+   }
+  }
+ }
+}

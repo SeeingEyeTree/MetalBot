@@ -1,0 +1,83 @@
+{
+ "tag": "rows_eco_diag",
+ "seeds": "1-6",
+ "minutes": 20,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "base": {},
+  "nano_cap_off": {
+   "set": {
+    "macro": {
+     "LINE_NANO_CAP": false
+    },
+    "slot_spine": {
+     "NANO_CAP": false
+    }
+   }
+  },
+  "no_decoy_rez_t2b": {
+   "set": {
+    "line_transition": {
+     "DECOY_LINE": false,
+     "REZ_LAB": false,
+     "T2BOT_LAB": false
+    }
+   }
+  },
+  "no_vp2": {
+   "set": {
+    "line_transition": {
+     "VP2": false
+    }
+   }
+  },
+  "no_reach_nanofirst": {
+   "set": {
+    "line_transition": {
+     "GRID_REACH": false,
+     "NANO_FIRST": null
+    }
+   }
+  },
+  "lab5": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 9000,
+     "LATEST_FRAME": 9000
+    }
+   }
+  },
+  "lab7": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 12600,
+     "LATEST_FRAME": 12600
+    }
+   }
+  },
+  "all_off": {
+   "set": {
+    "macro": {
+     "LINE_NANO_CAP": false
+    },
+    "slot_spine": {
+     "NANO_CAP": false
+    },
+    "line_transition": {
+     "DECOY_LINE": false,
+     "REZ_LAB": false,
+     "T2BOT_LAB": false,
+     "VP2": false,
+     "GRID_REACH": false,
+     "NANO_FIRST": null
+    }
+   }
+  },
+  "stance_eco2": {
+   "bot": "candidates/STANCE_ECO2"
+  }
+ }
+}

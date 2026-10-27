@@ -1,0 +1,89 @@
+{
+ "tag": "rows6_sweep",
+ "seeds": "1-6",
+ "minutes": 18,
+ "base": {
+  "bot": "candidates/CORE_ROWS6",
+  "vacuum": false
+ },
+ "variants": {
+  "base": {},
+  "reserve1": {
+   "set": {
+    "line_transition": {
+     "AIR_CON_RESERVE": 1
+    }
+   }
+  },
+  "reserve0": {
+   "set": {
+    "line_transition": {
+     "AIR_CON_RESERVE": 0
+    }
+   }
+  },
+  "cap1": {
+   "set": {
+    "line_transition": {
+     "GRID_START": {
+      "cap": 1,
+      "eco": 0,
+      "nanos": 2,
+      "wait": 900
+     }
+    }
+   }
+  },
+  "crew6": {
+   "set": {
+    "line_transition": {
+     "NANO_CREW_SIZE": 6
+    }
+   }
+  },
+  "crew4": {
+   "set": {
+    "line_transition": {
+     "NANO_CREW_SIZE": 4
+    }
+   }
+  },
+  "reserve1_crew6": {
+   "set": {
+    "line_transition": {
+     "AIR_CON_RESERVE": 1,
+     "NANO_CREW_SIZE": 6
+    }
+   }
+  },
+  "reserve0_crew4": {
+   "set": {
+    "line_transition": {
+     "AIR_CON_RESERVE": 0,
+     "NANO_CREW_SIZE": 4
+    }
+   }
+  },
+  "reach600": {
+   "set": {
+    "line_transition": {
+     "GRID_REACH_WAIT": 600
+    }
+   }
+  },
+  "reach1800": {
+   "set": {
+    "line_transition": {
+     "GRID_REACH_WAIT": 1800
+    }
+   }
+  },
+  "reach_off": {
+   "set": {
+    "line_transition": {
+     "GRID_REACH": false
+    }
+   }
+  }
+ }
+}

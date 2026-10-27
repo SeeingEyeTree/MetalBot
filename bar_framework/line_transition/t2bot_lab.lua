@@ -21,7 +21,7 @@ function M.Install(X)
             if lane then
                 local at = {}
                 for _, s in ipairs(lane.slots) do at[s.row] = at[s.row] or {}; at[s.row][s.k] = s end
-                local k0 = LC.K_LAST - 2
+                local k0 = (LC.SITE_K_LAST or LC.K_LAST) - 2
                 local slots, good = {}, true
                 for row = 1, 2 do
                     for k = k0, k0 + 2 do

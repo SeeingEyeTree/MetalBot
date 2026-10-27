@@ -34,9 +34,17 @@ local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")   -- sp
 local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
 local RegisterJobs                                                       -- defined below the jobs it registers
 
-LT.NIL_OPTIONS = { "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+LT.NIL_OPTIONS = { "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
+    NANO_FIRST     = nil,         -- n: every grid's first jobs are n nanos, chained (a nano a finished nano reaches first); nil = the blueprint's order
+    GRID_REACH     = false,       -- a new grid cell opens only if a finished nano reaches one of its nano spots (after the first grid)
+    GRID_REACH_WAIT = 3600,       -- ... after this many frames of waiting for one it opens the best cell anyway (GRID_REACH_FALLBACK_OK: wait for ever)
+    GRID_REACH_FALLBACK_OK = false,
+    GRID_BRIDGE    = false,       -- with NANO_FIRST: a new grid none of whose nano spots a finished nano reaches first gets a bridge nano from the next grid built by its con
+    GRID_BRIDGE_RANGE = 700,      -- ... the bridge spot must be within this of the grid's nano spots
+    SPINE_EARLY    = false,       -- true: start the spine as soon as the vehicle lab has its site (needed when the air lab is late, CORE_ROWS)
+    AIR_LAB        = true,        -- false: no air lab (and so no mex grids / air cons); the line, the vehicle lab and the spine only (CORE_LONGLINE)
     LATEST_FRAME   = 6 * 60 * 30, -- build the lab by now whatever the bank says
     EARLIEST_FRAME = 10 * 30,     -- the bank test is the real gate; this only waits for the outer con to exist
     CLAIM_WHEN_OPEN = 14,         -- hold the site once the lane has this few open slots (6 lab + 2 nano + spare)
@@ -332,6 +340,15 @@ function LT.New(o)
                 retrofitPaused = false, siloPending = {}, siloJobs = {}, lab2Sessions = {}, lineRecQueue = {},
                 consolidateOn = false, consolidateJobs = {}, consolidatedKeys = {}, windBlocks = {}, reclaimingWinds = {},
                 ecellBP = o.ecellBP, ecellStates = {}, ecellStarted = 0 }
+    -- The line's footprint follows its geometry (more lanes on the away side, a longer line).
+    LINE_BOX.x1 = o.LC.X0 + 64 * o.LC.K_LAST + 48
+    for _, d in ipairs(o.LC.LANES) do LINE_BOX.z0 = math.min(LINE_BOX.z0, d.z - 24) end
+    if o.LC.GROW and o.LC.ROW_MAX then                       -- rows grown later (LC.GrowRow) are inside the box from the start, so no grid lands on them
+        LINE_BOX.z0 = math.min(LINE_BOX.z0, -408 - 176 * o.LC.ROW_MAX - 24)
+        local c = o.LC.ROW_COLS or 16
+        LINE_BOX.x1 = math.max(LINE_BOX.x1, o.LC.X0 + 64 * c + 48)
+        if o.LC.ROW_BOTH then LINE_BOX.x0 = math.min(LINE_BOX.x0, o.LC.X0 - 64 * c - 48) end
+    end
     -- Which outer lane faces the enemy (the map centre): the vehicle lab and the spine go there; the air lab and the
     -- mex grids go on the other side.  b-z outward is lane 4 (north), b+z outward is lane 3 (south).
     local ex, ez = o.layout.mapX / 2 - o.layout.anchorX, o.layout.mapZ / 2 - o.layout.anchorZ
@@ -498,7 +515,12 @@ end
 
 local function UpdateWait(T, frame, res)
     local LC = T.LC
-    if frame < T.CFG.EARLIEST_FRAME then return end
+    -- SPINE_EARLY: the spine starts once the vehicle lab has its site, not when the first grid opens (a late air lab must not hold the army back)
+    if (T.CFG.SPINE_EARLY or T.CFG.AIR_LAB == false) and T.spineMod and not T.spineOn and T.vpSite then X.StartSpine(T, frame) end
+    if T.CFG.AIR_LAB == false then T.phase = "noair"; return end
+    -- before EARLIEST_FRAME nothing is queued, but the site is still claimed when its lane runs low (a line that finishes before the lab's time
+    -- used to eat every open slot of the lane: "no 6 open slots", no air lab, no grids, income flat for the rest of the game)
+    local early = frame < T.CFG.EARLIEST_FRAME
     if T.waitUntil and frame < T.waitUntil then return end
     if T.site and not LC.LaneBuilder(T.crew, T.site.lane) then       -- its builder died: give the slots back
         for _, s in ipairs(T.site.slots) do s.state = "free" end
@@ -548,7 +570,7 @@ local function UpdateWait(T, frame, res)
             end
         end
     end
-    if not (p.ok or late) then return end
+    if early or not (p.ok or late) then return end
     local ud = UnitDefs[T.labDefID]
     LC.QueueJob(T.crew, b.id, { name = ud.name, x = x, z = z, f = f, tag = "lab" })
     T.phase, T.labFrame = "lab", frame
@@ -1189,7 +1211,7 @@ function LT.Update(T, frame, res)
         end
         if T.sg then T.sgMod.Update(T.sg, frame, res) end
     end
-    if T.phase == "wait" then UpdateWait(T, frame, res)
+    if T.phase == "wait" or T.phase == "noair" then UpdateWait(T, frame, res)
     elseif T.phase == "grids" then UpdateGrids(T, frame, res) end
     if T.vp2Phase == nil then T.vp2Phase, T.vp2Tries = (T.spineMod and T.CFG.VP2) and "wait" or "off", 0 end
     UpdateVehicleLab(T, frame, res)
