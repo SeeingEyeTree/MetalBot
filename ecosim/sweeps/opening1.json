@@ -1,0 +1,84 @@
+{
+ "tag": "opening1",
+ "seeds": "1-6",
+ "minutes": 16,
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false
+ },
+ "variants": {
+  "core": {
+   "bot": "candidates/CORE"
+  },
+  "base": {},
+  "rows_from_3": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 5400
+    }
+   }
+  },
+  "rows_from_4": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 7200
+    }
+   }
+  },
+  "rows_from_5": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 9000
+    }
+   }
+  },
+  "rows_from_6": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 10800
+    }
+   }
+  },
+  "lab6": {
+   "set": {
+    "line_transition": {
+     "EARLIEST_FRAME": 10800,
+     "LATEST_FRAME": 10800
+    }
+   }
+  },
+  "rows4_lab6": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 7200
+    },
+    "line_transition": {
+     "EARLIEST_FRAME": 10800,
+     "LATEST_FRAME": 10800
+    }
+   }
+  },
+  "rows5_lab6": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 9000
+    },
+    "line_transition": {
+     "EARLIEST_FRAME": 10800,
+     "LATEST_FRAME": 10800
+    }
+   }
+  },
+  "rows6_lab7": {
+   "set": {
+    "macro": {
+     "ROW_START_FRAME": 10800
+    },
+    "line_transition": {
+     "EARLIEST_FRAME": 12600,
+     "LATEST_FRAME": 12600
+    }
+   }
+  }
+ }
+}

@@ -25,7 +25,8 @@ MACRO.Install(widget, WG, {
     -- ROWS THAT SCALE (user 2026-10-26): the 4 lanes as CORE, then a new row (two halves running east and west from the middle of the line, ROW_CONS cons on
     -- each) whenever a con has no lane -- on the side away from the enemy, until the map edge or ROW_UNIT_FRAC of the unit cap.  A con is ordered 5 s after the last one is out
     -- (a metal-bank gate only slowed the T1 phase in eco_sim; CON_BANK_TRIGGER / CON_FALLBACK_FRAMES are the knobs).  T1 phase only; no air lab, so no mex grids yet.
-    SCALE_ROWS  = true, HELP_LANES = true,   -- a con whose lane is done guards a builder on a lane still being built (real game 2026-10-27: 3 cons stood idle at the far end of their lanes from ~9:00)
+    SCALE_ROWS  = true, ROW_START_FRAME = 5 * 60 * 30,   -- no con past the first 3 before 5:00: the opening metal goes to the army (replay 2026-10-27: no army spend 4:00-5:00, then a raid at 5:30; eco_sim: army share of spend by 6:00 12% -> 21%, income at 12:00 937 -> 658, still above CORE 528)
+    HELP_LANES = true,   -- a con whose lane is done guards a builder on a lane still being built (real game 2026-10-27: 3 cons stood idle at the far end of their lanes from ~9:00)
      ROW_CONS = 3, ROW_BOTH = false, ROW_COLS = 32, ROW_UNIT_FRAC = 0.5, ROW_MAX = 3,   -- 3 grown rows on top of the 4 lanes; each is ONE lane (32 columns, east only), user 2026-10-26
     MAX_CONS    = 1e9,
     CON_GAP     = ROW_GAP, CON_INCOME = ROW_INCOME, CON_BANK_TRIGGER = 150, CON_FALLBACK_FRAMES = 5 * 30,   -- eco_sim (ecosim/sweeps/rows1.json, 6 seeds): a bank gate (100-600) is slower than a con every 5 s: income at 10:00 288 / 283 / 220 / 181 vs 358

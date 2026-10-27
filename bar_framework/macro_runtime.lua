@@ -68,6 +68,7 @@ M.DEFAULTS = {
     ROW_MAX             = nil,       -- SCALE_ROWS: most rows made (nil = until the map edge / unit cap)
     ROW_CONS            = 3,         -- builders on each half of a grown row
     ROW_COLS            = 16,        -- columns in each half of a grown row
+    ROW_START_FRAME     = 0,         -- SCALE_ROWS: no con beyond the first 3 before this frame (the opening's metal goes to the army; user 2026-10-27, the 5:30 raid)
     ROW_UNIT_FRAC       = 0.5,       -- SCALE_ROWS: no new con once the team has this share of the unit cap
     EXTRA_LANES         = 0,         -- CORE_LONGLINE: extra lanes beyond the 4 (line_crew LC.AddLanes), on the side away from the enemy; each is served by LANE_CONS builders
     LANE_CONS           = 3,         -- builders sharing each extra lane (con #4.. fill the extra lanes in order, LANE_CONS at a time)
@@ -403,6 +404,7 @@ local function MaybeQueueNextCon(frame, res)
     if not (TS.botLabID and spGetUnitDefID(TS.botLabID)) then return end
     if TS.queuedCount >= CFG.MAX_CONS then return end
     if CFG.SCALE_ROWS and crew and TS.queuedCount >= 3 then
+        if frame < (CFG.ROW_START_FRAME or 0) then return end
         -- rows scale with the unit cap and the map: no con without a lane for it, none past ROW_UNIT_FRAC of the cap
         local maxU, cnt = Spring.GetTeamMaxUnits and Spring.GetTeamMaxUnits(myTeamID), Spring.GetTeamUnitCount and Spring.GetTeamUnitCount(myTeamID)
         if maxU and cnt and cnt >= maxU * CFG.ROW_UNIT_FRAC then return end
