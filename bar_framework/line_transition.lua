@@ -1053,16 +1053,32 @@ end
 
 -- VP_NANO_ASSIST: the finished vehicle lab keeps its nanos while the strategy wants a big army early (every second)
 local function UpdateVpNanoAssist(T, frame)
-    if not (T.CFG.VP_NANO_ASSIST and T.vpPhase == "done" and T.vpID and frame % 30 == 0 and frame < T.CFG.VP_ASSIST_UNTIL) then return end
+    if not (T.CFG.VP_NANO_ASSIST and frame % 30 == 0) then return end
     local NANO = T.BP.NANO
-    if not (NANO and Spring.GetUnitDefID(T.vpID)) then return end
-    local strat = T.WG and T.WG.Strategy
-    if not (strat and strat.Share and strat:Share() >= T.CFG.VP_ASSIST_SHARE) then return end
-    local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(T.vpID, 0)
-    if type(q) == "number" and q <= 0 then return end            -- an idle lab has nothing for the nanos to build
-    local x, _, z = Spring.GetUnitPosition(T.vpID)
-    if not x then return end
-    for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do NANO.Guard(NANO.PRIO.VP, nid, T.vpID) end      -- Guard: see UpdateRaidFocus
+    if not NANO then return end
+    local held = T.vpGuards
+    if not held then held = {}; T.vpGuards = held end            -- nano id -> the lab it guards for this (a Guard holds until released)
+    local id = T.vpID
+    local on = T.vpPhase == "done" and id and Spring.GetUnitDefID(id) and frame < T.CFG.VP_ASSIST_UNTIL
+    if on then
+        local strat = T.WG and T.WG.Strategy
+        on = strat and strat.Share and strat:Share() >= T.CFG.VP_ASSIST_SHARE
+    end
+    local x, z
+    if on then
+        local q = Spring.GetFactoryCommands and Spring.GetFactoryCommands(id, 0)
+        if type(q) == "number" and q <= 0 then on = false           -- an idle lab has nothing for the nanos to build
+        else local px, _, pz = Spring.GetUnitPosition(id); x, z = px, pz; on = x ~= nil end
+    end
+    if on then
+        for _, nid in ipairs(T.BP.NanosInRange(x, z) or {}) do
+            if NANO.Guard(NANO.PRIO.VP, nid, id) then held[nid] = id end   -- Guard, not Assist: an assist on a finished lab expires every tick
+        end
+    else
+        for nid, lab in pairs(held) do                                -- release what this lab held (the nanos go back to their eco jobs)
+            if lab == id or not Spring.GetUnitDefID(lab) then NANO.Release(nid); held[nid] = nil end
+        end
+    end
 end
 
 -- The spine's first block opens after the line's vehicle labs stand (VP2 on): VP2 gets the metal first.
