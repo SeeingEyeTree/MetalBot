@@ -1807,7 +1807,7 @@ function widget:Initialize()
     CA = EI and Load("click_army")
     if CA then
         CA.Init{ cfg = Load("bot_config").Preset("click_army", "RAID", K.CLICK_ARMY), label = "RAID_BOT",     -- CLICK_ARMY = { ... }: a variant's click_army tweaks (CORE_ROWS_ECO: the opening raid)
-                 unseen = function(x, z, f) return SP and SP.NextUnseen and SP.NextUnseen(x, z, f) end,
+                 unseen = function(x, z, f) if SP and SP.NextUnseen then return SP.NextUnseen(x, z, f) end end,   -- (an `and` chain would cut the second return value, z)
                  holdHome = K.HOLD_HOME and function()
                      local r = WG and WG.MetalBot and WG.MetalBot.raid
                      return r ~= nil and Spring.GetGameFrame() - (r.frame or -1e9) <= 90 and (r.ground or 0) >= (K.HOLD_HOME.VALUE or 300)
