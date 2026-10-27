@@ -215,6 +215,9 @@ LT.CFG = {
     VP2 = false, VP2_AFTER_S = 10, VP2_MIN_FRAME = 4 * 60 * 30 + 30 * 30, VP2_WAIT_MAX_S = 90, SPINE_DELAY_S = 20,
     RAID_FOCUS = false, RAID_FOCUS_VALUE = 500, RAID_FOCUS_HOLD_S = 15,
     VP_NANO_ASSIST = false,
+    -- NANOS_FIRST (user 2026-10-27): the lab's nanos are built BEFORE the lab (the con places them, then the lab) so they stand free and the lab is built fast and the line keeps scaling; false = the lab, then its nanos.
+    VP_NANOS_FIRST = false, AIR_LAB_NANOS_FIRST = false, NANOS_FIRST_LEAD = 20 * 30,   -- LEAD: frames added to the lab's start time for the nanos
+    AIR_LAB_NANO_ASSIST = true,    -- false: the air lab's nanos are not ordered to guard it (UpdateLabAssist off); the engine's own auto-assist
     ARMY_NANOS_FROM = nil,        -- frame range in which every nano in reach of an army lab guards one (UpdateArmyNanos); nil = off
     ARMY_NANOS_UNTIL = nil,
     ARMY_NANOS_KEEP_LINE = 0,      -- nanos (nearest the line's builders) left to the line while it still has slots to build
@@ -588,6 +591,17 @@ local function UpdateWait(T, frame, res)
         if frame - T.labGovSince < (T.CFG.GOV_AIR_LAB_MAX or 3600) then return end
     end
     local ud = UnitDefs[T.labDefID]
+    if T.CFG.AIR_LAB_NANOS_FIRST and T.site then      -- the lab's nanos first (they stand free), then the lab
+        if T.airNanosFirst == nil then
+            T.airNanosFirst, T.airNanosFrame = true, frame
+            for i, sn in ipairs(T.site.nanos) do
+                LC.QueueJob(T.crew, b.id, { name = "cornanotc", x = sn.wx, z = sn.wz, f = 0, tag = "labnano", urgent = (i == 1) })
+            end
+            T.labNanosPending = #T.site.nanos
+            Spring.Echo(string.format("[LT] %s air lab: %d nanos first, then the lab", Clock(frame), T.labNanosPending))
+        end
+        if T.labNanosPending > 0 and frame - T.airNanosFrame < 1200 then return end
+    end
     LC.QueueJob(T.crew, b.id, { name = ud.name, x = x, z = z, f = f, tag = "lab" })
     T.phase, T.labFrame = "lab", frame
     Spring.Echo(string.format("[LT] %s AIR LAB queued (%s) at (%d, %d) facing %d: %s; BP %.0f, %.0fs, bank %d income %.1f",
@@ -604,7 +618,7 @@ LT.OrderCon = CB.OrderCon
 -- While the line is unfinished only the lab's own two nanos do: the line's nanos stay free to help its builders
 -- (a guarding nano builds nothing but the lab's air cons; a 6:00 log had every nano on the lab and 40% of the line open).
 local function UpdateLabAssist(T, frame)
-    if frame % 30 ~= 0 or not T.airLabID then return end
+    if frame % 30 ~= 0 or not T.airLabID or T.CFG.AIR_LAB_NANO_ASSIST == false then return end
     local NANO = T.BP.NANO
     if not NANO then return end
     -- LAB_NANOS_FIRST_GRID: the lab's nanos are there to stand the first grid's nanos sooner, not to speed the air cons out
@@ -757,7 +771,7 @@ local function FacingFor(dx, dz)          -- Spring facing: 0 south (+z), 1 east
 end
 
 -- The second vehicle lab runs the vehicle-lab code on a VIEW of T: its vp* fields live in T.vp2* (vpSite -> vp2Site ...), everything else is T's.
-local VP_KEYS = { vpSite = true, vpPhase = true, vpID = true, vpBuildID = true, vpTries = true, vpFrame = true, vpDefID = true, vpSpotLogged = true, vpDoneFrame = true }
+local VP_KEYS = { vpSite = true, vpPhase = true, vpID = true, vpBuildID = true, vpTries = true, vpFrame = true, vpDefID = true, vpSpotLogged = true, vpDoneFrame = true, vpNanosPending = true }
 local function Vp2(T)
     if rawget(T, "vp2View") then return T.vp2View end
     local V = setmetatable({}, {
@@ -942,6 +956,8 @@ local function UpdateVehicleLab(T, frame, res)
     end
     local p = LT.LabPlan(T, res, x, z, site.builder, T.vpDefID)
     local fire = T.CFG.VP_DONE_FRAME - math.floor(p.t * 30) - T.CFG.VP_MARGIN
+    local nanosFirst = T.CFG.VP_NANOS_FIRST and not T.vpIsSecond
+    if nanosFirst then fire = fire - T.CFG.NANOS_FIRST_LEAD end
     if T.vpIsSecond then                         -- VP2: VP2_AFTER_S after the first stands, and once the bank covers it (or 60 s later regardless)
         fire = T.vp2Earliest and math.max(T.vp2Earliest, T.CFG.VP2_MIN_FRAME) or math.huge
         if frame >= fire and not p.ok and frame < fire + 3600 then return end
@@ -952,6 +968,17 @@ local function UpdateVehicleLab(T, frame, res)
             Clock(frame), p.bp, p.nanos, p.t, Clock(math.max(fire, 0)), Clock(T.CFG.VP_DONE_FRAME), res.metal))
     end
     if frame < fire then return end
+    if nanosFirst then      -- the lab's nanos first: the lane's con places them, the lab follows once they stand (or 40 s later)
+        if T.vpNanosPending == nil then
+            T.vpNanosPending, T.vpNanosFrame = 0, frame
+            for i, sn in ipairs(site.nanos) do
+                LC.QueueJob(T.crew, site.builder, { name = "cornanotc", x = sn.wx, z = sn.wz, f = 0, tag = "vpnano", urgent = (i == 1) })
+                T.vpNanosPending = T.vpNanosPending + 1
+            end
+            Spring.Echo(string.format("[LT] %s vehicle lab: %d nanos first, then the lab", Clock(frame), T.vpNanosPending))
+        end
+        if T.vpNanosPending > 0 and frame - (T.vpNanosFrame or frame) < 1200 then return end
+    end
     -- urgent: the lane's con drops the slot it is on (it was seen stuck on one) and goes straight to the lab.
     LC.QueueJob(T.crew, site.builder, { name = ud.name, x = x, z = z, f = f, tag = T.vpTag or "vp", urgent = true })
     T.vpPhase, T.vpFrame = "lab", frame
@@ -1005,11 +1032,13 @@ function LT.OnJobDone(T, j, state)
             (T.frame - (T.labFrame or T.frame)) / 30))
         -- Two nanos on the open slots beside the lab, on the same con.
         local LC = T.LC
-        for _, s in ipairs(T.site.nanos) do
-            LC.QueueJob(T.crew, T.site.builder, { name = "cornanotc", x = s.wx, z = s.wz, f = 0, tag = "labnano" })
+        if not T.airNanosFirst then
+            for _, s in ipairs(T.site.nanos) do
+                LC.QueueJob(T.crew, T.site.builder, { name = "cornanotc", x = s.wx, z = s.wz, f = 0, tag = "labnano" })
+            end
+            if #T.site.nanos < 2 then Spring.Echo("[LT] only " .. #T.site.nanos .. " open slot(s) for lab nanos") end
+            T.labNanosPending = #T.site.nanos
         end
-        if #T.site.nanos < 2 then Spring.Echo("[LT] only " .. #T.site.nanos .. " open slot(s) for lab nanos") end
-        T.labNanosPending = #T.site.nanos
         if T.labNanosPending == 0 and not T.CFG.GRID_START then LiftAirConCap(T, "no lab nanos to wait for") end
         local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
         if T.airConDefID and lx then
@@ -1041,8 +1070,10 @@ function LT.OnJobDone(T, j, state)
         end
         Spring.Echo(string.format("[LT] %s VEHICLE LAB finished (%d); %.0fs after it was queued", Clock(T.frame), j.unitID,
             (T.frame - (T.vpFrame or T.frame)) / 30))
-        for _, s in ipairs(T.vpSite.nanos) do
-            T.LC.QueueJob(T.crew, T.vpSite.builder, { name = "cornanotc", x = s.wx, z = s.wz, f = 0, tag = "vpnano" })
+        if T.vpNanosPending == nil then       -- (with VP_NANOS_FIRST they stand already)
+            for _, s in ipairs(T.vpSite.nanos) do
+                T.LC.QueueJob(T.crew, T.vpSite.builder, { name = "cornanotc", x = s.wx, z = s.wz, f = 0, tag = "vpnano" })
+            end
         end
         if T.spineOn then
             T.spineMod.AdoptLab(j.unitID, Spring.GetUnitDefID(j.unitID), T.CFG.VP_CONS)
@@ -1050,6 +1081,7 @@ function LT.OnJobDone(T, j, state)
         end
     elseif j.tag == "vpnano" then
         Spring.Echo(string.format("[LT] %s vehicle lab nano %s", Clock(T.frame), state))
+        if T.vpNanosPending then T.vpNanosPending = math.max(0, T.vpNanosPending - 1) end
     end
 end
 
