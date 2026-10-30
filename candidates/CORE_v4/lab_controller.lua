@@ -24,6 +24,7 @@ LAB.Install(widget, WG, {
     ARMY_QUEUE_MIN = 2,           -- user 2026-10-27: every army lab keeps at least two units queued (nanos waited for the next order between units)
     SPINE_CON_FIRST = true,       -- the spine's first ground con goes ahead of the defence picks
     BUDGET_FREE_BANK = 800,       -- a metal bank over 800 lifts the army budget (labs were idle with a 2k bank)
+    AA_STANDING = 3, AA_STANDING_FRAME = 5 * 60 * 30,   -- user 2026-10-30: three ground AA at home from 5:00 (all labs were uncovered at 8:00); army groups opt in to AA through unit_controller SUPPORT
     SINK = true,     -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
     AIR_AA_GATE = { MIN = 2000, RATIO = 1.0, STATIC_W = 0.25 },   -- user 2026-10-29 (BM_akumar6 game: 24% of metal into Shurikens / Wasps that died to flak + Hawks): none while the enemy AA is large
 })

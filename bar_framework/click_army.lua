@@ -443,6 +443,13 @@ function M.GroupOf(uid) return byId[unitGroup[uid]] end
 -- Is this unit committed to an attack group?  Units that are not (new units, reinforcements waiting at the
 -- stage, fighters) may be pulled off to defend the base; units that are never are.
 function M.InGroup(uid) return byId[unitGroup[uid]] ~= nil end
+-- REINFORCE_PULL (raid_response): take a unit out of its group (a reinforcement still near home) so the home response can use it; returns the group's centroid
+function M.Detach(uid)
+    local g = byId[unitGroup[uid]]
+    if not g then return nil end
+    unitGroup[uid] = nil
+    return g.cx, g.cz
+end
 
 -- Points where the attacking groups want a scout, as {x, z, gid}: ahead of each group along its
 -- path (and a second one to the side), refreshed every tick the group is attacking.  The unit

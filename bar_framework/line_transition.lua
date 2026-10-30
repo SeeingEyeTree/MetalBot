@@ -34,7 +34,7 @@ local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")   -- sp
 local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
 local RegisterJobs                                                       -- defined below the jobs it registers
 
-LT.NIL_OPTIONS = { "GRID_FOCUS", "AIR_LAB_INCOME", "NANO_CREW_PAUSE_SHARE", "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+LT.NIL_OPTIONS = { "GRID_FOCUS", "AIR_LAB_INCOME", "NANO_CREW_PAUSE_SHARE", "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS", "NC_BUILD_AFTER_NANOS", "NC_WIND_UNTIL_FUSION" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
     NANO_FIRST     = nil,         -- n: every grid's first jobs are n nanos, chained (a nano a finished nano reaches first); nil = the blueprint's order
@@ -323,6 +323,10 @@ LT.CFG = {
     NC_NANO_PATTERN   = "1010",        -- the nano rows of a block (4 per block, repeating): 1 = built in T1, 0 = left for the T2 fill
     NC_FILL           = true,          -- T2: the nano fronts go back and fill the rows the pattern skipped
     NC_NANO_AHEAD     = 1,             -- block rows a nano front may run ahead of the building fronts beside it (false = no limit)
+    NC_BUILD_AFTER_NANOS = nil,        -- (nil = off) once this many nanos stand the block's build job outranks its nano job (user 2026-10-30: mex / wind waited for all the nanos) ...
+    NC_BUILD_EARLY_MAX = 3,            -- ... at most this many block sessions at once ...
+    NC_BUILD_EARLY_NANOS = 12,         -- ... until the block has this many nanos
+    NC_WIND_UNTIL_FUSION = nil,        -- (nil = off) T1 wind blocks go on after T2 starts until this many fusions stand (user 2026-10-30: wind stopped before any fusion could be built, energy stalled)
     NC_BUILD_LEAD     = 1,             -- block rows a building front may run ahead of the nano fronts beside it
     NC_CONS_PER_FRONT = 3,             -- cons (block sessions) working one T1 front (nano / build) at once
     NC_RETRO_CONS_PER_FRONT = 4,       -- T2 cons working one retro front at once

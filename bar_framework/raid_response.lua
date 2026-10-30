@@ -31,6 +31,11 @@
 --                    they) are more than HOME_R + HOME_SLACK out: early home guards stay at home and do not chase scouts (user 2026-10-26).
 --                    Measured from the nearest eco structure (MM.BaseDist), not the commander's spawn (user 2026-10-28)
 --   OUR_HALF         (default off) any intruder in our half of the map (MM.IsOurHalf) or within HOME_R of the base counts, not only past the line
+--   REINFORCE_PULL   (nil = off; user 2026-10-30, CORE_v4: 54 gators walked up while every group was across the map and only new units answered) a distance in
+--                    elmos: units waiting in the muster pool, and units of an attack group that are within this of the eco (reinforcements that have
+--                    not left yet) are pulled into the response while it is short of its need
+--   SQUAD_MIN        (nil = off; user 2026-10-30) responders to a group first gather at a rally point SQUAD_RALLY of the way from the eco to the intruders and go out
+--                    together once their value is >= min(SQUAD_MIN, need) or SQUAD_WAIT seconds passed: early interception by a squad, not one unit at a time
 --   THREAT_HOME      (default off; user 2026-10-29, the BM_akumar6 game: a few Rovers anywhere on our half set off under_attack, recalled every raid
 --                    and held the army share at 1.0 for minutes) the raid record also carries `home` = the THREAT value of the intruder groups
 --                    within THREAT_HOME_R of the eco footprint (MM.BaseDist).  A group's threat is its cost with scouts (UQ.is_scout) counted at
@@ -42,8 +47,8 @@ local RR = {}
 
 RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIUS = 700, KEEP = 1500,
            KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150, OUR_HALF = false,
-           THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1 }
-RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R" }
+           THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1, REINFORCE_PULL = nil, SQUAD_MIN = nil, SQUAD_WAIT = 20, SQUAD_RALLY = 0.4 }
+RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN" }
 
 function RR.New(o)
     local C = {}
@@ -62,6 +67,7 @@ function RR.New(o)
     local INTRUDER_TTL, PAST_MARGIN, CLUSTER_RADIUS = C.INTRUDER_TTL, C.PAST_MARGIN, C.CLUSTER_RADIUS
     local RESPOND_KEEP, RESPOND_NEED_MULT, RESPOND_KEEP_MULT = C.KEEP, C.NEED_MULT, C.KEEP_MULT
     local CMD_FIGHT = (CMD and CMD.FIGHT) or 16
+    local CMD_MOVE_ = (CMD and CMD.MOVE) or 10
     local spGetUnitDefID, spGetUnitPosition = Spring.GetUnitDefID, Spring.GetUnitPosition
     local spGetUnitHealth, spGetUnitAllyTeam = Spring.GetUnitHealth, Spring.GetUnitAllyTeam
     local spGetUnitsInCylinder, spGetGroundHeight, spIsPosInLos = Spring.GetUnitsInCylinder, Spring.GetGroundHeight, Spring.IsPosInLos
@@ -81,7 +87,7 @@ function RR.New(o)
         MIN_SPEED   = 60,     -- a responder slower than this (and slower than 0.7x the raiders) keeps its plain FIGHT
         STILL_SPEED = 14,     -- elmos/s: the same threshold the behaviour uses for "stopped"
         ASSET_EVERY = 150,
-        hist = {}, units = {}, assets = {}, assetF = -1e9, raid = nil, airLoss = {},
+        hist = {}, units = {}, assets = {}, assetF = -1e9, raid = nil, airLoss = {}, sq = {},
     }
 
     -- Velocity of one enemy contact from its last two distinct sightings.
@@ -432,7 +438,18 @@ function RR.New(o)
             if got < need then
                 local cands = {}
                 for uid, defID in pairs(combatUnits) do
-                    if spGetUnitDefID(uid) and not responding[uid] and not musterPool[uid]
+                    local pulled = false
+                    if C.REINFORCE_PULL and spGetUnitDefID(uid) and not responding[uid] and CanAnswer(defID, g.channel) then
+                        if musterPool[uid] then pulled = true
+                        elseif CA and CA.InGroup(uid) and MM and MM.BaseDist and not (UnitDefs[defID] or {}).canFly then
+                            local px, _, pz = spGetUnitPosition(uid)
+                            if px and MM.BaseDist(px, pz) <= C.REINFORCE_PULL then
+                                local cx, cz = CA.Detach(uid)
+                                pulled = cx ~= nil and MM.BaseDist(cx, cz) > 2 * C.REINFORCE_PULL
+                            end
+                        end
+                    end
+                    if spGetUnitDefID(uid) and not responding[uid] and (pulled or not musterPool[uid])
                        and CanAnswer(defID, g.channel) and not OutsideHome(defID, g.x, g.z, 0) then
                         local role = ARMY.RoleOf(uid)
                         local ok = role == nil or role == "HOME_GUARD"
@@ -440,6 +457,7 @@ function RR.New(o)
                         -- guards and air defend the base.  A unit in an attack group never does -- the groups
                         -- stay on the other side of the map.
                         if role == "BLOB" and CA and not CA.InGroup(uid) then ok = true end
+                        if pulled then ok = true end
                         if role == "LINE" then
                             -- A unit holding a node that is fighting stays and fights.
                             local node = nodes and nodes[ARMY.Slot(uid) or 0]
@@ -477,10 +495,35 @@ function RR.New(o)
             end
         end
 
+        -- SQUAD_MIN: a group's responders form up first (rally point toward the intruders), then go out together
+        local forming = {}
+        if C.SQUAD_MIN then
+            local per = {}
+            for uid, g in pairs(responding) do
+                local t0 = ICPT.sq[uid]
+                if not t0 then t0 = frame; ICPT.sq[uid] = t0 end
+                local e = per[g]
+                if not e then e = { v = 0, t0 = frame }; per[g] = e end
+                e.v = e.v + (UQ.metal_cost(combatUnits[uid]) or 0)
+                if t0 < e.t0 then e.t0 = t0 end
+            end
+            for uid in pairs(ICPT.sq) do if not responding[uid] then ICPT.sq[uid] = nil end end
+            for g, e in pairs(per) do
+                local want = math.min(C.SQUAD_MIN, ChannelValue(g) * RESPOND_NEED_MULT)
+                if e.v < want and frame - e.t0 < C.SQUAD_WAIT * 30 and baseX then
+                    local f = C.SQUAD_RALLY
+                    g.rx, g.rz = baseX + (g.x - baseX) * f, baseZ + (g.z - baseZ) * f
+                    forming[g] = true
+                end
+            end
+        end
         local stunners, wasps = {}, {}
         for uid, g in pairs(responding) do
             local nm = (UnitDefs[combatUnits[uid] or -1] or {}).name or ""
-            if STUN.NAMES[nm] then
+            if forming[g] and not STUN.NAMES[nm] and not SPLIT_WASP.NAMES[nm] and not (UnitDefs[combatUnits[uid] or -1] or {}).canFly then
+                EndIntercept(uid)
+                ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_MOVE_, x = g.rx, z = g.rz }, frame)
+            elseif STUN.NAMES[nm] then
                 stunners[#stunners + 1] = uid
             elseif SPLIT_WASP.NAMES[nm] then
                 wasps[#wasps + 1] = uid

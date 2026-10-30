@@ -203,6 +203,13 @@ function M.Install(X)
             return NanoForward(T, nc, f) ~= nil or NanoFill(T, nc, f) ~= nil
         elseif f.kind == "build" then
             if #f.redo > 0 and RedoReady(T, nc, f.redo[1]) then return true end
+            -- NC_BUILD_EARLY_MAX: while the block has few nanos only this many block sessions run at once, so the nano fronts keep most cons
+            local early = T.CFG.NC_BUILD_AFTER_NANOS and nc.nanoN < (T.CFG.NC_BUILD_EARLY_NANOS or 12)
+            if early then
+                local act = 0
+                for _, g in ipairs(nc.fronts) do if g.kind == "build" then act = act + g.active end end
+                if act >= (T.CFG.NC_BUILD_EARLY_MAX or 3) then return false end
+            end
             if not BudgetOK(T, nc, 24) then return false end
             return BuildForward(T, nc, f) ~= nil
         else
@@ -295,7 +302,8 @@ function M.Install(X)
                 -- the block's kind
                 local kind
                 if nc.labsPlanned < LabsWanted(T, nc, res) and LabSpaced(T, nc, f.col, r) then kind = "lab"
-                elseif nc.t2 then kind = NeedEnergyFuture(T, nc, res) and "gap" or "mex"
+                elseif nc.t2 and not (T.CFG.NC_WIND_UNTIL_FUSION and (nc.count.fusion or 0) + (nc.count.afus or 0) < T.CFG.NC_WIND_UNTIL_FUSION) then
+                    kind = NeedEnergyFuture(T, nc, res) and "gap" or "mex"
                 else kind = NeedEnergyT1(T, nc, res) and "wind" or "mex" end
                 b = { j = f.col, r = r, kind = kind, state = "t1" }
                 nc.blocks[BlockKey(f.col, r)] = b
@@ -766,7 +774,12 @@ function M.Install(X)
     X.jobs.ncbuild = function(T, cb)
         if not T.CFG.NANO_COLS then return end
         T.ncSessions = T.ncSessions or { nano = {}, build = {}, retro = {} }
-        AddJob(T, cb, "build", 70, "t1")
+        -- NC_BUILD_AFTER_NANOS (user 2026-10-30: the block waited for all its nanos before the first mex / wind): once this many nanos stand the build job
+        -- outranks the nano job (72), within NC_BUILD_EARLY_MAX sessions until the block has NC_BUILD_EARLY_NANOS nanos
+        AddJob(T, cb, "build", function()
+            local after, nc = T.CFG.NC_BUILD_AFTER_NANOS, T.nc
+            return (after and nc and nc.nanoN >= after) and 74 or 70
+        end, "t1")
     end
     X.jobs.ncretro = function(T, cb)
         if not T.CFG.NANO_COLS then return end

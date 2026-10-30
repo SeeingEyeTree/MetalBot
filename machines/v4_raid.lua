@@ -43,6 +43,7 @@ return {
       spam   = { share = 0.75, ramp_s = 5,  x = 300, y = 260 },   -- the opening lab + 8 nanos spend ~97 m/s nonstop: 126 m/s of income carries it
       raid   = { share = 0.55, ramp_s = 10, x = 560, y = 260 },   -- the steady raiding share
       attack = { share = 1.0,  ramp_s = 3,  x = 820, y = 100 },
+      eco    = { share = 0.25, ramp_s = 8,  x = 560, y = 420 },   -- ECO WINDOW (user 2026-10-30): the raids cannot make progress / the fight is far away -> a short stretch of eco and tech
     },
     edges = {
       { from = "open", to = "start", prio = 30, note = "4:00: the army starts spending",
@@ -55,6 +56,18 @@ return {
         when = { sig = "minute", op = ">=", val = 9 } },
       { from = "spam", to = "raid", prio = 8, hold_s = 20, note = "income fell under 1.15x what 8 nanos spend (111 m/s)",
         when = { sig = "metal_income", op = "<", val = 111 } },
+      -- ECO WINDOW: safe (nothing near the base) AND we are not behind AND the raids are not getting anywhere (bad trade, or most of the army idle).
+      -- It lasts 90 s at most; any enemy near the base, or a projection that turns against us, ends it at once (the attack any_edge also fires from here).
+      { from = "raid",  to = "eco", prio = 12, hold_s = 15, note = "raids make no progress and nothing is near: eco window",
+        when = { all = { { sig = "minute", op = ">=", val = 5 }, { sig = "share_age_s", op = ">=", val = 60 },
+                         { sig = "enemy_near_base", op = "<", val = 200 }, { ["not"] = { sig = "proj_ratio", op = "<", val = 1.0 } },
+                         { any = { { sig = "bad_trade" }, { sig = "army_idle_frac", op = ">=", val = 0.5 } } } } } },
+      { from = "spam",  to = "eco", prio = 9, hold_s = 15, note = "the opening lab spams but the raids make no progress: eco window",
+        when = { all = { { sig = "minute", op = ">=", val = 5 }, { sig = "enemy_near_base", op = "<", val = 200 },
+                         { ["not"] = { sig = "proj_ratio", op = "<", val = 1.0 } }, { sig = "bad_trade" } } } },
+      { from = "eco",   to = "raid", prio = 20, hold_s = 5, note = "window over (90 s), or a threat is coming",
+        when = { any = { { sig = "share_age_s", op = ">=", val = 90 }, { sig = "enemy_near_base", op = ">=", val = 300 },
+                         { sig = "proj_ratio", op = "<", val = 0.9 } } } },
       { from = "attack", to = "raid", prio = 20, hold_s = 20, note = "the attack is over",
         when = { all = { { ["not"] = { sig = "under_attack" } }, { sig = "enemy_near_base", op = "<", val = 300 } } } },
     },
