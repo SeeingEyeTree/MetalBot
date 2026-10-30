@@ -52,6 +52,19 @@ CORE_ROWS_ECO's first guess (`unit_controller.lua`):
   - jammers came out from ~14:30 (T2);
   - scout_net served 34 support scout requests by 14:00 (0 on the baseline).
 
+## First real game (2026-10-30, CORE_ROWS_ECO mirror, `--server single`, `--end-minutes 25`)
+
+The game ended at 15:22 on a commander kill (team 1 won; it was a mirror, so nothing is attributed to support). No Lua error from the new
+code and no Sync error. Replay: `2026-10-30_05-57-16-145_Full Metal Plate 1.7_2026.07.04.sdfz`.
+- **Spam lab.** Both sides placed it past lane 1's end; the line had no free block at 6:15 / 6:25. It finished at 8:49 (T0, 154 s after it
+  was queued) and 7:44 (T1, 79 s); no nano helped build the frame. The Grunts were spent as intended: T0 made 38 and kept 18/18 by 14:30,
+  T1 made 42 and had 5-14. Each raid group sat at about 6/6 spam.
+- **AA.** Lashers filled 3 per raid group (6-10 made); some groups were at 1-2/3 after losses.
+- **Jammer.** T1's first jammer joined a raid group at ~14:30.
+- **Scouts.** Every raid group showed a scout request every 30 s.
+- **Army roles at 15:00** (`[UC/army]`): T0 SUP_SPAM 18, SUP_AA 5; T1 SUP_AA 8, SUP_SPAM 2, SUP_JAMMER 1.
+- **Not seen.** antinuke (no silo), rez and the slow kind (the raid stances run no slow group).
+
 ## Known gaps / to tune
 
 - Maneuver-defence blobs (the `t1_hold` / `t2_hold` ring) are not group records. In a hold stance only the raid squad / raid sections
