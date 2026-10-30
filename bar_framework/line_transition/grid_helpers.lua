@@ -23,9 +23,27 @@ function M.Install(X)
 
     -- GRID_HELPERS (the "gridhelp" job): a grid with fewer than HELP_NANOS nanos up (HELP_ANY: any unfinished grid) gets idle air cons
     -- guarding its builder, HELP_MAX each, so its first nanos stand quickly.  A grid or any higher job takes them back at once.
+    -- GRID_FOCUS: the grid everything works on (a table), "pending" while the next cell waits for its first con, or nil.  The newest grid whose
+    -- builder lives, that has fewer than GRID_FOCUS nanos and has held the focus for less than GRID_FOCUS_MAX frames.
+    function X.FocusGrid(T, frame)
+        local n = T.CFG.GRID_FOCUS
+        if not n then return nil end
+        for i = #T.gridStates, 1, -1 do
+            local gs = T.gridStates[i]
+            if not gs.done and gs.focusSince and gs.builderID and Spring.GetUnitDefID(gs.builderID)
+               and #gs.nanoUnitIDs < n and frame - gs.focusSince < (T.CFG.GRID_FOCUS_MAX or 2700) then
+                return gs
+            end
+        end
+        if #T.pendingGrids > 0 then return "pending" end
+        return nil
+    end
+
     local function HelpSlots(T)
         local out, total = {}, 0
         if not T.CFG.GRID_HELPERS or T.ecoPaused then return out, 0 end
+        local F = T.CFG.GRID_FOCUS and X.FocusGrid(T, T.frame or 0)
+        if type(F) == "table" then return { { gs = F, n = 99 } }, 99 end          -- every idle con on the grid in focus (HelperRoom caps it)
         local need = T.CFG.HELP_NANOS or 2
         for _, gs in ipairs(T.gridStates) do
             if not gs.done and gs.builderID and Spring.GetUnitDefID(gs.builderID) and (#gs.nanoUnitIDs < need or T.CFG.HELP_ANY) then
@@ -59,6 +77,19 @@ function M.Install(X)
     local function UpdateGridHelpers(T, frame)
         if not T.CFG.GRID_HELPERS or frame % 15 ~= 0 then return end
         local need = T.CFG.HELP_NANOS or 2
+        -- GRID_FOCUS: when the focus moves (to a new grid, or to none) the helpers not on the new focus go back to the pool; the gridhelp job
+        -- sends them to the focus grid, or spreads them by HELP_MAX when there is none
+        local focus
+        if T.CFG.GRID_FOCUS then
+            local F = X.FocusGrid(T, frame)
+            focus = type(F) == "table" and F or nil
+            if focus ~= T.focusGS then
+                T.focusGS = focus
+                for id, gs in pairs(T.helpers) do
+                    if gs ~= focus and Spring.GetUnitDefID(id) then T.helpers[id] = nil; CB.Release(T.CB, id, true) end
+                end
+            end
+        end
         for id, gs in pairs(T.helpers) do
             if not Spring.GetUnitDefID(id) then
                 T.helpers[id] = nil

@@ -28,14 +28,21 @@
 --   CHANNEL_VALUE    size the response by the value in the raid's channel (a ground raid does not count air), not its total cost
 --   REASSIGN_STANCE  a responder that stops responding gets its stance behaviours back
 --   HOME_R           (nil = off; preset HOME) ground units answer only intruders within HOME_R of the base and are released once the group (or
---                    they) are more than HOME_R + HOME_SLACK out: early home guards stay at home and do not chase scouts (user 2026-10-26)
+--                    they) are more than HOME_R + HOME_SLACK out: early home guards stay at home and do not chase scouts (user 2026-10-26).
+--                    Measured from the nearest eco structure (MM.BaseDist), not the commander's spawn (user 2026-10-28)
+--   OUR_HALF         (default off) any intruder in our half of the map (MM.IsOurHalf) or within HOME_R of the base counts, not only past the line
+--   THREAT_HOME      (default off; user 2026-10-29, the BM_akumar6 game: a few Rovers anywhere on our half set off under_attack, recalled every raid
+--                    and held the army share at 1.0 for minutes) the raid record also carries `home` = the THREAT value of the intruder groups
+--                    within THREAT_HOME_R of the eco footprint (MM.BaseDist).  A group's threat is its cost with scouts (UQ.is_scout) counted at
+--                    SCOUT_WEIGHT.  The fsm signals under_attack / enemy_near_base read `home` when it is there (signals.lua)
 
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")
 
 local RR = {}
 
 RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIUS = 700, KEEP = 1500,
-           KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150 }
+           KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150, OUR_HALF = false,
+           THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1 }
 RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R" }
 
 function RR.New(o)
@@ -45,6 +52,7 @@ function RR.New(o)
 
     local r = { clusters = {}, cfg = C }
     local ARMY, UQ, TM, CA = o.ARMY, o.UQ, o.TM, o.CA
+    local MM = o.MM                                  -- map_model (HOME_R is measured from the eco footprint; OUR_HALF)
     local combatUnits, musterPool, responding = o.combatUnits, o.musterPool, o.responding
     local myTeamID, myAllyID = o.teamID, o.allyID
     local IsCommander, LineAdvAt = o.isCommander, o.lineAdvAt
@@ -107,19 +115,26 @@ function RR.New(o)
                     local dx, dz = c.x - baseX, c.z - baseZ
                     local adv = dx * advDir.x + dz * advDir.z
                     local lat = dx * perpDir.x + dz * perpDir.z
-                    if adv < LineAdvAt(lat) - PAST_MARGIN then
+                    -- user 2026-10-28: an enemy seen on our side of the map is there to attack, so it counts even before it is
+                    -- past the line (OUR_HALF); a unit inside / next to the eco footprint always counts
+                    local ours = adv < LineAdvAt(lat) - PAST_MARGIN
+                    if not ours and C.OUR_HALF and MM and MM.Ready() then
+                        ours = MM.IsOurHalf(c.x, c.z) or (MM.BaseDist and MM.BaseDist(c.x, c.z) <= (C.HOME_R or 700))
+                    end
+                    if ours then
                         local cost = UQ.metal_cost(c.defID) or c.v or 0
                         local g
                         for _, o in ipairs(groups) do
                             if (o.x - c.x) ^ 2 + (o.z - c.z) ^ 2 <= CLUSTER_RADIUS ^ 2 then g = o; break end
                         end
                         if not g then
-                            g = { x = c.x, z = c.z, n = 0, cost = 0, air = 0, gnd = 0, wvx = 0, wvz = 0, stillS = 1e9 }
+                            g = { x = c.x, z = c.z, n = 0, cost = 0, threat = 0, air = 0, gnd = 0, wvx = 0, wvz = 0, stillS = 1e9 }
                             groups[#groups + 1] = g
                         end
                         local n = g.n + 1
                         g.x, g.z = (g.x * g.n + c.x) / n, (g.z * g.n + c.z) / n
                         g.n, g.cost = n, g.cost + cost
+                        g.threat = g.threat + cost * ((UQ.is_scout and UQ.is_scout(c.defID)) and C.SCOUT_WEIGHT or 1)   -- THREAT_HOME: scouts count little
                         local h = ICPT.Track(cid, c)
                         local w = math.max(1, cost)
                         g.wvx, g.wvz = g.wvx + h.vx * w, g.wvz + h.vz * w
@@ -321,6 +336,9 @@ function RR.New(o)
     local function OutsideHome(defID, x, z, extra)
         if not C.HOME_R or not baseX or (UnitDefs[defID] or {}).canFly then return false end
         local r = C.HOME_R + (extra or 0)
+        -- user 2026-10-28: from the nearest eco structure (MM.BaseDist), not a circle round the commander's spawn -- the
+        -- circle left ground raiders in the outer mex fields unanswered once the base had grown past HOME_R
+        if MM and MM.BaseDist then return MM.BaseDist(x, z) > r end
         return (x - baseX) ^ 2 + (z - baseZ) ^ 2 > r * r
     end
 
@@ -513,8 +531,24 @@ function RR.New(o)
                 spd = math.max(spd, g.speed or 0)
                 if (g.speed or 0) >= ICPT.STILL_SPEED then moving = true end
             end
+            -- user 2026-10-28 (proportional response): `need` = what the intruders we can reach (inside HOME_R of the eco footprint) call for
+            -- (NEED_MULT x their channel value), `committed` = the value of the units answering now.  holdHome keeps new production home only
+            -- while committed < need, so a raid in our half does not freeze production once it is answered
+            local need, committed = 0, 0
+            for _, g in ipairs(r.clusters) do
+                if not (C.HOME_R and MM and MM.BaseDist and MM.BaseDist(g.x, g.z) > C.HOME_R) then need = need + ChannelValue(g) * RESPOND_NEED_MULT end
+            end
+            for uid in pairs(responding) do committed = committed + (UQ.metal_cost(combatUnits[uid]) or 0) end
+            -- THREAT_HOME: the threat value (scouts count SCOUT_WEIGHT) of the groups near our eco, not anywhere on our half
+            local home
+            if C.THREAT_HOME and MM and MM.BaseDist then
+                home = 0
+                for _, g in ipairs(r.clusters) do
+                    if MM.BaseDist(g.x, g.z) <= C.THREAT_HOME_R then home = home + (g.threat or g.cost or 0) end
+                end
+            end
             ICPT.raid = { frame = frame, value = v, ground = gnd, air = air, speed = spd, moving = moving,
-                          channel = (air > gnd) and "air" or "ground", n = #r.clusters }
+                          channel = (air > gnd) and "air" or "ground", n = #r.clusters, need = need, committed = committed, home = home }
         end
         mb.raid = ICPT.raid
         local nl, keep = 0, {}

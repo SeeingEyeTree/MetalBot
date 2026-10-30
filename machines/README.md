@@ -36,3 +36,19 @@ Hold stances stand further out: the stance plan `maneuver = { R_MIN = 1100 }` (d
 and it is re-applied on every stance change (`maneuver_defence.Reconfigure`).
 The 4k-at-6:00 opening is config in `candidates/CORE/macro_controller.lua` `LT_CFG`: `VP_WAIT_AIR_LAB = false` (the vehicle lab goes first), `VP_DONE_FRAME` 3:00, `VP_NANO_ASSIST`
 (the lab's nanos keep building it while the share is >= 0.6, line_transition). eco_sim: ~4.2k army spent at 6:00 (was ~2.0k), income 10-14 min ~25% lower, 20 min about the same.
+
+## rows_default T1 states and unit behaviours (2026-10-28)
+Four T1 stance nodes: `start` (`raid_start`: Incisors, 2 raid groups) -> `start_brutes` (`raid_brutes`: Brutes, 3 groups, batch reinforcement; edge at `metal_income >= 250`) and
+`t1_hold` (ring + `raid_sections`: a blob nothing is attacking is sent out as a raid group and never recalled) <-> `t1_push` (2 Brute raid groups + 1 slow Pounder group,
+Lashers kite). Stance plan fields added for this (all default off): `raid_groups` (click_army MAX_GROUPS), `slow_group`, `batch` + `prod_s` (batch reinforcement),
+`raid_sections = { n, quiet_s, min_units, cooldown_s }`.
+
+**How to change what a unit does.** Open the stance node in `machine_editor.html` (after `python fsm_index.py`): each unit shows its share, the *named behaviours* it carries as
+chips (hover for what each does) and a "driven by" line naming the owner when it has none. Edit `stances/<name>.lua`:
+- a unit row `{ n = "corraid", share = .., behaviors = { "brute_raid" }, cfg = { brute_raid = { log_every = 900 } } }`; `extras = { { n = "cormist", behaviors = { "range_kite" } } }` for units
+  the stance does not build but still controls (Lashers, left-over Incisors, the Dragons get theirs from the sink).
+- the owner of a unit's orders is the *plan*: `army = "raid"` -> click_army raid group (slow group below speed 50 with `slow_group`), `"hold"` -> maneuver blob, AA units
+  (`coraak corsent corcrash cormist`) -> AA post. A behaviour is a name + extra micro on top of that owner; `gator_raid` / `brute_raid` issue no orders, they only name the units
+  and log `[BEH] m:ss <name>: n units (GROUP=.. RESPOND=..)` every minute.
+- behaviours: `bar_framework/behaviors/*.lua` (`bar_framework/behaviors/README.md`): `range_kite` (steps back at the edge of its range), `kite`, `shadow`, `stun_target`, `intercept`
+  (raid_response gives it to fast responders), `dragon_raid` / `dragon_defend`, `gator_raid`, `brute_raid`.

@@ -1,0 +1,13 @@
+{
+ "tag": "grid_pace",
+ "seeds": "1-6",
+ "minutes": 20,
+ "base": { "bot": "candidates/CORE_ROWS_ECO", "vacuum": false },
+ "variants": {
+  "base":   { "set": { "line_transition": {} } },
+  "cap3":   { "set": { "line_transition": { "FAST_OPEN_CAP": 3 } } },
+  "cap5":   { "set": { "line_transition": { "FAST_OPEN_CAP": 5 } } },
+  "fi90":   { "set": { "line_transition": { "GRID_FAST_INCOME": 90 } } },
+  "cap4_fi90": { "set": { "line_transition": { "FAST_OPEN_CAP": 4, "GRID_FAST_INCOME": 90 } } }
+ }
+}

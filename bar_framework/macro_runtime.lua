@@ -58,6 +58,8 @@ M.DEFAULTS = {
     SHARE               = {},        -- strategy_hooks.v16_share / match_enemy options (start, floor, hold, ratio, ...)
     CAP_T1_FRAC         = 0.6,       -- user 2026-10-25: from this unit-cap fill the stances' T1 combat units are dropped (strategy.lua CapFiltered:
                                      -- room for Tigers / Demons / eco instead of hundreds of Grunts); false = never
+    ARMY_SHARE_MAX      = nil,       -- (nil = off) user 2026-10-29: the army share never goes above this (0.8 = at least 20% of spend stays eco), whatever the machine,
+                                     -- the air-rush rule or a stance plan.share say; a person's share (MANUAL_STANCES) is not capped
     AIR_RUSH_SHARE      = 1.0,       -- user 2026-10-25: the army share while a large air raid is on (mb.airRaid.rush, unit_runtime): all of income
                                      -- into the AA the labs are rushing; false = no lift
     LINE_NANO_CAP       = nil,       -- { max = n, untilF = frame }: at most n nanos on the line before that frame (CORE_6K); nil = no cap
@@ -114,7 +116,7 @@ M.DEFAULTS = {
 }
 
 -- Options whose default is nil on purpose (a key set to nil is "absent", so these are the only ones not in M.DEFAULTS).
-M.NIL_OPTIONS = { UNIT_SWAP = true, ARMY_SHARE_FIXED = true, ROW_MAX = true, SITE_K_LAST = true, ESTOR_KMAX = true, MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
+M.NIL_OPTIONS = { UNIT_SWAP = true, ARMY_SHARE_FIXED = true, ARMY_SHARE_MAX = true, ROW_MAX = true, SITE_K_LAST = true, ESTOR_KMAX = true, MACHINE = true, MANUAL_STANCES = true, CMDR_RETIRE_FRAME = true, INCOME_SWITCH = true, INCOME_SWITCH2 = true, BURST_SWITCH = true }
 
 function M.Install(widget, WG, K)
 local CFG = {}
@@ -259,7 +261,10 @@ local function ConHold()
     local raid = mb and mb.raid
     if not raid then return false end
     local f = Spring.GetGameFrame()
-    return f - (raid.frame or -1e9) <= 300 and raid.channel == "ground" and (raid.ground or 0) >= CFG.CON_HOLD_VALUE
+    -- raid_response THREAT_HOME: only a threat near the eco (raid.home, scouts counted little) holds the cons, not Rovers anywhere on our half
+    local v = raid.ground or 0
+    if raid.home then v = math.min(v, raid.home) end
+    return f - (raid.frame or -1e9) <= 300 and raid.channel == "ground" and v >= CFG.CON_HOLD_VALUE
 end
 
 local function BeginBuildOrder()
@@ -268,7 +273,8 @@ local function BeginBuildOrder()
     BP_PLACER.AddBuilder(distState, commanderID)
     crew = LC.NewCrew{ BP = BP_PLACER, layout = layout,
                        onJobDone = function(j, state) if trans then LT.OnJobDone(trans, j, state) end end,
-                       onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end }
+                       onJobStarted = function(j) if trans then LT.OnJobStarted(trans, j) end end,
+                       onLaneDone = function(laneID, conID) if trans and LT.OnLaneDone then LT.OnLaneDone(trans, laneID, conID) end end }
     local ltOwn = {}
     for k, v in pairs(M.DEFAULTS.LT_CFG or {}) do ltOwn[k] = v end       -- the defaults first, the bot's own LT_CFG on top
     for k, v in pairs(CFG.LT_CFG or {}) do ltOwn[k] = v end
@@ -769,6 +775,7 @@ function widget:Initialize()
             STRAT = ST.New{
                 swap = CFG.UNIT_SWAP,      -- { corgator = "corraid" }: stance units built as another unit (stance_loader Prepare)
                 stances = StanceList(), initial = (BUNDLE and BUNDLE.stanceMachine and BUNDLE.InitialStance()) or CFG.STANCE, capFilter = CFG.CAP_T1_FRAC or nil,
+                maxShare = (not CFG.MANUAL_STANCES) and CFG.ARMY_SHARE_MAX or nil,
                 -- MATCH: keep our army value up with the scouted enemy's (for games against people; two bots would chase
                 -- each other's share, so bot-vs-bot tests set CFG.MATCH = false)
                 hooks = { army_share = (function(base0)
@@ -855,7 +862,7 @@ function widget:Initialize()
             MS = rL
             MS.Init{ cfg = CFG, CB = CB, SPINE = function() return SPINE end, trans = function() return trans end,
                      teamID = myTeamID, Clock = Clock,
-                     Capacity = function() return SPINE and SPINE.SpendCapacity and (SPINE.SpendCapacity()) or nil end,
+                     Capacity = function() local SP = (WG and WG.Spine) or SPINE; return SP and SP.SpendCapacity and (SP.SpendCapacity()) or nil end,   -- WG.Spine is the spine set once a second spine stands
                      BorrowCon = function(defID) return trans and trans.CB and (CB.TakeAny(trans.CB, "sinklab", { defID = defID, kind = "ground" })) or nil end,
                      GiveBackCon = function(uid) if trans and trans.CB then CB.GiveBack(trans.CB, uid, "sinklab") end end }
         else

@@ -921,18 +921,18 @@ def _ai_block(ai: "dict | None", name1: str) -> str:
 
 
 # Default spawns (2026-10-12): the map's corner starts moved ~2.2 mex grids in from the map edge (the ECO bench setting).
-# METALBOT_STARTPOS="x0,z0;x1,z1" overrides; "paintkid" = the paintkid replay's spawns (~7.3k apart); "map" = the map's own.
+# METALBOT_STARTPOS="x0,z0;x1,z1" overrides; "close" = close positions (the old "paintkid" preset: the paintkid replay's spawns, ~7.3k apart); "map" = the map's own.
 DEFAULT_STARTPOS = "2400,1904;9888,10384"
 
 
 def start_pos_override():
     """Start positions (StartPosType=3, script-given): METALBOT_STARTPOS="x0,z0;x1,z1" in elmos, else DEFAULT_STARTPOS.
-    "paintkid" and "map" (the map's own starts, StartPosType 0) are presets.
+    "close" (alias: "paintkid") and "map" (the map's own starts, StartPosType 0) are presets.
     Returns (StartPosType, [extra TEAM0 lines, extra TEAM1 lines])."""
     v = os.environ.get("METALBOT_STARTPOS", "").strip() or DEFAULT_STARTPOS
     if v.lower() == "map":
         return 0, ["", ""]
-    if v.lower() == "paintkid":     # the paintkid replay's spawns (x ~1.9k / 9.2k, z ~6k): ~7.3k apart
+    if v.lower() in ("close", "paintkid"):     # close positions = the paintkid replay's spawns (x ~1.9k / 9.2k, z ~6k): ~7.3k apart
         v = "1932,6082;9230,5857"
     out = []
     for part in v.split(";")[:2]:

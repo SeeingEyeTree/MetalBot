@@ -53,6 +53,8 @@ local VW = VFS.Include("LuaUI/Widgets/bar_framework/value_weights.lua").New()
 
 local myTeam, myAlly = 0, 0
 local startX, startZ = 0, 0
+local IV                -- idle army (see IdleStep)
+local IV_INIT = false   -- the [LED] init row is out (ReadStart logs a later-found home as its own row)
 local frame = 0
 local logFile
 local CATS = { "army", "eco", "bp", "defence", "commander", "other" }
@@ -248,9 +250,45 @@ local function SpendRow(f)
     end
     local parts = {}
     for _, k in ipairs(SPEND_KINDS) do parts[#parts + 1] = fmt("to_%s=%.0f", k, to[k]) end
-    Out(fmt("[LED] spend %s m_inc=%.0f m_pull=%.0f m_bank=%.2f e_inc=%.0f e_pull=%.0f e_fill=%.2f cap=%d/%d labs_busy=%d labs_idle=%d cons_idle=%d nano_idle=%d bp_use=%.2f %s explained=%.0f unexplained=%.0f why=%s",
+    local iv = IV and IV.t.last
+    Out(fmt("[LED] spend %s m_inc=%.0f m_pull=%.0f m_bank=%.2f e_inc=%.0f e_pull=%.0f e_fill=%.2f cap=%d/%d labs_busy=%d labs_idle=%d cons_idle=%d nano_idle=%d bp_use=%.2f %s explained=%.0f unexplained=%.0f why=%s army_idle=%.2f army_eff=%.0f wasted=%.0f",
         Stamp(f), mInc, mPull, bankFrac, eInc, ePull, eFill, units, cap, labsBusy, labsIdle, consIdle, nanoIdle, bpUse,
-        table.concat(parts, " "), explained, mPull - explained, why))
+        table.concat(parts, " "), explained, mPull - explained, why, iv and iv.idleFrac or 0, iv and iv.eff or 0, iv and iv.wasted or 0))
+end
+
+-- ── idle army (bar_framework/idle_value.lua, user 2026-10-29) ─────────────────
+-- Every IDLE_EVERY frames: which of our mobile armed units are within 15 s of a comparable amount of VISIBLE enemy value (armed units, eco,
+-- build power); idle ones lose worth with an 80 s time constant.  The spend row carries army_idle (share of army value idle now),
+-- army_eff (army value with the decay) and wasted (army value lost to idling so far).  This widget has no enemy memory, so an enemy
+-- field out of sight does not count (the bot's own signal, unit_runtime NET.iv, uses enemy_intel's memory).
+local IDLE_EVERY = 60
+IV = nil
+do
+    local ok, m = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/idle_value.lua")
+    if ok and type(m) == "table" then IV = { mod = m, t = m.New() } end
+end
+local function UnitWorth(d) return (d.metalCost or 0) + (d.energyCost or 0) / 70 end
+local function IdleStep(f)
+    if not IV then return end
+    local own, enemy = {}, {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeam) or {}) do
+        local defID = Spring.GetUnitDefID(uid)
+        local d = defID and UnitDefs[defID]
+        if d and (d.speed or 0) > 0 and not d.isBuilder and d.weapons and #d.weapons > 0 and not (d.customParams and d.customParams.iscommander) then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x then own[#own + 1] = { id = uid, x = x, z = z, v = UnitWorth(d), speed = d.speed } end
+        end
+    end
+    for _, uid in ipairs(Spring.GetAllUnits() or {}) do
+        local team = Spring.GetUnitTeam(uid)
+        if team ~= nil and not IsAlly(team) then
+            local defID = Spring.GetUnitDefID(uid)
+            local d = defID and UnitDefs[defID]
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if d and x then enemy[#enemy + 1] = { x = x, z = z, v = UnitWorth(d) } end
+        end
+    end
+    IV.mod.Update(IV.t, f, own, enemy)
 end
 
 -- ── scouting lead ─────────────────────────────────────────────────────────────
@@ -307,25 +345,41 @@ end
 
 -- ── callins ───────────────────────────────────────────────────────────────────
 
+-- The start position.  In a game where players pick their start (every game against a person) it is not known at Initialize, so it is read
+-- again at GameStart and, while still unknown, every scan (2026-10-29: home stayed (0, 0) and the scout ledger was empty in such games).
+local function ReadStart()
+    if startX > 0 or not Spring.GetTeamStartPosition then return end
+    local x, _, z = Spring.GetTeamStartPosition(myTeam)
+    if x and x > 0 then
+        startX, startZ = x, z
+        if IV_INIT then Out(fmt("[LED] home team=%d start_x=%d start_z=%d", myTeam, startX, startZ)) end   -- found after the init row
+    end
+end
+
 function widget:Initialize()
     myTeam = Spring.GetMyTeamID(); myAlly = Spring.GetMyAllyTeamID()
     OpenLog()
-    if Spring.GetTeamStartPosition then
-        local x, _, z = Spring.GetTeamStartPosition(myTeam)
-        if x and x > 0 then startX, startZ = x, z end
-    end
+    ReadStart()
     Out(fmt("[LED] init team=%d start_x=%d start_z=%d map=%s", myTeam, startX, startZ, tostring(Game and Game.mapName or "?")))
+    IV_INIT = true
 end
+
+function widget:GameStart() ReadStart() end
 
 function widget:GameFrame(f)
     frame = f
     if fight and f - fight.f1 >= FIGHT_GAP then FlushFight(f) end
+    if f > 0 and f % IDLE_EVERY == 0 then
+        local ok, err = pcall(IdleStep, f)
+        if not ok then Out("[LED] error idle: " .. tostring(err)) end
+    end
     if f > 0 and f % SPEND_EVERY == 0 then
         local ok, err = pcall(SpendRow, f)
         if not ok then Out("[LED] error spend: " .. tostring(err)) end
     end
     if f > 0 and f % VALUE_EVERY == 0 then ValueRow(f) end
     if f % SCAN_EVERY == 0 then
+        ReadStart()
         local ok, err = pcall(ScanEnemies, f)
         if not ok then Out("[LED] error scout: " .. tostring(err)) end
     end

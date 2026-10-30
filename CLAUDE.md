@@ -6,7 +6,7 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 
 ## Main bot and test settings
 
-**2026-10-26: `candidates/CORE` is the baseline** (README.md explains it and how to swap strategies); `deploy.ps1` and `eco_sim.py` default to it. New strategies are CORE variants. The v16 notes below are history.
+**2026-10-28: `candidates/CORE_ROWS_ECO` is the main CORE** (user, after a game where it beat him: it out-spent him 1.2x at 10:00 and 2.1x at 20:00); `deploy.ps1` and `eco_sim.py` default to it. New strategies are variants of it (config only, as for CORE). `candidates/CORE` stays as the older baseline (`order_check.py` still runs it). What it adds over CORE: rows that scale with cons (`SCALE_ROWS`), the air lab gated on income (`AIR_LAB_INCOME` 110 m/s from 5:00) or a float, a second spine behind the line started by line cons that finish a lane (`SECOND_SPINE`, `line_transition/spine2.lua`, `spine_set.lua`), `BLOCK_LAB_NANOS` 4 (a lab in a block per 4 nanos), `GUARD_NANOS` false (spine nanos never guard a lab, only park), and the `rows_default` machine (its `t1_push` node uses `raid_start`). `METALBOT_STARTPOS=close` = close positions. 2026-10-26: `candidates/CORE` was the baseline (README.md explains it and how to swap strategies). The v16 notes below are history.
 
 **`candidates/LINE_CLICK_v16/` is the main bot** (user, 2026-10-12: v16 is the best version; future work builds off it).
 It is LINE_CLICK + the v12-v16 changes: forward-core/flanking army, grid expansion fixes, energy push, resource-pressure grids,
@@ -32,7 +32,7 @@ LINE_CLICK: a regression check, not a strength measure); `ab_test.py --end-minut
 **Defaults changed 2026-10-12:** (1) **phi (bot_score.py v4) decides the end-of-match winner** (`winner_method` "phi"); it counts a side's economy only to the
 extent it can be protected/spent (a side with <5% of the enemy's army keeps none). The legacy `army_mv + 60 x income` is still printed ("Legacy end score")
 and kept in `draw_score`. `ab_test.py --metric` defaults to phi. See `knowledge/scoring.md` (v4). (2) **Start positions default to `2400,1904;9888,10384`**
-(corner starts moved ~2.2 mex grids in); `METALBOT_STARTPOS="x0,z0;x1,z1"` overrides, `paintkid` = the paintkid replay's spawns (~7.3k apart), `map` = the
+(corner starts moved ~2.2 mex grids in); `METALBOT_STARTPOS="x0,z0;x1,z1"` overrides, `close` = close positions, the paintkid replay's spawns (~7.3k apart; the old name `paintkid` still works), `map` = the
 map's own starts. (3) **Line rotation defaults to rot 3 (west half) / rot 1 (east half)** (`LC.FORCE_ROT` in line_crew.lua; the global `LC_FORCE_ROT = false`
 before loading restores the old rule; tests for the old geometry set it).
 
@@ -156,6 +156,14 @@ on phi; **2026-10-15 moved onto the normal pipeline**: the perimeter army is the
 Dragons carry the stance's `extras` behaviours `dragon_defend` (wait + help defend) / `dragon_raid` (waves of 50: commander, then build
 power, AA, closest eco), the Dragon labs are the metal sink, `bar_framework/metal_sink.lua` (2026-10-16: any sink unit, spots 4 nanos apart, starts at 85% of the spine's spend capacity), and `slot_spine` `REBUILD_NANOS` rebuilds lost nanos.  See
 `knowledge/bots/dragon_eco_2026-10-14.md`.
+
+**T1 overhaul (2026-10-28).** `map_model` `MM.SetBase` / `BaseDist` / `Base` = the eco footprint (refreshed every 120 frames by `unit_runtime` `NetFootprint`; the spawn `MM.Home()` stays the axis). The threat map's `PosWeight`, raid_response's `HOME_R` (`OutsideHome`), the air alarm, home-guard posts and the AA ring measure from it, not from the commander's spawn; raid_response `OUR_HALF` (CORE_ROWS_ECO on) counts an enemy on our side of the map as an intruder, and `HOLD_HOME` is proportional (raid `need` / `committed`). T1 stances: `start` (`raid_start`, 2 groups) -> `start_brutes` (`raid_brutes`, 3 groups, income >= 250) / `t1_hold` (ring + `plan.raid_sections`: a quiet blob goes out as a raid group, never recalled) <-> `t1_push` (2 Brute groups + 1 slow Pounder group). New stance `plan` fields (default off): `raid_groups`, `slow_group`, `batch` + `prod_s`, `raid_sections`. Named behaviours `gator_raid` / `brute_raid` (name only, `[BEH]` rows); Lashers get `range_kite`; `click_army` `EVADE_FOE_PULL` steers an evade toward the enemy base. The machine editor shows each unit's behaviours and its "driven by" owner (`machines/README.md`). Real game vs CORE: batch reinforcement fixed 160 single-file gators behind two groups of 3; hold / push / sections not yet seen in a real game.
+
+**Game reviews from replays (2026-10-29): `replay_logs.py <demo.sdfz> --bot-team N --bot-dir <LuaUI/Widgets snapshot> --out <dir>`** plays a replay back with the bot's widgets
+(orders stubbed) plus the tracker / ledger / state dump for both teams, and writes per-team logs + a `result.json` the usual tools read (~11 min for a 30-min game). Snapshot
+`LuaUI/Widgets` before a deploy replaces the code that played. First review: `knowledge/sessions/akumar_fmp_2026-10-28.md` (CORE_ROWS_ECO lost to a 56-skill player; ranked fix list).
+Its low-risk fixes went into CORE_ROWS_ECO on 2026-10-29, all opt-in and listed in that note's "Implemented" table: `ARMY_SHARE_MAX` 0.8, raid_response `THREAT_HOME`, a linear `rows_default` v3 (raid first, hold last resort, no `t1_push`), `RAID_CARRY`, `idle_value.lua`, click_army `LEG_LEAD`, `PICKET` air scouts, lab_rules `AIR_AA_GATE`, `BLIP_SCOUT_SPEED`, the `eco_ratio` / `enemy_def` signals.
+`bar_framework/air_transport.lua` moves a unit with an air transport (engine test `python tests/engine/transport_test.py`; a Valkyrie cannot lift an HLLT).
 
 **AIR_TIMING + unit_runtime (2026-10-25).** CORE's unit controller is now `bar_framework/unit_runtime.lua` (`UNIT.Install`). CORE's
 `unit_controller.lua` is a stub, so **a new CORE variant is three short config files, not a copy.** `candidates/AIR_TIMING` = CORE with

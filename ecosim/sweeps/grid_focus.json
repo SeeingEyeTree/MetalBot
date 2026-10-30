@@ -1,0 +1,12 @@
+{
+ "tag": "grid_focus",
+ "seeds": "1-8",
+ "minutes": 20,
+ "base": { "bot": "candidates/CORE_ROWS_ECO", "vacuum": false },
+ "variants": {
+  "base":   { "set": { "line_transition": {} } },
+  "focus2": { "set": { "line_transition": { "GRID_FOCUS": 2 } } },
+  "focus3": { "set": { "line_transition": { "GRID_FOCUS": 3 } } },
+  "focus2_max90": { "set": { "line_transition": { "GRID_FOCUS": 2, "GRID_FOCUS_MAX": 1800 } } }
+ }
+}

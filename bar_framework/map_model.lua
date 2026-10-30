@@ -113,6 +113,62 @@ function M.SetFoe(x, z, source)
         foeX, foeZ, foeSource, axisDist))
 end
 
+-- ── Base footprint (user 2026-10-28) ──────────────────────────────────────────
+-- Home is the commander's spawn and never moves, so everything measured from it fires late once the eco grows away from the
+-- spawn.  The BASE is where our eco / production structures actually stand: SetBase takes a flat {x1,z1,x2,z2,...} list (the
+-- owner refreshes it every ~120 frames), BaseDist(x,z) is the distance to the nearest of them (0 inside the footprint).
+-- Axis, Forward, IsOurHalf and Dist() still use the spawn.
+local BASE_CELL = 256
+local basePts, baseN = {}, 0
+local baseCx, baseCz, baseR = nil, nil, 0
+local baseCache = {}     -- [cell key] = distance from the cell centre to the nearest base structure (rebuilt with the points)
+
+function M.SetBase(pts)
+    basePts, baseN, baseCache = pts or {}, math.floor(#(pts or {}) / 2), {}
+    if baseN == 0 then baseCx, baseCz, baseR = nil, nil, 0; return end
+    local sx, sz = 0, 0
+    for i = 1, baseN do sx, sz = sx + basePts[2 * i - 1], sz + basePts[2 * i] end
+    baseCx, baseCz = sx / baseN, sz / baseN
+    -- extent: the 90th percentile distance from the centre (a lone outlying mex does not stretch the base)
+    local ds = {}
+    for i = 1, baseN do
+        local dx, dz = basePts[2 * i - 1] - baseCx, basePts[2 * i] - baseCz
+        ds[i] = math.sqrt(dx * dx + dz * dz)
+    end
+    table.sort(ds)
+    baseR = ds[math.max(1, math.ceil(baseN * 0.9))]
+end
+
+function M.BaseDist(x, z)
+    if baseN == 0 then
+        if not homeX then return 0 end
+        local dx, dz = x - homeX, z - homeZ
+        return math.sqrt(dx * dx + dz * dz)
+    end
+    local cx, cz = math.floor(x / BASE_CELL), math.floor(z / BASE_CELL)
+    local key = cx * 100003 + cz
+    local d = baseCache[key]
+    if not d then
+        local mx, mz = (cx + 0.5) * BASE_CELL, (cz + 0.5) * BASE_CELL
+        local best = math.huge
+        for i = 1, baseN do
+            local dx, dz = basePts[2 * i - 1] - mx, basePts[2 * i] - mz
+            local q = dx * dx + dz * dz
+            if q < best then best = q end
+        end
+        d = math.sqrt(best)
+        baseCache[key] = d
+    end
+    -- the cell value is from the centre: the real point is within half a cell, so take that off (never below 0)
+    return math.max(0, d - BASE_CELL * 0.5)
+end
+
+function M.Base()
+    if baseCx then return baseCx, baseCz end
+    return homeX, homeZ
+end
+function M.BaseRadius() return baseR end
+
 function M.Home()      return homeX, homeZ end
 function M.Foe()       return foeX, foeZ end
 function M.FoeSource() return foeSource end

@@ -175,6 +175,7 @@ function M.Install(X)
                     intr = own
                 end
                 local st = T.BP.New(T.gridBP, conID, g.anchorX, g.anchorZ, g.rotation, intr)
+                if not g.recover then st.focusSince = frame end      -- GRID_FOCUS
                 if GS and T.gridsAssigned == 0 and not g.recover and T.airLabID then
                     local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
                     if lx then
@@ -361,6 +362,8 @@ function M.Install(X)
         if #T.gridCands == 0 then return end
         -- GRID_START: no second grid until the first one's first nano stands (T.firstGridOK; see UpdateGrids)
         if T.CFG.GRID_START and not T.firstGridOK and (#T.allAnchors + #T.pendingGrids) >= 1 then return end
+        -- GRID_FOCUS: one grid at a time until it has GRID_FOCUS nanos (grid_helpers.lua: all idle cons guard its builder)
+        if T.CFG.GRID_FOCUS and T.CFG.GRID_FOCUS_GATE ~= false and X.FocusGrid(T, frame) then return end
         local opening = #T.pendingGrids
         for _, gs in ipairs(T.gridStates) do
             if not gs.done and not gs.nanoThresholdFired then opening = opening + 1 end
