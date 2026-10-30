@@ -386,6 +386,8 @@ local function NewUnit(defID, team, x, z, facing, beingBuilt, builderID)
             if ou and ou.built and (ou.d.extractsMetal or 0) > 0 then u.under = o end
         end
         Occupy(u)
+    elseif d.isFactory then
+        Occupy(u)          -- a factory has canMove = true in its UnitDef, so it never blocked placement here: things were built on labs (2026-10-30)
     end
     if beingBuilt then W.frames[id] = true; u.fk = HashAdd(W.frameHash, u) end
     return u

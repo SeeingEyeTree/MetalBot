@@ -126,7 +126,7 @@ return function(args)
         f:close()
         return s
     end
-    local snippet = args.vacuum and ReadFile(root .. "runs_stance/vac_snippet.lua") or nil
+    local snippet = args.vacuum and ReadFile(root .. "ecosim/vac_snippet.lua") or nil   -- (was runs_stance/, untracked in 448c754: the default vacuum run crashed)
     for _, name in ipairs(args.widgets) do
         local path = root .. args.bot .. "/" .. name
         local src = ReadFile(path)

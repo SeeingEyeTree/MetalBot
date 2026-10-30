@@ -696,12 +696,15 @@ def copy_shared_deps(widgets_dir: Path, skip: set) -> None:
         shutil.copytree(str(bps_src), str(bps_dst))
 
     # stances/ unit-comp files (read by bar_framework/stance_loader.lua)
-    st_src = REPO_DIR / "stances"
-    if st_src.is_dir():
-        st_dst = widgets_dir / "stances"
-        st_dst.mkdir(exist_ok=True)
-        for lua_file in st_src.glob("*.lua"):
-            (st_dst / lua_file.name).write_bytes(lua_file.read_bytes())
+    # stances/legacy/ (the old CORE_ROWS_ECO's stances) and machines/ ride along too: without them a game loaded whatever machine
+    # deploy.ps1 last put in BAR's own widget folder (fsm.lua reads LuaUI/Widgets/machines/<name>.lua), not the repo's (2026-10-30)
+    for sub in ("stances", "machines"):
+        src = REPO_DIR / sub
+        if src.is_dir():
+            for lua_file in src.rglob("*.lua"):
+                dst = widgets_dir / sub / lua_file.relative_to(src)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(lua_file.read_bytes())
 
     # bar_framework/ shared Lua utilities
     # Loaded in bot code via: VFS.Include("LuaUI/Widgets/bar_framework/<file>.lua")
@@ -929,9 +932,10 @@ def _ai_block(ai: "dict | None", name1: str) -> str:
             f"        [OPTIONS]\n        {{\n            profile={ai['profile']};\n        }}\n    }}\n")
 
 
-# Default spawns (2026-10-12): the map's corner starts moved ~2.2 mex grids in from the map edge (the ECO bench setting).
+# Default spawns (2026-10-30): the corner starts ~400 elmos further in than 2026-10-12's "2400,1904;9888,10384", so CORE_v4's nano-column
+# block (3 nano columns, 1712 elmos) fits beside the line on the away side (line_transition/nano_cols; eco_sim ecosim/physics.lua START matches).
 # METALBOT_STARTPOS="x0,z0;x1,z1" overrides; "close" = close positions (the old "paintkid" preset: the paintkid replay's spawns, ~7.3k apart); "map" = the map's own.
-DEFAULT_STARTPOS = "2400,1904;9888,10384"
+DEFAULT_STARTPOS = "2816,1904;9472,10384"
 
 
 def start_pos_override():
@@ -1863,15 +1867,15 @@ def main() -> None:
                    help="Real-seconds backstop; the match is cut short (and marked so) if "
                         "the game-time limit is not reached by then. Default: long enough "
                         "for --end-minutes (~end-frame/80 + 300s), min %ds" % DEFAULT_DURATION)
-    p.add_argument("--save-replay", action="store_true")
+    p.add_argument("--save-replay", action="store_true", default=None)
     p.add_argument("--map", default=MAP_NAME, dest="map_name")
-    p.add_argument("--end-minutes", type=float, default=END_MINUTES, dest="end_minutes",
+    p.add_argument("--end-minutes", type=float, default=None, dest="end_minutes",
                    help="game minutes after which both commanders self-destruct and the "
                         "winner is declared from stats (default: %g)" % END_MINUTES)
     p.add_argument("--eco-weight", type=float, default=ECO_WEIGHT_SECS, dest="eco_weight",
                    help="seconds of metal income added to army metal value in the end "
                         "score (default: %g)" % ECO_WEIGHT_SECS)
-    p.add_argument("--server", choices=("spectator", "host", "single"), default=DEFAULT_SERVER,
+    p.add_argument("--server", choices=("spectator", "host", "single"), default=None,
                    help="spectator: a third, bot-less process hosts, so both bots get the "
                         "same order latency. host: team 0's process hosts, giving team 1 "
                         "extra latency (the old behaviour). single: one process runs both "
@@ -1897,6 +1901,22 @@ def main() -> None:
     p.add_argument("--save-result", metavar="PATH",
                    help="Write result.json to this path after the match")
     args = p.parse_args()
+
+    # A game against INACTIVE_BOT (the pure-eco test, user 2026-10-30) defaults to what the CORE_v4 eco games used: one engine process
+    # (--server single), 20 game-minutes, a replay, and METALBOT_DEATHMODE=neverend -- the bot's army walking over and killing the idle
+    # commander ended the first such game at 11:50; with neverend the match runs to --end-minutes, is scored, and quits cleanly.
+    # Anything given explicitly wins.
+    inactive = any(Path(b).name.upper() == "INACTIVE_BOT" for b in (args.bot1, args.bot2))
+    if args.server is None:
+        args.server = "single" if inactive else DEFAULT_SERVER
+    if args.end_minutes is None:
+        args.end_minutes = 20.0 if inactive else END_MINUTES
+    if args.save_replay is None:
+        args.save_replay = inactive
+    if inactive:
+        os.environ.setdefault("METALBOT_DEATHMODE", "neverend")
+        print(f"INACTIVE_BOT game: server {args.server}, {args.end_minutes:g} min, replay {args.save_replay}, "
+              f"deathmode {os.environ['METALBOT_DEATHMODE']} (flags / METALBOT_DEATHMODE override)")
 
     ai1 = parse_ai(args.bot2)
     bot1_dir = Path(args.bot1).resolve()

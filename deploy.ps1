@@ -1,4 +1,4 @@
-param([string]$Bot = "candidates\CORE_ROWS_ECO")
+param([string]$Bot = "candidates\CORE_v4")
 
 $src = "$PSScriptRoot"
 
@@ -86,7 +86,7 @@ $files = @(
     "stances\T1_raid.lua"
 )
 
-# The three controllers come from the bot folder (default candidates\CORE_ROWS_ECO; pass -Bot OK_BOT etc.).
+# The three controllers come from the bot folder (default candidates\CORE_v4; pass -Bot OK_BOT etc.).
 # An absolute path also works. Shared files above always come from the repo root.
 $botDir = if ([System.IO.Path]::IsPathRooted($Bot)) { $Bot } else { Join-Path $src $Bot }
 if (-not (Test-Path $botDir)) {

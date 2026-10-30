@@ -5,7 +5,10 @@ M.name = "t2_raid"
 M.intent = [=[T2 raid: Tigers and Heat Tigers hit build power and eco, Banishers kite behind, a few Incisors / Brutes for speed.]=]
 M.control = [=[click_army groups; Banishers kite at the edge of their range.]=]
 M.suggestedShare = [=[55]=]
-M.plan = { army = "raid", support = "unless_raided" }
+M.plan = { army = "raid", support = "unless_raided", group_support = {   -- user 2026-10-30: spam + scout support for every group of this stance (raid groups and the slow group)
+    raid = { aa = { n = 3 }, spam = { n = 6 }, scout = { every_s = 30 }, jammer = { n = 1 } },
+    slow = { aa = { n = 6 }, rez = { n = 3 }, antinuke = { n = 1 }, jammer = { n = 1 }, spam = { n = 6 }, scout = { every_s = 30 } },
+  } }
 M.units = {
   { n = "correap", share = 0.7550, ratio = 0.4991, perK = 0.907, cost = 832.9, note = [=[Tiger]=] },
   { n = "corraid", share = 0.2450, ratio = 0.5009, perK = 0.910, cost = 269.3, note = [=[]=], tag = "mass" },

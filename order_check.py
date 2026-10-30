@@ -17,12 +17,13 @@ SCENARIOS = {                       # name -> eco_sim.py run args
     "RAID_BOT":    ["--bot", "candidates/RAID_BOT", "--seed", "2", "--no-vacuum"],
     "DRAGON_ECO":  ["--bot", "candidates/DRAGON_ECO", "--seed", "3", "--no-vacuum"],
     "STANCE_ECO2_vac": ["--bot", "candidates/STANCE_ECO2", "--seed", "4"],
-    "CORE":        ["--bot", "candidates/CORE", "--seed", "2", "--no-vacuum"],
-    "CORE_ROWS_ECO": ["--bot", "candidates/CORE_ROWS_ECO", "--seed", "1", "--no-vacuum"],   # the main CORE (2026-10-28)
+    "CORE_ROWS_ECO": ["--bot", "candidates/CORE_ROWS_ECO", "--seed", "1", "--no-vacuum"],   # the old eco-rows baseline (restored 2026-10-30)
+    "CORE_v4":     ["--bot", "candidates/CORE_v4", "--seed", "1", "--no-vacuum"],          # the main bot (2026-10-30)
 }
+# (2026-10-30: the CORE scenario is gone -- machines/core_default.lua names stances the user deleted, so CORE no longer plays like RAID_BOT)
 # A scenario with no baseline of its own is compared with another scenario's baseline: CORE (the config-driven bot) must play
 # exactly like RAID_BOT, so it runs RAID_BOT's seed and is diffed against RAID_BOT.base.txt.  `save` skips these.
-SAME_AS = {"CORE": "RAID_BOT"}
+SAME_AS = {}
 
 def run(name, out):
     env = dict(os.environ, ECOSIM_ORDER_DUMP=out)

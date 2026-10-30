@@ -42,13 +42,13 @@ MACRO.Install(widget, WG, {
     -- once the enemy is located, game_plan's `scout` rule picks raid_open (weak enemy army) or stays on hold (strong), see strategy_hooks.game_plan
     CMDR_TO_SPINE = true,          -- user 2026-10-27: the commander moves to the spine once its part of the row is done
     ARMY_SHARE_MAX = 0.8,          -- user 2026-10-29 (BM_akumar6 game: the share sat at 1.0 for 2.5 min and the income went flat): never more than 80% to the army, at least 20% eco
-    MACHINE    = "rows_default",  -- state machines (machines/core_default.lua, machine_editor.html): when to switch stance and army share; the options below are the fallback if it fails to load
-    STANCE     = "hold",          -- opening game plan: hold until the enemy is located
-    HOLD_STANCE = "hold",          -- after bad trades while behind (strategy_hooks.game_plan)
-    PLAN        = { raid = "raid_open", hold = "hold", start_hold = true, scout = { min_stay = 1800 } },
+    MACHINE    = "v4_raid",       -- user 2026-10-30: raid only (machines/v4_raid.lua): T1_raid -> T1_5_raid -> t2_raid -> t3_late; the options below are the fallback if it fails to load
+    STANCE     = "T1_raid",       -- opening stance (the machine starts here too)
+    HOLD_STANCE = "T1_raid",      -- no hold stances in v4: it always raids (raid_response still answers raids at home)
+    PLAN        = { raid = "T1_raid", hold = "T1_raid", start_hold = false, scout = { min_stay = 1800 } },
     SHARE       = { unscouted = 0.35 },
     ESTOR_SLOTS = 2,               -- the last two slots of the commander row hold energy storage (line_crew)
-    LATE_STANCE = "raid_late",     -- once the unit cap is filling (strategy_hooks.cap_switch)
+    LATE_STANCE = "t3_late",       -- once the unit cap is filling (strategy_hooks.cap_switch)
     -- fast stance transitions (2026-10-16, slot_spine.lua): labs swapped in two waves, a resident T1 vehicle + T2 bot con per block,
     -- no nano parking near a swap, an idle lab becomes a T2 bot lab
     SINK_MAX    = 40,              -- 2026-10-25: 10 labs absorb ~4.3k m/s (10 x ~430) and the bank floated to 600k at 9.4k income; one lab with 32 decoys takes ~430 m/s

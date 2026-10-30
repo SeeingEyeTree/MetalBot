@@ -1,5 +1,6 @@
 -- macro_controller.lua  ─  LINE_BOT: build the line as fast as it can scale (COR)
 --
+-- (2026-10-30: its stances now live in stances/legacy/, the user dropped them from the main list.)
 -- RAID_BOT (2026-10-13): STANCE_BOT's macro with game plans.  Stances raid_open (initial), hold, raid_late; the switch hook
 -- chains cap_switch (raid_late once the cap is 75% full) before strategy_hooks.game_plan (raid -> hold when behind and the
 -- raids trade badly, back when ahead); income_mix tilts the hold comp from mass to quality with income.  line_transition's
@@ -43,9 +44,9 @@ local CFG = {
     FLOAT_FRAMES        = 10 * 30,   -- ...when held this long
     LOG_EVERY           = 450,
     SPINE               = true,      -- vehicle lab + the spine (army); false = the economy-only bot
-    STANCE              = "raid_open",     -- RAID_BOT: stances/<name>.lua, the opening game plan (raid)
-    HOLD_STANCE         = "hold",          -- RAID_BOT: the game plan after bad trades (strategy_hooks.game_plan); nil = never
-    LATE_STANCE         = "raid_late",     -- stance taken once the unit cap is filling (strategy_hooks.cap_switch): most value per unit slot; nil = never
+    STANCE              = "legacy/raid_open",     -- RAID_BOT: stances/<name>.lua, the opening game plan (raid)
+    HOLD_STANCE         = "legacy/hold",          -- RAID_BOT: the game plan after bad trades (strategy_hooks.game_plan); nil = never
+    LATE_STANCE         = "legacy/raid_late",     -- stance taken once the unit cap is filling (strategy_hooks.cap_switch): most value per unit slot; nil = never
     PLAN                = {},              -- strategy_hooks.game_plan options (hold_ratio, trade_ratio, min_lost, ...)
     MIX                 = {},              -- strategy_hooks.income_mix options (lo, hi, mass_lo, ...)
     CON_HOLD_VALUE      = 800,             -- a live ground raid worth at least this holds new air/T2 con orders

@@ -5,7 +5,10 @@ M.name = "core_late"
 M.intent = [=[Final comp once the unit cap is filling: Demons and Tigers, the Dragon sink on top.]=]
 M.control = [=[click_army groups; Demons kite at the edge of their range.]=]
 M.suggestedShare = [=[~100]=]
-M.plan = { army = "raid" }
+M.plan = { army = "raid", group_support = {   -- user 2026-10-30: spam + scout support for every group of this stance (raid groups and the slow group)
+    raid = { aa = { n = 3 }, spam = { n = 6 }, scout = { every_s = 30 }, jammer = { n = 1 } },
+    slow = { aa = { n = 6 }, rez = { n = 3 }, antinuke = { n = 1 }, jammer = { n = 1 }, spam = { n = 6 }, scout = { every_s = 30 } },
+  } }
 M.units = {
   { n = "cordemon", share = 0.7814, ratio = 0.9306, perK = 0.107, cost = 7285.7, note = [=[Demon: T3 gantry]=], behaviors = { "range_kite" } },
   { n = "corjugg", share = 0.2186, ratio = 0.0694, perK = 0.008, cost = 27328.6, note = [=[]=] },
