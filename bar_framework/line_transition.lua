@@ -311,6 +311,22 @@ LT.CFG = {
     SPAM_LAB_NANOS    = 4,             -- nano slots beside it (two columns before the block); they guard the lab once it stands
     SPAM_LAB_LANES    = { 1, 2, 3, 4 },   -- lanes tried for the site, in order (searched from the lane's end backwards, after the rez / T2 bot labs)
     SPAM_LAB_BEYOND_K = 4,             -- no free block on the line: the lab's centre this many columns past a lane's last slot (its nanos in the two columns between)
+    SCOUT_LAB         = false,         -- SCOUT WING (user 2026-10-30): an air lab + a vehicle lab past a lane's end that make only scouts, each with nanos
+                                       -- (line_transition/scout_lab.lua; the units are the scout wing's, unit_runtime SCOUT_WING); rebuilt when killed
+    SCOUT_LAB_FRAME   = 7 * 60 * 30,   -- the air lab: not queued before 7:00 (it stands ~1.5 min later, then a Finch every ~15 s: the wing is up by ~9:30, user 2026-10-30) ...
+    SCOUT_LAB_INCOME  = 60,            -- ... nor under this metal income (m/s)
+    SCOUT_LAB_GND_FRAME  = 7 * 60 * 30,   -- the vehicle lab (ground posts), the same two gates (eco_sim 2026-10-30: both labs at 6:00, urgent, cost
+    SCOUT_LAB_GND_INCOME = 250,           -- 7-24% of the 20:00 income over 3 seeds, so the posts wait for a bigger economy)
+    SCOUT_LAB_KINDS   = { "air", "ground" },   -- which labs, in build order
+    SCOUT_LAB_NANOS   = 2,             -- nanos per lab (two rows, in the column 3 before it)
+    SCOUT_LAB_LANES   = { 4, 3, 2, 1 },   -- lanes whose end the labs go past, in order (4 = the outer lane away from the enemy)
+    SCOUT_LAB_AIR_K   = 4,             -- the air lab's centre this many columns past the lane's last slot ...
+    SCOUT_LAB_GND_K   = 9,             -- ... and the vehicle lab's
+    SCOUT_LAB_URGENT  = true,          -- the air lab's lane builder drops its slot and builds it at once ...
+    SCOUT_LAB_GND_URGENT = true,       -- ... and the vehicle lab's (false: it waits behind the lane's slots -- in a real game it never came)
+    SCOUT_LAB_REBUILD_S = 60,          -- seconds after a scout lab dies before it is queued again
+    SCOUT_LAB_HIGH    = true,          -- the labs and their nanos on HIGH builder priority (BAR GameCMD.PRIORITY): every builder but the commander is low,
+                                       -- so in a metal stall the lab got nothing (eco_sim 2026-10-30: one Finch took 3 min); a scout is 51 metal
     T2BOT_LANES       = { 3, 4 },      -- outer lanes tried for the site, in order (3 first: the lab faces out of the line there; 4 faced into it)
     LAB2_NANO_HELP    = false,         -- every nano in reach reclaims what stands on the site, then builds the lab frame
     -- NANO COLUMNS (user 2026-10-30; line_transition/nano_cols/*.lua): instead of the mex grids, a block of nano columns with a building column on each side
@@ -395,7 +411,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "scout_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
                         "nano_cols/nanos", "nano_cols/ferry", "nano_cols/fronts", "nano_cols/recovery" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
@@ -775,6 +791,7 @@ local function UpdateGrids(T, frame, res)
     UpdateT2BotLab(T, frame, res)
     UpdateRezLab(T, frame, res)
     X.UpdateSpamLab(T, frame, res)
+    X.UpdateScoutLabs(T, frame, res)
     UpdateLineDecoy(T, frame, res)
     if NC then X.UpdateNanoCols(T, frame, res) end
     if not NC then UpdateEligibility(T, frame) end
@@ -1101,6 +1118,7 @@ function LT.OnJobStarted(T, j)
     if j.tag == "t2bot" then T2BotJobStarted(T, j); return end
     if j.tag == "rezlab" then RezLabJobStarted(T, j); return end
     if j.tag == "spamlab" then X.SpamLabJobStarted(T, j); return end
+    if X.SCOUT_LAB_TAGS[j.tag] then X.ScoutLabJobStarted(T, j); return end
     if j.tag ~= "lab" and j.tag ~= "vp" then return end
     local NANO = T.BP.NANO
     if not (NANO and j.unitID) then return end
@@ -1121,6 +1139,7 @@ function LT.OnJobDone(T, j, state)
     if j.tag == "t2bot" or j.tag == "t2bnano" then T2BotJobDone(T, j, state); return end
     if j.tag == "rezlab" or j.tag == "rzlnano" then RezLabJobDone(T, j, state); return end
     if j.tag == "spamlab" or j.tag == "slnano" then X.SpamLabJobDone(T, j, state); return end
+    if X.SCOUT_LAB_TAGS[j.tag] then X.ScoutLabJobDone(T, j, state); return end
     if j.tag == "lab" then
         if state ~= "done" then
             T.labTries = T.labTries + 1
@@ -1488,6 +1507,7 @@ function LT.OnUnitDestroyed(T, unitID, attackerID)
         if T.WG and T.WG.RezLab and T.WG.RezLab.id == unitID then T.WG.RezLab = nil end    -- the other labs make rez bots again
     end
     X.SpamLabDestroyed(T, unitID)
+    X.ScoutLabDestroyed(T, unitID)
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID, attackerID) end
     if T.spine2On then T.spine2Mod.OnUnitDestroyed(unitID, attackerID) end
     if T.nc then X.NcUnitDestroyed(T, unitID) end

@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SPAM_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
 -- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
@@ -96,6 +96,8 @@ local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0,   -- raiders or
                 pk = { ordered = 0, made = 0, moved = 0, lastOrder = 0 },    -- .pk: picket air scouts, the same counts (unit_runtime PICKET)
                 sup = {},                                                     -- .sup[el]: the army groups' support elements, the same counts (unit_runtime SUPPORT)
                 SPAM_DEPTH = O("SPAM_LAB_DEPTH", 3),                          -- the spam lab (WG.SpamLab, line_transition/spam_lab.lua) keeps this many queued
+                SCL_DEPTH = O("SCOUT_LAB_DEPTH", 2),                          -- each scout lab (WG.ScoutLabs, line_transition/scout_lab.lua) keeps this many queued
+                sclBorn = {},                                                 -- [unitID] = true: started in a scout lab (the scout wing's, not counted as our scouts)
                 SUP_BUDGET = O("SUPPORT_FROM_BUDGET", true) }                 -- support orders spend the army budget (never refused by it): support is army, not extra
 local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
 local GARRISON_START = O("GARRISON_START_FRAME", 4 * 60 * 30)   -- SPINE_GARRISON (unit_runtime): the unit controller posts the first N Pounders on the spine's flanks (mb.garrisonWant);
@@ -760,6 +762,7 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
     if lb and builderID then LB.UnitStarted(lb, builderID) end
     if SINK_ON then SK.OnCreated(unitID, unitDefID, builderID) end
+    if builderID and SQUAD.ScoutLabKind(builderID) then SQUAD.sclBorn[unitID] = true; return end   -- the scout wing counts its own (mb.scoutWing)
     local kind = KindOf(unitDefID)
     if kind then
         building[unitID] = kind
@@ -784,6 +787,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     end
 
     building[unitID] = nil
+    if SQUAD.sclBorn[unitID] then SQUAD.sclBorn[unitID] = nil; return end     -- the scout wing's, not one of scout_net's scouts
     local kind = KindOf(unitDefID)
     if kind == "rez" then myRez[unitID] = true; return end
     if kind == "ringradar" then RR.mine[unitID] = true; return end
@@ -966,6 +970,19 @@ function SQUAD.BestPick(picks)
     end
     return nil
 end
+-- SCOUT WING: "air" / "ground" when labID is one of the scout labs (line_transition/scout_lab.lua publishes WG.ScoutLabs = { air, ground }), else nil.
+function SQUAD.ScoutLabKind(labID)
+    local r = WG and WG.ScoutLabs
+    if not (r and labID) then return nil end
+    if r.air == labID then return "air" end
+    if r.ground == labID then return "ground" end
+    return nil
+end
+-- a scout lab stands: the other labs' scout wants (scout, scout-ahead) leave scouting past the floor (SCOUTS_FIRST) to the wing
+function SQUAD.ScoutLabUp()
+    local r = WG and WG.ScoutLabs
+    return r ~= nil and ((r.air and spGetUnitDefID(r.air)) or (r.ground and spGetUnitDefID(r.ground))) and true or false
+end
 -- The spam lab's id while it stands (line_transition/spam_lab.lua publishes WG.SpamLab = { id }), else nil.
 function SQUAD.SpamLabID()
     local r = WG and WG.SpamLab
@@ -1112,6 +1129,12 @@ local function Describe(labID, labDefID, frame)
     -- SUPPORT: the spam lab makes the spam element's units and nothing else ("spam-lab" owns it)
     if SQUAD.SpamLabID() == labID then
         lab.isSpamLab, lab.only = true, "spam-lab"
+        return lab
+    end
+    -- SCOUT WING: a scout lab makes the wing's scouts and nothing else ("scout-lab" owns it)
+    local sclKind = SQUAD.ScoutLabKind(labID)
+    if sclKind then
+        lab.isScoutLab, lab.scoutKind, lab.only = true, sclKind, "scout-lab"
         return lab
     end
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
@@ -1468,6 +1491,16 @@ RegisterWants = function()
                  return d
              end
          end }
+    -- SCOUT WING (scout_wing.lua): each scout lab keeps SCOUT_LAB_DEPTH queued while the wing is short of its kind (mb.scoutWing).  Not cut by a
+    -- raid (plan.support) and not charged to the army budget: scouts are cheap and the wing must always reinforce itself.
+    add{ name = "scout-lab", prio = 200, mode = "topup", why = "scout-wing", note = false, depth = function() return SQUAD.SCL_DEPTH end,
+         applies = function(lab) return lab.isScoutLab end,
+         pick = function(lab)
+             local w = C.mb and C.mb.scoutWing
+             local short = w and ((lab.scoutKind == "air") and w.airShort or w.groundShort) or 0
+             if short <= 0 then return nil end
+             return CheapestScout(GetBuildCache(lab.defID).scouts)
+         end }
     add{ name = "rez", prio = 60, mode = "empty",
          applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
          pick = function(lab) if C.rezRoom > 0 and lab.picks.rez then return lab.picks.rez end end }
@@ -1479,11 +1512,11 @@ RegisterWants = function()
              end
          end }
     add{ name = "scout", prio = 50, mode = "empty", applies = picks,
-         pick = function(lab) if lab.canScout then return CheapestScout(lab.cache.scouts) end end }
+         pick = function(lab) if lab.canScout and not SQUAD.ScoutLabUp() then return CheapestScout(lab.cache.scouts) end end }
     -- the same scout, ahead of a BUSY queue (one insert, then the broker waits for it to start): a lab that is always working never
     -- reached the empty-queue rule above, so the scout net (creep, perimeter, watch) was never filled
     add{ name = "scout-ahead", prio = 49, aheadPrio = 74, mode = "ahead", why = "scout",
-         applies = function(lab) return SCOUT_AHEAD and lab.picks and lab.canScout and not lab.empty end,
+         applies = function(lab) return SCOUT_AHEAD and lab.picks and lab.canScout and not lab.empty and not SQUAD.ScoutLabUp() end,
          pick = function(lab) return CheapestScout(lab.cache.scouts) end }
     -- a slow trickle of ring radar units from any lab that can build one; a lab with no army picks can still make it
     add{ name = "ring-radar", prio = 45, mode = "ahead", noPending = true, log = RingLog, onOrder = RingOrdered,

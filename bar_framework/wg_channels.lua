@@ -52,6 +52,7 @@ M.SCHEMA = {
     ScoutNet    = { kind = "table", open = true },                  -- scout_net.lua API: RequestScout / SacrificeScout / Picture ... (CORE)
     ArmyGroups  = { kind = "table", open = true },                  -- army_groups.lua API: Groups / Owns / Wants / SpamWanted (the army-group records and their support elements)
     SpamLab     = { kind = "table", fields = { id = "number" } },   -- the line's finished spam lab (spam_lab.lua); lab_rules' "spam-lab" want owns its queue
+    ScoutLabs   = { kind = "table", open = true },                  -- { air = id, ground = id } the finished scout labs (scout_lab.lua); lab_rules' "scout-lab" want owns their queues
 }
 
 -- WG entries that belong to BAR's own widgets, not to a bot (ignored by Validate).  Add names here when a stock widget

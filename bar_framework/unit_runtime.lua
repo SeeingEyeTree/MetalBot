@@ -75,7 +75,9 @@ function M.ArmyMode(cur, x, o)
     return "defend", ratio
 end
 
-M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true }
+M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true, SCOUT_WING = true }
+-- SCOUT_WING (user 2026-10-30; nil = off): the scout wing, bar_framework/scout_wing.lua (its M.CFG keys): it owns every scout the scout labs
+-- make (line_transition SCOUT_LAB) -- air scouts orbit outside the enemy footprint, then ours, the rest sweep the map; ground scouts hold posts.
 -- SUPPORT (user 2026-10-30; nil = off): the army groups' support elements, bar_framework/army_groups.lua (the table's shape is in its header):
 -- SUPPORT = { raid = { aa = { n = 4 }, spam = { n = 6 }, scout = { every_s = 30 } }, slow = { ... }, stage = { ... } }; a stance's
 -- plan.group_support replaces it while that stance runs.
@@ -1844,6 +1846,9 @@ function widget:Initialize()
     if NET.iv.mod then NET.iv.t = NET.iv.mod.New() end
     if NET.av.mod then NET.av.t = NET.av.mod.New() end
     if EI then EI.Init{ UQ = UQ, MM = MM, allyID = myAllyID } end
+    -- unit_runtime SCOUT_WING: the scout labs' units (bar_framework/scout_wing.lua); before scout_net in UnitFinished, so it never sees them
+    NET.sw = K.SCOUT_WING and Load("scout_wing") or nil
+    if NET.sw then NET.sw.Init{ MM = MM, ARMY = ARMY, EI = EI, WG = WG, allyID = myAllyID, teamID = myTeamID, cfg = K.SCOUT_WING } end
     SN = EI and Load("scout_net")
     if SN then
         SN.Init{ MM = MM, UQ = UQ, EI = EI, allyID = myAllyID, cfg = K.SCOUT_NET }
@@ -1981,6 +1986,7 @@ end
 function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
     if NET.ag then NET.ag.NoteCreated(unitID, builderID) end     -- SUPPORT: the spam lab's units are known by their builder
+    if NET.sw then NET.sw.NoteCreated(unitID, unitDefID, builderID) end   -- SCOUT_WING: so are the scout labs'
     if IsCommander(unitDefID) then commanderID = unitID end
     if IsCommander(unitDefID) and not baseX then
         local x, _, z = spGetUnitPosition(unitID)
@@ -2315,6 +2321,7 @@ local function UpdatePush(frame)
     NET.av.Update(frame)
     NET.iv.Update(frame)
     NET.pk.Update(frame)
+    if NET.sw then NET.sw.Step(frame) end      -- SCOUT_WING
     local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
     if CA and CA.SetSurvive then CA.SetSurvive((plan and plan.survive) or (K.RAID_SQUAD ~= nil and plan ~= nil and plan.army ~= "raid")) end        -- the stance's plan.survive (raid_start): click_army steers away and dives only into holes
     if not DefendPlan(plan) then push.on, push.mode, push.since = false, "defend", nil; return end
@@ -2635,6 +2642,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         if HOST and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end
         return
     end
+    if NET.sw and NET.sw.Take(unitID, unitDefID) then return end     -- SCOUT_WING: a scout lab's unit is the wing's, before PICKET / scout_net
     if RADAR_PLANE_NAMES[d.name] then radarPlanes[unitID] = true; return end
     if K.PICKET and d.name == ROLES.Get("scout_air") and NET.pk.Take(unitID) then return end     -- PICKET (below) before the scout jobs
     if UQ and UQ.is_bomber(unitDefID) then bombers[unitID] = true; return end
@@ -2732,6 +2740,7 @@ function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer,
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeam)
+    if NET.sw and teamID == myTeamID then NET.sw.Lost(unitID) end     -- SCOUT_WING
     -- unit_runtime: the ground army's own trade (GroundTrade)
     do
         local f = Spring.GetGameFrame()
