@@ -310,6 +310,7 @@ LT.CFG = {
     NC_NANO_COLS      = 3,             -- nano columns (building columns = this + 1); fewer when the block does not fit beyond the line
     NC_GAP            = 48,            -- elmos between the line's away edge (rows included) and the block
     NC_MARGIN         = 96,            -- the block keeps this far from the map edge
+    NC_MIN_ROOM       = 20,            -- block rows of room (up + down) the away side must have with all NC_NANO_COLS columns; else both ends of the line are tried too
     NC_NANO_PATTERN   = "1010",        -- the nano rows of a block (4 per block, repeating): 1 = built in T1, 0 = left for the T2 fill
     NC_FILL           = true,          -- T2: the nano fronts go back and fill the rows the pattern skipped
     NC_NANO_AHEAD     = 1,             -- block rows a nano front may run ahead of the building fronts beside it (false = no limit)
@@ -317,18 +318,21 @@ LT.CFG = {
     NC_CONS_PER_FRONT = 3,             -- cons (block sessions) working one T1 front (nano / build) at once
     NC_RETRO_CONS_PER_FRONT = 4,       -- T2 cons working one retro front at once
     NC_MEX_TO_ENERGY  = true,          -- a retro front with energy short and no wind block / gap left turns a T1 mex block into an energy block
+    NC_FERRY_NANOS    = 2,             -- line nanos an air transport carries to the middle nano column to start the block (nano_cols/ferry.lua; 0 = off) ...
+    NC_FERRY_TRANSPORTS = 1,           -- ... transports made for it ...
+    NC_FERRY_RELEASE_ROWS = 8,         -- ... carried back to the line once this many nano rows stand (or at T2)
     NC_HELP_NANO      = 2,             -- free T1 cons that guard each nano-row builder (the "nchelp" job) ...
     NC_HELP_BUILD     = 1,             -- ... and each T1 block builder ...
     NC_HELP_RETRO     = 0,             -- ... and each retrofit (T2) builder ...
     NC_HELPER_CAP     = 16,            -- ... at most this many helpers in all
-    NC_E_RATIO_T1     = 12,            -- T1: a wind block when energy income (+ blocks being built) < this x metal income
+    NC_E_RATIO_T1     = 15,            -- T1: a wind block when energy income (+ blocks being built) < this x metal income (eco_sim nc2: 12 -> 15 = income at 16:00 3.8k -> 4.8k)
     NC_E_RATIO        = 15,            -- T2: an energy gap / energy retrofit when energy < this x metal (the T1 mex blocks counted as mohos for a new block)
     NC_ENERGY_UNIT    = "fusion",      -- what an energy block becomes at T2: roles "fusion" (4x2) or "afus" (3x2)
     NC_T2_LAB_INCOME  = 600,           -- metal income at which the first T2 air lab block is placed (or NC_T2_LAB_CAP_FRAC of the unit budget filled) ...
     NC_T2_LAB_CAP_FRAC = 0.5,
     NC_T2_LAB_STEP    = 400,           -- ... one more per this much income above it ...
     NC_T2_LABS_MAX    = 4,             -- ... at most this many
-    NC_UNIT_FRAC      = 0.6,           -- the fronts stop while the eco units (every unit but the army) are over this share of the unit cap
+    NC_UNIT_FRAC      = 0.7,           -- the fronts stop while the eco units (extractors, energy, storage, nanos) are over this share of the unit cap (nc2: 0.6 / 0.7 / 0.8 = 8.7k / 8.9k / 9.1k at 20:00)
     NC_CAP_WIND_FIRST = 0.85,          -- eco units over this share of that budget: the retro fronts take wind blocks first
     NC_HANDOFF        = 0.30,          -- a con leaves a frame to the nanos at this build progress
     NC_FOCUS          = true,          -- nanos in reach of an eco frame of the type the economy needs focus on it (nano_cols/nanos.lua)
@@ -370,7 +374,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
                         "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
-                        "nano_cols/nanos", "nano_cols/fronts" }) do
+                        "nano_cols/nanos", "nano_cols/ferry", "nano_cols/fronts" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
 local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine",

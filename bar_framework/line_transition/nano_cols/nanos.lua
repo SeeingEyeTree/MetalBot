@@ -210,7 +210,7 @@ function M.Install(X)
         local function Final(j, r)
             local b = X.NcBlock(nc, j, r)
             if b then return b.state == "final" or (b.state == "t1done" and b.kind == "lab") end
-            return not nc.L.RowFits(r)            -- a row off the map never gets built
+            return not nc.L.RowOK(r)              -- a row off the map (or on the line / spine / enemy side) never gets built
         end
         local targets = {}
         for id, n in pairs(nc.nanos) do

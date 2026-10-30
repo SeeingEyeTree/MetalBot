@@ -367,7 +367,9 @@ local function IsScoutDef(d)
     or string.find(name,  "weasel")  or string.find(name,  "wheelie") then
         return true
     end
-    return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0)
+    -- the fallback (fast and unarmed) also caught the air transports (corvalk / corseah: no radar), so a lab built a transport as its
+    -- "cheapest scout" (user 2026-10-30): a scout must carry a real radar (cons have 50)
+    return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0) and (d.radarDistance or d.radarRadius or 0) >= 500
 end
 
 -- Shared classifier, so "is this a fighter" means the same thing here as it does in

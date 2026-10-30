@@ -15,7 +15,7 @@ local floor, sqrt, max, min, abs = math.floor, math.sqrt, math.max, math.min, ma
 local CMD = {
     STOP = 0, INSERT = 1, REMOVE = 2, WAIT = 5, TIMEWAIT = 6, MOVE = 10, PATROL = 15, FIGHT = 16, ATTACK = 20,
     AREA_ATTACK = 21, GUARD = 25, REPAIR = 40, FIRE_STATE = 45, MOVE_STATE = 50, SETBASE = 55, SELFD = 65,
-    LOAD_UNITS = 75, UNLOAD_UNITS = 80, ONOFF = 85, RECLAIM = 90, CLOAK = 95, STOCKPILE = 100, MANUALFIRE = 105,
+    LOAD_UNITS = 75, UNLOAD_UNITS = 80, UNLOAD_UNIT = 81, ONOFF = 85, RECLAIM = 90, CLOAK = 95, STOCKPILE = 100, MANUALFIRE = 105,
     REPEAT = 115, TRAJECTORY = 120, RESURRECT = 125, CAPTURE = 130, AUTOREPAIRLEVEL = 135, IDLEMODE = 145,
     OPT_ALT = 128, OPT_CTRL = 64, OPT_SHIFT = 32, OPT_RIGHT = 16, OPT_INTERNAL = 8, OPT_META = 4,
 }
@@ -890,6 +890,53 @@ local function ExecMove(u, c, dt)
     if MoveToward(u, x, z, 8, dt) then Pop(u) end
 end
 
+-- Air transports (2026-10-30, bar_framework/air_transport.lua): LOAD_UNITS {unit} flies to the unit and lifts it (it stops working and
+-- frees its footprint); UNLOAD_UNIT {x, y, z} flies there and sets it down on the nearest free build-grid spot within 160 elmos.
+-- No mass / size check (air_transport.CanCarry does that from the defs); one unit per transport.
+local function SnapBuild(d, v, size)
+    local off = (size % 4 == 2) and 8 or 0
+    return floor((v - off) / 16 + 0.5) * 16 + off
+end
+
+local function ExecLoad(u, c, dt)
+    local t = W.units[c.params[1] or -1]
+    if (u.d.transportCapacity or 0) <= 0 or u.cargo or not t or t.carriedBy or t.id == u.id then Pop(u, "cannot load"); return end
+    if not MoveToward(u, t.x, t.z, 24, dt) then u.state = "move"; return end
+    Unoccupy(t)
+    ClearWork(t)
+    t.cmds, t.carriedBy, u.cargo = {}, u.id, t.id
+    Pop(u, "loaded")
+end
+
+local function ExecUnload(u, c, dt)
+    local t = u.cargo and W.units[u.cargo]
+    if not t then u.cargo = nil; Pop(u, "nothing to unload"); return end
+    local x, z = c.params[1] or u.x, c.params[3] or u.z
+    if not MoveToward(u, x, z, 16, dt) then
+        t.x, t.z = u.x, u.z
+        HashMove(t)
+        u.state = "move"
+        return
+    end
+    local d = t.d
+    local best
+    for r = 0, 160, 16 do
+        for k = 0, (r == 0 and 0 or 15) do
+            local a = k * math.pi / 8
+            local sx, sz = SnapBuild(d, x + r * math.cos(a), d.xsize or 2), SnapBuild(d, z + r * math.sin(a), d.zsize or 2)
+            if d.canMove or W.TestBuild(t.defID, sx, sz, t.facing or 0) == 2 then best = { sx, sz }; break end
+        end
+        if best then break end
+    end
+    if not best then Pop(u, "no room to set down"); return end
+    t.x, t.z = best[1], best[2]
+    HashMove(t)
+    if not d.canMove then Occupy(t) end
+    t.carriedBy, u.cargo = nil, nil
+    t.idleNotified = false                          -- idle where it lands (UnitIdle: the stock nano widget gives it FIGHT)
+    Pop(u, "unloaded")
+end
+
 local function ExecUnit(u, dt)
     local c = u.cmds[1]
     if W.trace and W.trace[u.id] and W.frame % 300 == 0 then
@@ -917,7 +964,9 @@ local function ExecUnit(u, dt)
         if c.ox == nil then c.ox, c.oz = u.x, u.z end
         ExecFight(u, c, dt)
     elseif id == CMD.ATTACK or id == CMD.AREA_ATTACK or id == CMD.MANUALFIRE then Pop(u)
-    elseif id == CMD.RESURRECT or id == CMD.CAPTURE or id == CMD.LOAD_UNITS or id == CMD.UNLOAD_UNITS then Pop(u)
+    elseif id == CMD.LOAD_UNITS then ExecLoad(u, c, dt)
+    elseif id == CMD.UNLOAD_UNIT then ExecUnload(u, c, dt)
+    elseif id == CMD.RESURRECT or id == CMD.CAPTURE or id == CMD.UNLOAD_UNITS then Pop(u)
     elseif id == CMD.WAIT or id == CMD.TIMEWAIT then Pop(u)
     else
         if not W.missing["cmd" .. id] then W.missing["cmd" .. id] = true; Log("[SIM] unhandled command " .. id) end
@@ -1027,7 +1076,7 @@ function W.Step(nframes)
     local demands = {}
     for i = 1, #ids do
         local u = units[ids[i]]
-        if u and u.built then
+        if u and u.built and not u.carriedBy then         -- a unit in a transport does nothing
             if u.fq then ExecFactory(u, dt)
             elseif #u.cmds > 0 or not u.idleNotified then ExecUnit(u, dt) end
             -- engine idle behaviour of static builders (maneuver move state): a nano whose orders give it nothing

@@ -1,0 +1,16 @@
+{
+ "tag": "nc4_close",
+ "seeds": "1-4",
+ "minutes": 20,
+ "rank": "inc16",
+ "base": {"bot": "candidates/CORE_ROWS_ECO", "vacuum": false,
+          "phys": {"START": [[2816, 6082], [9230, 5857]]},
+          "set": {"line_transition": {"SECOND_SPINE": false}, "macro": {"ARMY_SHARE_FIXED": 0}}},
+ "variants": {
+  "grids_closeMoved": {},
+  "nc_closeMoved":    {"set": {"line_transition": {"NANO_COLS": true}}},
+  "nc_closeMoved_s20":{"set": {"line_transition": {"NANO_COLS": true}, "macro": {"ARMY_SHARE_FIXED": 0.2}}},
+  "nc_close_1col":    {"set": {"line_transition": {"NANO_COLS": true}}, "phys": {"START": [[1932, 6082], [9230, 5857]]}},
+  "grids_close":      {"phys": {"START": [[1932, 6082], [9230, 5857]]}}
+ }
+}

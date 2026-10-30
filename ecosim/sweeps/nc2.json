@@ -3,22 +3,125 @@
  "seeds": "1-4",
  "minutes": 20,
  "rank": "inc16",
- "base": {"bot": "candidates/CORE_ROWS_ECO", "vacuum": false,
-          "phys": {"START": [[2816, 1904], [9472, 10384]]},
-          "set": {"line_transition": {"SECOND_SPINE": false, "NANO_COLS": true, "NC_E_RATIO_T1": 15}, "macro": {"ARMY_SHARE_FIXED": 0}}},
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false,
+  "phys": {
+   "START": [
+    [
+     2816,
+     1904
+    ],
+    [
+     9472,
+     10384
+    ]
+   ]
+  },
+  "set": {
+   "line_transition": {
+    "SECOND_SPINE": false,
+    "NANO_COLS": true,
+    "NC_E_RATIO_T1": 15
+   },
+   "macro": {
+    "ARMY_SHARE_FIXED": 0
+   }
+  }
+ },
  "variants": {
-  "e15":          {},
-  "e18":          {"set": {"line_transition": {"NC_E_RATIO_T1": 18}}},
-  "e21":          {"set": {"line_transition": {"NC_E_RATIO_T1": 21}}},
-  "e15_e2_20":    {"set": {"line_transition": {"NC_E_RATIO": 20}}},
-  "e15_help3":    {"set": {"line_transition": {"NC_HELP_RETRO": 3, "NC_HELPER_CAP": 40}}},
-  "e15_lab400":   {"set": {"line_transition": {"NC_T2_LAB_INCOME": 400}}},
-  "e15_lab900":   {"set": {"line_transition": {"NC_T2_LAB_INCOME": 900}}},
-  "e15_unit07":   {"set": {"line_transition": {"NC_UNIT_FRAC": 0.7}}},
-  "e15_unit08":   {"set": {"line_transition": {"NC_UNIT_FRAC": 0.8}}},
-  "e15_noFill":   {"set": {"line_transition": {"NC_FILL": false}}},
-  "e15_noM2E":    {"set": {"line_transition": {"NC_MEX_TO_ENERGY": false}}},
-  "e15_rcpf6":    {"set": {"line_transition": {"NC_RETRO_CONS_PER_FRONT": 6}}},
-  "e15_cpf4":     {"set": {"line_transition": {"NC_CONS_PER_FRONT": 4}}}
+  "e12": {
+   "set": {
+    "line_transition": {
+     "NC_E_RATIO_T1": 12
+    }
+   }
+  },
+  "e15": {},
+  "e18": {
+   "set": {
+    "line_transition": {
+     "NC_E_RATIO_T1": 18
+    }
+   }
+  },
+  "e21": {
+   "set": {
+    "line_transition": {
+     "NC_E_RATIO_T1": 21
+    }
+   }
+  },
+  "e15_e2_20": {
+   "set": {
+    "line_transition": {
+     "NC_E_RATIO": 20
+    }
+   }
+  },
+  "e15_help3": {
+   "set": {
+    "line_transition": {
+     "NC_HELP_RETRO": 3,
+     "NC_HELPER_CAP": 40
+    }
+   }
+  },
+  "e15_lab400": {
+   "set": {
+    "line_transition": {
+     "NC_T2_LAB_INCOME": 400
+    }
+   }
+  },
+  "e15_lab900": {
+   "set": {
+    "line_transition": {
+     "NC_T2_LAB_INCOME": 900
+    }
+   }
+  },
+  "e15_unit07": {
+   "set": {
+    "line_transition": {
+     "NC_UNIT_FRAC": 0.7
+    }
+   }
+  },
+  "e15_unit08": {
+   "set": {
+    "line_transition": {
+     "NC_UNIT_FRAC": 0.8
+    }
+   }
+  },
+  "e15_noFill": {
+   "set": {
+    "line_transition": {
+     "NC_FILL": false
+    }
+   }
+  },
+  "e15_noM2E": {
+   "set": {
+    "line_transition": {
+     "NC_MEX_TO_ENERGY": false
+    }
+   }
+  },
+  "e15_rcpf6": {
+   "set": {
+    "line_transition": {
+     "NC_RETRO_CONS_PER_FRONT": 6
+    }
+   }
+  },
+  "e15_cpf4": {
+   "set": {
+    "line_transition": {
+     "NC_CONS_PER_FRONT": 4
+    }
+   }
+  }
  }
 }

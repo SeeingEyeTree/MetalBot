@@ -525,8 +525,14 @@ end
 -- The nanoframe standing at an item's position, if any.  The single-builder path
 -- has no UnitCreated hook, so it finds its own frame by looking at the spot.
 local function FindFrameAt(item)
-    if item.frameID and GetProgress(item.frameID) then return item.frameID end
-    local units = Spring.GetUnitsInCylinder(item.wx, item.wz, 48)
+    -- item.strictFrame (dense layouts: the nano-column block, items 48 apart): only a frame still being built, at this very spot, is
+    -- the item's -- the 48-elmo search took the NEIGHBOUR's frame for an item never placed, handed it off, and the session then
+    -- repaired that finished neighbour for ever
+    if item.frameID and GetProgress(item.frameID) then
+        if not item.strictFrame or Spring.GetUnitIsBeingBuilt(item.frameID) then return item.frameID end
+        item.frameID = nil
+    end
+    local units = Spring.GetUnitsInCylinder(item.wx, item.wz, item.strictFrame and 12 or 48)
     if not units then return nil end
     for _, uid in ipairs(units) do
         if Spring.GetUnitDefID(uid) == item.defID and Spring.GetUnitIsBeingBuilt(uid) then
@@ -675,6 +681,11 @@ local function AdvanceQueue(state, res, frame)
                 -- case we run out of new work.
                 if FindFrameAt(item) then
                     released = released or item
+                elseif item.strictFrame and ExistingBuildAt(item) then
+                    -- finished while we were away (strict items only; the old path rebuilt it)
+                    item.built, item.status, item.released = true, "built", false
+                    item.frameID = ExistingBuildAt(item)
+                    NoteItemSettled(state)
                 else
                     item.released = false
                     item.frameID  = nil

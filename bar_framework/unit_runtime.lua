@@ -392,7 +392,9 @@ local function IsScoutDef(uDefID)
     or string.find(name,  "weasel") or string.find(name,  "wheelie") then
         return true
     end
-    return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0)
+    -- the fallback (fast and unarmed) also caught the air transports (corvalk / corseah: no radar), so a lab built a transport as its
+    -- "cheapest scout" (user 2026-10-30): a scout must carry a real radar (cons have 50)
+    return d.speed and d.speed > 150 and (not d.weapons or #d.weapons == 0) and (d.radarDistance or d.radarRadius or 0) >= 500
 end
 
 -- A ground unit that is mostly a radar dish on legs (the T2 labs' radar vehicle / bot).
@@ -2601,6 +2603,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     end
     if not d.speed or d.speed <= 0 then return end
     if d.name == "cormabm" then return end          -- Savior (mobile anti-nuke): stays by the lab, defense_crew stockpiles it
+    if (d.transportCapacity or 0) > 0 then return end   -- an air transport belongs to whoever ordered it (line_transition nano_cols/ferry.lua via air_transport.lua), not the army
     if d.name == "corcrwh" and WG and WG.SinkLabs then   -- SINK on: the stance's extras give the Dragon its behaviours
         SINK_EXTRAS[unitID] = true
         if HOST and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end

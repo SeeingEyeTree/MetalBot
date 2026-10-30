@@ -148,6 +148,8 @@ function A.Install(W, P, defsById, defsByName, weaponDefs, root, simCfg)
         return out
     end
     S.GetUnitCommandCount = function(id) local u = units[id]; return u and #u.cmds end
+    S.GetUnitTransporter = function(id) local u = units[id]; return u and u.carriedBy end
+    S.GetUnitIsTransporting = function(id) local u = units[id]; if not u then return nil end; return u.cargo and { u.cargo } or {} end
     S.GetUnitCurrentCommand = function(id, i)
         local u = units[id]
         if not u then return nil end

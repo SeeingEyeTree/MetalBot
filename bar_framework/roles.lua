@@ -42,6 +42,7 @@ M.TABLE = {
         lab_t3       = "corgant",
         mex          = "cormex",    wind       = "corwin",  storage    = "corestor",
         moho         = "cormoho",   fusion     = "corfus",  afus       = "corafus",   antinuke = "corfmd",   -- the nano-column block (line_transition/nano_cols)
+        transport_air = "corvalk",     -- T1 air transport (lifts a nano turret: bar_framework/air_transport.lua)
     },
     arm = {},      -- Armada: fill in (armdecom, armawac, armfig ...); a missing entry falls back to the Cortex name
 }

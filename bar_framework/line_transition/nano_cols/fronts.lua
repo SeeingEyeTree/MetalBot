@@ -143,15 +143,16 @@ function M.Install(X)
         for _ = 1, 8 do
             if f.done then return nil end
             local q = RowOfStep(f)
-            if not nc.L.RowFits(nc.L.RowOfNano(q)) then
+            if not nc.L.RowOK(nc.L.RowOfNano(q)) then
                 f.done = true
                 Spring.Echo(string.format("[NC] %s nano front %d%s reached the map edge (%d rows)", Clock(T.frame), f.col, f.dir > 0 and "+" or "-", f.step))
                 return nil
             end
             local ahead = K.NC_NANO_AHEAD
             if ahead and math.floor(f.step / 4) > BuildReach(nc, f.col, f.dir) + ahead then return nil end
-            if PatternOn(T, q) then return q end
-            f.skipped[#f.skipped + 1] = q
+            local ferried = nc.ferryRows[f.col .. ":" .. q]       -- a ferried line nano stands there (nano_cols/ferry.lua frees the row later)
+            if PatternOn(T, q) and not ferried then return q end
+            if not ferried then f.skipped[#f.skipped + 1] = q end
             f.step = f.step + 1
         end
         return nil
@@ -165,7 +166,7 @@ function M.Install(X)
     local function BuildForward(T, nc, f)
         if f.done then return nil end
         local r = RowOfStep(f)
-        if not nc.L.RowFits(r) then
+        if not nc.L.RowOK(r) then
             f.done = true
             Spring.Echo(string.format("[NC] %s build front %d%s reached the map edge (%d blocks)", Clock(T.frame), f.col, f.dir > 0 and "+" or "-", f.step))
             return nil
@@ -218,6 +219,7 @@ function M.Install(X)
             layout[#layout + 1] = { n = ROLES.Get(it.role), x = it.x - ax, z = it.z - az, f = 0 }
         end
         local st = T.BP.New({ layout = layout }, conID, ax, az, 0, {})
+        for _, it in ipairs(st.queue) do it.strictFrame = true end       -- items 48 apart: a neighbour's frame must not pass for ours
         st.handoffProgress = T.CFG.NC_HANDOFF
         st.interruptMinNanos = 0
         -- the hand-off needs a few standing nanos on the state; ours stand in the nano columns, outside the placer's own +-240 box
@@ -404,31 +406,102 @@ function M.Install(X)
 
     -- ── opening the block ──────────────────────────────────────────────────────────────────────────────
 
-    function X.OpenNanoCols(T, frame)
-        local K, LC = T.CFG, T.LC
-        if T.spineMod then X.StartSpine(T, frame) end
-        local out = (T.awayLane == 3) and 1 or -1                       -- b-z of the away side (the air lab's lane; the rows grow there too)
-        local edge = out > 0 and (LINE_BOX.z1 + K.NC_GAP) or (LINE_BOX.z0 - K.NC_GAP)
-        local bx0 = (T.site and T.site.bx) or (LC.X0 + 64 * 8)          -- origin row: level with the air lab along the line
-        local ox, oz = LC.World(T.L, bx0, edge)
-        ox, oz = math.floor(ox / 16 + 0.5) * 16, math.floor(oz / 16 + 0.5) * 16
-        local ux, uz = LC.Rotate(1, 0, T.L.rot)
-        local vx, vz = LC.Rotate(0, out, T.L.rot)
-        local L
-        for n = K.NC_NANO_COLS, 1, -1 do
-            local cand = LAYOUT.New({ ox = ox, oz = oz, ux = ux, uz = uz, vx = vx, vz = vz, nc = n,
-                                      mapX = T.L.mapX, mapZ = T.L.mapZ, margin = K.NC_MARGIN })
-            if cand.RowFits(0) then L = cand; break end
-            Spring.Echo(string.format("[NC] %d nano columns (%d wide) do not fit beyond the line at (%d, %d)", n, cand.width, ox, oz))
+    -- a block row of layout L may be built: inside the map, clear of the line and the spine's cells, not on the enemy's side of the line
+    local function MakeRowOK(T, L)
+        local cache = {}
+        return function(r)
+            if cache[r] ~= nil then return cache[r] end
+            local ok = L.RowFits(r)
+            if ok then
+                local a = L.RowA(r)
+                local xs, zs = {}, {}
+                for _, ac in ipairs({ { a - 96, 0 }, { a + 96, 0 }, { a - 96, L.width }, { a + 96, L.width } }) do
+                    local x, z = L.World(ac[1], ac[2])
+                    xs[#xs + 1], zs[#zs + 1] = x, z
+                end
+                local x0, x1, z0, z1 = math.min(unpack(xs)), math.max(unpack(xs)), math.min(unpack(zs)), math.max(unpack(zs))
+                local b = T.lineBox
+                if b and x0 < b.x1 and b.x0 < x1 and z0 < b.z1 and b.z0 < z1 then ok = false end
+                for _, sb in ipairs(T.spineBoxes or {}) do
+                    if ok and x0 < sb.x + 240 and sb.x - 240 < x1 and z0 < sb.z + 240 and sb.z - 240 < z1 then ok = false end
+                end
+                for j = 0, L.nb - 1 do
+                    local cx, cz = L.BlockCenter(j, r)
+                    if ok and T.OnEnemySide and T.OnEnemySide(T, cx, cz) then ok = false end
+                end
+            end
+            cache[r] = ok
+            return ok
         end
-        if not L then
-            Spring.Echo("[NC] no room for the block beyond the line: nano columns off")
+    end
+
+    -- rows of room from the origin row each way (contiguous, at most `cap`)
+    local function Room(L, cap)
+        local up, down = 0, 0
+        while up < cap and L.RowOK(up) do up = up + 1 end
+        while down < cap and L.RowOK(-down - 1) do down = down + 1 end
+        return up, down
+    end
+
+    -- Where the block goes (user 2026-10-30: "check the geometry; if it does not fit, move it or make it smaller").  First choice: beyond the
+    -- line's away edge (the rows' side), columns along the line.  When fewer than NC_NANO_COLS columns fit there, or there are fewer than
+    -- NC_MIN_ROOM block rows of room, both ENDS of the line are tried too, the block turned 90 degrees (columns across the line, growing
+    -- toward and away from the enemy until the enemy-side limit).  The most nano columns wins, then the most room (eco_sim close starts:
+    -- 1 column on the away side made 3.6k m/s at 20:00 against 9.0k with 3).
+    local function Candidates(T)
+        local K, LC = T.CFG, T.LC
+        local out = (T.awayLane == 3) and 1 or -1
+        local zmid = (LINE_BOX.z0 + LINE_BOX.z1) / 2
+        local function Snap(x, z) return math.floor(x / 16 + 0.5) * 16, math.floor(z / 16 + 0.5) * 16 end
+        local list = {}
+        do
+            local edge = out > 0 and (LINE_BOX.z1 + K.NC_GAP) or (LINE_BOX.z0 - K.NC_GAP)
+            local bx0 = (T.site and T.site.bx) or (LC.X0 + 64 * 8)          -- origin row: level with the air lab along the line
+            local ox, oz = Snap(LC.World(T.L, bx0, edge))
+            local ux, uz = LC.Rotate(1, 0, T.L.rot)
+            local vx, vz = LC.Rotate(0, out, T.L.rot)
+            list[#list + 1] = { name = "away", ox = ox, oz = oz, ux = ux, uz = uz, vx = vx, vz = vz }
+        end
+        for _, e in ipairs({ { "start", LINE_BOX.x0 - K.NC_GAP, -1 }, { "end", LINE_BOX.x1 + K.NC_GAP, 1 } }) do
+            local ox, oz = Snap(LC.World(T.L, e[2], zmid))
+            local ux, uz = LC.Rotate(0, 1, T.L.rot)
+            local vx, vz = LC.Rotate(e[3], 0, T.L.rot)
+            list[#list + 1] = { name = e[1], ox = ox, oz = oz, ux = ux, uz = uz, vx = vx, vz = vz }
+        end
+        return list
+    end
+
+    function X.OpenNanoCols(T, frame)
+        local K = T.CFG
+        if T.spineMod then X.StartSpine(T, frame) end
+        local best, bestScore
+        for ci, cnd in ipairs(Candidates(T)) do
+            if ci > 1 and best and best.name == "away" and best.L.nc == K.NC_NANO_COLS and best.room >= K.NC_MIN_ROOM then break end
+            for n = K.NC_NANO_COLS, 1, -1 do
+                local L = LAYOUT.New({ ox = cnd.ox, oz = cnd.oz, ux = cnd.ux, uz = cnd.uz, vx = cnd.vx, vz = cnd.vz, nc = n,
+                                       mapX = T.L.mapX, mapZ = T.L.mapZ, margin = K.NC_MARGIN })
+                L.RowOK = MakeRowOK(T, L)
+                local up, down = 0, 0
+                if L.RowOK(0) then up, down = Room(L, 30) end
+                Spring.Echo(string.format("[NC] placement %s: %d nano columns (%d wide) at (%d, %d): room %d block rows up, %d down",
+                    cnd.name, n, L.width, cnd.ox, cnd.oz, up, down))
+                if up + down >= math.min(K.NC_MIN_ROOM, 8) then
+                    local score = n * 1000 + math.min(up + down, K.NC_MIN_ROOM)
+                    if not bestScore or score > bestScore then best, bestScore = { L = L, name = cnd.name, room = up + down }, score end
+                    break
+                end
+            end
+        end
+        if not best then
+            Spring.Echo("[NC] no room for the block next to the line: nano columns off")
             T.nc = { off = true }
             return false
         end
+        local L = best.L
+        local ox, oz, ux, uz, vx, vz = L.ox, L.oz, L.ux, L.uz, L.vx, L.vz
         local nc = { L = L, blocks = {}, rows = {}, fronts = {}, fk = {}, run = { mex = 0, wind = 0, moho = 0, energy = 0, windOut = 0 },
                      count = { mexT1 = 0, windT1 = 0, gap = 0 }, labsPlanned = 0, t2 = false, ecoUnits = 0, added = 0,
-                     nanoRowsBuilt = 0, startFrame = frame, nanos = {}, nanoN = 0, parked = {}, focus = {}, reclaiming = {}, parkTarget = 0, helpers = {} }
+                     nanoRowsBuilt = 0, startFrame = frame, nanos = {}, nanoN = 0, parked = {}, focus = {}, reclaiming = {}, parkTarget = 0, helpers = {}, ferryRows = {} }
         T.nc = nc
         local mid = L.width / 2
         local function Add(kind, col, cc)
@@ -449,12 +522,11 @@ function M.Install(X)
             if a.dir ~= b.dir then return a.dir > b.dir end
             return a.col < b.col
         end)
-        local up, down = 0, 0
-        while up < 200 and L.RowFits(up) do up = up + 1 end
-        while down < 200 and L.RowFits(-down - 1) do down = down + 1 end
+        X.NcFerryOpen(T, nc, frame)
+        local up, down = Room(L, 200)
         local cx, cz = L.World(0, L.width)
-        Spring.Echo(string.format("[NC] %s layout: %d nano + %d building columns, %d wide, origin (%d, %d) along (%d, %d), away (%d, %d) to (%d, %d); room %d block rows up, %d down; unit budget %d",
-            Clock(frame), L.nc, L.nb, L.width, ox, oz, ux, uz, vx, vz, cx, cz, up, down, math.floor(Budget(T))))
+        Spring.Echo(string.format("[NC] %s layout (%s side): %d nano + %d building columns, %d wide, origin (%d, %d) along (%d, %d), across (%d, %d) to (%d, %d); room %d block rows up, %d down; unit budget %d",
+            Clock(frame), best.name, L.nc, L.nb, L.width, ox, oz, ux, uz, vx, vz, cx, cz, up, down, math.floor(Budget(T))))
         return true
     end
 
@@ -549,8 +621,28 @@ function M.Install(X)
         end
         if frame % 60 == 0 then nc.ecoUnits, nc.added = CountEcoUnits(T), 0 end
         X.UpdateNcHelpers(T, frame)
+        X.NcFerryUpdate(T, nc, frame)
         NcNanos(T, nc, frame, res)
         if frame % K.NC_LOG_EVERY == 0 then Status(T, nc, frame) end
+        -- a session whose builder has stood with an empty queue for 20 s: log what its queue holds (a stuck session holds its con for ever)
+        if frame % 900 == 0 then
+            for _, kind in ipairs({ "nano", "build", "retro" }) do
+                for _, st in ipairs(T.ncSessions[kind]) do
+                    local n = st.builderID and Spring.GetUnitCommands(st.builderID, 0) or -1
+                    if n == 0 then st.ncIdleSince = st.ncIdleSince or frame else st.ncIdleSince = nil end
+                    if st.ncIdleSince and frame - st.ncIdleSince >= 600 then
+                        local built, rel, skip, pend = 0, 0, 0, 0
+                        for _, it in ipairs(st.queue) do
+                            if it.status == "skipped" then skip = skip + 1 elseif it.built then built = built + 1
+                            elseif it.released then rel = rel + 1 else pend = pend + 1 end
+                        end
+                        Echo(T, "idle session: %s con %d (%s) idle %ds -- items built %d released %d skipped %d pending %d, current %s, done %s orphaned %s",
+                            FrontName(st.nc.front), st.builderID or -1, tostring(Spring.GetUnitDefID(st.builderID or -1) ~= nil), math.floor((frame - st.ncIdleSince) / 30),
+                            built, rel, skip, pend, tostring(st.currentTask and st.currentTask.n), tostring(st.done), tostring(st.orphaned))
+                    end
+                end
+            end
+        end
         if K.NC_MAP_EVERY and frame % K.NC_MAP_EVERY == 0 then MapDump(T, nc) end
     end
 
@@ -580,6 +672,7 @@ function M.Install(X)
             end
         end
         NcNanoFinished(T, nc, unitID, defID, x, z)
+        X.NcFerryUnitFinished(T, nc, unitID, defID)
     end
 
     function X.NcUnitDestroyed(T, unitID)
