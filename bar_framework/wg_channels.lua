@@ -29,6 +29,7 @@ M.SCHEMA = {
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
         armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number", squadHave = "number", squadWant = "number", squadMade = "number", garrisonHave = "number", garrisonWant = "number", garrisonMade = "number", avOwnRate = "number", avEnemyRate = "number", avProjRatio = "number",
         trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", pushMode = "string", blobs = "table",
+        support = "table",     -- army_groups.lua: { [element] = { want, have, made } } support units the labs still owe (lab_rules "group-support")
     } },
     Strategy    = { kind = "table", open = true },                  -- strategy.lua object: Name / Plan / Assign / Pick / Note
     Spine       = { kind = "table", open = true },                  -- spine / slot_spine API
@@ -49,6 +50,8 @@ M.SCHEMA = {
     ArmyShareRequest = { kind = "number" },                         -- army share 0..1 a person set (stance_panel.lua); nil = the bot's own rule
     RezLab      = { kind = "table", fields = { id = "number" } },   -- the line's finished rez lab (rez_lab.lua); lab_rules' "rez-lab" want owns its queue
     ScoutNet    = { kind = "table", open = true },                  -- scout_net.lua API: RequestScout / SacrificeScout / Picture ... (CORE)
+    ArmyGroups  = { kind = "table", open = true },                  -- army_groups.lua API: Groups / Owns / Wants / SpamWanted (the army-group records and their support elements)
+    SpamLab     = { kind = "table", fields = { id = "number" } },   -- the line's finished spam lab (spam_lab.lua); lab_rules' "spam-lab" want owns its queue
 }
 
 -- WG entries that belong to BAR's own widgets, not to a bot (ignored by Validate).  Add names here when a stock widget

@@ -302,6 +302,15 @@ LT.CFG = {
     REZ_LAB_URGENT    = true,          -- the lane builder drops its slot and goes to the lab at once (else the job waits behind the slots: 171 s in eco_sim)
     REZ_LAB_NANOS     = 0,             -- nano slots beside it that help build it (0: a nano first delayed the lab by ~2 min in eco_sim)
     REZ_LAB_LANES     = { 4, 2, 1 },   -- outer lanes tried for the site, in order (after the T2 bot lab has taken its own)
+    SPAM_LAB          = false,         -- SUPPORT (user 2026-10-30): a T1 bot lab + nanos on the line for the army groups' spam element (line_transition/spam_lab.lua;
+                                       -- bar_framework/army_groups.lua); site reserved at the start, built once a group record opts into spam
+    SPAM_LAB_INCOME   = 120,           -- metal income (m/s) at which it is queued ...
+    SPAM_LAB_FRAME    = 5 * 60 * 30,   -- ... and not before this
+    SPAM_LAB_UNIT     = ROLES.Get("lab_t1_bot"),
+    SPAM_LAB_URGENT   = false,         -- the lane builder finishes its slot first
+    SPAM_LAB_NANOS    = 4,             -- nano slots beside it (two columns before the block); they guard the lab once it stands
+    SPAM_LAB_LANES    = { 1, 2, 3, 4 },   -- lanes tried for the site, in order (searched from the lane's end backwards, after the rez / T2 bot labs)
+    SPAM_LAB_BEYOND_K = 4,             -- no free block on the line: the lab's centre this many columns past a lane's last slot (its nanos in the two columns between)
     T2BOT_LANES       = { 3, 4 },      -- outer lanes tried for the site, in order (3 first: the lab faces out of the line there; 4 faced into it)
     LAB2_NANO_HELP    = false,         -- every nano in reach reclaims what stands on the site, then builds the lab frame
     -- NANO COLUMNS (user 2026-10-30; line_transition/nano_cols/*.lua): instead of the mex grids, a block of nano columns with a building column on each side
@@ -386,7 +395,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
                         "nano_cols/nanos", "nano_cols/ferry", "nano_cols/fronts", "nano_cols/recovery" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
@@ -765,6 +774,7 @@ local function UpdateGrids(T, frame, res)
     UpdateSecondLab(T, frame, res)
     UpdateT2BotLab(T, frame, res)
     UpdateRezLab(T, frame, res)
+    X.UpdateSpamLab(T, frame, res)
     UpdateLineDecoy(T, frame, res)
     if NC then X.UpdateNanoCols(T, frame, res) end
     if not NC then UpdateEligibility(T, frame) end
@@ -1090,6 +1100,7 @@ function LT.OnJobStarted(T, j)
     if j.tag == "vp2" then j.tag = "vp"; LT.OnJobStarted(Vp2(T), j); j.tag = "vp2"; return end
     if j.tag == "t2bot" then T2BotJobStarted(T, j); return end
     if j.tag == "rezlab" then RezLabJobStarted(T, j); return end
+    if j.tag == "spamlab" then X.SpamLabJobStarted(T, j); return end
     if j.tag ~= "lab" and j.tag ~= "vp" then return end
     local NANO = T.BP.NANO
     if not (NANO and j.unitID) then return end
@@ -1109,6 +1120,7 @@ function LT.OnJobDone(T, j, state)
     if j.tag == "vp2" then j.tag = "vp"; LT.OnJobDone(Vp2(T), j, state); j.tag = "vp2"; return end
     if j.tag == "t2bot" or j.tag == "t2bnano" then T2BotJobDone(T, j, state); return end
     if j.tag == "rezlab" or j.tag == "rzlnano" then RezLabJobDone(T, j, state); return end
+    if j.tag == "spamlab" or j.tag == "slnano" then X.SpamLabJobDone(T, j, state); return end
     if j.tag == "lab" then
         if state ~= "done" then
             T.labTries = T.labTries + 1
@@ -1475,6 +1487,7 @@ function LT.OnUnitDestroyed(T, unitID, attackerID)
         T.rzLabID = nil
         if T.WG and T.WG.RezLab and T.WG.RezLab.id == unitID then T.WG.RezLab = nil end    -- the other labs make rez bots again
     end
+    X.SpamLabDestroyed(T, unitID)
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID, attackerID) end
     if T.spine2On then T.spine2Mod.OnUnitDestroyed(unitID, attackerID) end
     if T.nc then X.NcUnitDestroyed(T, unitID) end

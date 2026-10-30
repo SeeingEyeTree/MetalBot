@@ -573,7 +573,8 @@ local function CoverUpdate(frame, income, silosSeen)
     end
     if savID then
         for _, uid in ipairs(Spring.GetTeamUnitsByDefs(myTeamID, { savID }) or {}) do
-            if IsDone(uid) then savs[#savs + 1] = uid end
+            -- (a Savior an army group's antinuke element walks with -- army_groups.lua, unit_runtime SUPPORT -- is not ours to move; still stockpiled)
+            if IsDone(uid) and not (G.ArmyGroups and G.ArmyGroups.Owns(uid)) then savs[#savs + 1] = uid end
         end
     end
     local function Served(p)

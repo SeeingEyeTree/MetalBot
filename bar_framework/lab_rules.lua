@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SPAM_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
 -- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
@@ -93,7 +93,10 @@ local SCOUTS_FIRST      = O("SCOUTS_FIRST", 0)         -- >0: the first N scouts
 local ARMY_QUEUE_MIN   = O("ARMY_QUEUE_MIN", 0)          -- army want keeps at least this many orders queued (0 = the old "refill when empty")
 local ARMY_TOPUP_GRACE  = O("ARMY_TOPUP_GRACE", 30)      -- frames between top-ups of the army want (the default grace is 120)
 local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0,   -- raiders ordered / adopted, for the raid-squad want (unit_runtime RAID_SQUAD)
-                pk = { ordered = 0, made = 0, moved = 0, lastOrder = 0 } }   -- .pk: picket air scouts, the same counts (unit_runtime PICKET)
+                pk = { ordered = 0, made = 0, moved = 0, lastOrder = 0 },    -- .pk: picket air scouts, the same counts (unit_runtime PICKET)
+                sup = {},                                                     -- .sup[el]: the army groups' support elements, the same counts (unit_runtime SUPPORT)
+                SPAM_DEPTH = O("SPAM_LAB_DEPTH", 3),                          -- the spam lab (WG.SpamLab, line_transition/spam_lab.lua) keeps this many queued
+                SUP_BUDGET = O("SUPPORT_FROM_BUDGET", true) }                 -- support orders spend the army budget (never refused by it): support is army, not extra
 local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
 local GARRISON_START = O("GARRISON_START_FRAME", 4 * 60 * 30)   -- SPINE_GARRISON (unit_runtime): the unit controller posts the first N Pounders on the spine's flanks (mb.garrisonWant);
                                                                 -- from this frame the labs make them first, ahead of the other picks, until they stand
@@ -928,6 +931,46 @@ local function RezLabID()
     local r = WG and WG.RezLab
     return (r and r.id and spGetUnitDefID(r.id)) and r.id or nil
 end
+-- SUPPORT (bar_framework/army_groups.lua, user 2026-10-30): the army groups' support elements are built up to a fixed size, not as a share.
+-- WG.MetalBot.support[el] = { want, have, made, picks } (the unit controller); room = want - held - (ordered - made), a stalled order is
+-- forgotten after 3 minutes (the garrison's rule).  spam is the spam lab's alone ("spam-lab") and rez is the rez floor's (C.rezRoom), so
+-- neither is in SUP_ORDER.  (Functions on SQUAD: GameFrame has no upvalue slots left.)
+SQUAD.SUP_ORDER = { "aa", "antinuke", "jammer" }
+function SQUAD.SupportRooms(sup, frame)
+    local rooms = {}
+    for _, el in ipairs(SQUAD.SUP_ORDER) do
+        local w = sup and sup[el]
+        if w and (w.want or 0) > 0 and w.picks then
+            local T = SQUAD.sup[el] or { ordered = 0, made = 0, moved = 0, lastOrder = 0 }
+            SQUAD.sup[el] = T
+            local made = w.made or 0
+            if made ~= T.made then T.made, T.moved = made, frame end
+            if T.ordered < made then T.ordered = made end
+            if T.ordered > made and frame - math.max(T.moved, T.lastOrder) > 5400 then T.ordered = made end
+            local room = w.want - (w.have or 0) - (T.ordered - made)
+            if room > 0 then rooms[el] = room end
+        end
+    end
+    return rooms
+end
+-- The best of `picks` (names, best first) that any lab we own can build: a T1 lab does not make a Lasher while a T2 vehicle plant could make
+-- the flak truck.
+function SQUAD.BestPick(picks)
+    for _, n in ipairs(picks or {}) do
+        local ud = UnitDefNames and UnitDefNames[n]
+        if ud then
+            for _, defID in pairs(labs) do
+                if CanBuildSet(defID)[ud.id] then return ud.id end
+            end
+        end
+    end
+    return nil
+end
+-- The spam lab's id while it stands (line_transition/spam_lab.lua publishes WG.SpamLab = { id }), else nil.
+function SQUAD.SpamLabID()
+    local r = WG and WG.SpamLab
+    return (r and r.id and spGetUnitDefID(r.id)) and r.id or nil
+end
 -- the line's decoy labs (line_decoy.lua: T2 bot labs on the line, 8 decoys assist each), alive, in id order
 local function LineLabs()
     local out, seen = {}, {}
@@ -1064,6 +1107,11 @@ local function Describe(labID, labDefID, frame)
         local p = GetArmyPicks(labDefID)
         lab.isRezLab, lab.only, lab.rezDef = true, "rez-lab", p and p.rez
         lab.also = { ["rez-army"] = true }              -- REZ_LAB_ARMY: it may also make the stance's units (below)
+        return lab
+    end
+    -- SUPPORT: the spam lab makes the spam element's units and nothing else ("spam-lab" owns it)
+    if SQUAD.SpamLabID() == labID then
+        lab.isSpamLab, lab.only = true, "spam-lab"
         return lab
     end
     -- TILE_BOT: the air lab makes the macro's air cons first, and the opening bot lab is being reclaimed -- nothing of ours goes
@@ -1288,6 +1336,26 @@ RegisterWants = function()
                  return ud.id
              end
          end }
+    -- SUPPORT (army_groups.lua, user 2026-10-30): the groups' support elements up to their fixed size ("enough" -- not a share), one at a time
+    -- ahead of a busy queue, just under the AA floor; each element's best pick any of our labs can build (flak truck before Lasher)
+    add{ name = "group-support", prio = 96, mode = "ahead", grace = 60, why = "group-support",
+         applies = function(lab) return C.supRoom ~= nil and next(C.supRoom) ~= nil and not lab.held and not lab.isSink and not lab.isRezLab and not lab.isSpamLab end,
+         pick = function(lab)
+             local sup = C.mb and C.mb.support
+             for _, el in ipairs(SQUAD.SUP_ORDER) do
+                 local room, w = C.supRoom[el], sup and sup[el]
+                 if room and room > 0 and w then
+                     local best = SQUAD.BestPick(w.picks)
+                     if best and CanBuildSet(lab.defID)[best] then
+                         C.supRoom[el] = room - 1
+                         local T = SQUAD.sup[el]
+                         T.ordered, T.lastOrder = T.ordered + 1, C.frame or 0
+                         if SQUAD.SUP_BUDGET then budget.v = budget.v - ((UnitDefs[best] and UnitDefs[best].metalCost) or 0) end   -- out of the army share
+                         return best, "support-" .. el
+                     end
+                 end
+             end
+         end }
     add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
          applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
          pick = function(lab)
@@ -1388,6 +1456,18 @@ RegisterWants = function()
     add{ name = "rez-army", prio = 150, mode = "ahead", why = "rez-lab-army", log = false,
          applies = function(lab) return lab.isRezLab and C.rezArmyOn end,
          pick = function(lab) return StancePick(lab.defID, lab.id) end }
+    -- SUPPORT (army_groups.lua): the spam lab keeps SPAM_LAB_DEPTH queued while the spam element is short (each group's spam runs ahead of it)
+    add{ name = "spam-lab", prio = 200, mode = "topup", why = "spam", depth = function() return SQUAD.SPAM_DEPTH end,
+         applies = function(lab) return lab.isSpamLab end,
+         pick = function(lab)
+             local sup = C.mb and C.mb.support
+             local w = sup and sup.spam
+             if w and (w.want or 0) > (w.have or 0) and w.picks then
+                 local d = AAPick(lab.defID, w.picks)
+                 if d and SQUAD.SUP_BUDGET then budget.v = budget.v - ((UnitDefs[d] and UnitDefs[d].metalCost) or 0) end   -- out of the army share
+                 return d
+             end
+         end }
     add{ name = "rez", prio = 60, mode = "empty",
          applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
          pick = function(lab) if C.rezRoom > 0 and lab.picks.rez then return lab.picks.rez end end }
@@ -1572,6 +1652,8 @@ function widget:GameFrame(frame)
     C.scoutRoom     = ((mb and mb.scoutWant) or SCOUT_TARGET) - C.scoutsHave
     C.rezRoom       = frame < REZ_START_FRAME and 0
                       or math.min(REZ_MAX, REZ_BASE + math.floor(((mb and mb.armyCount) or 0) / REZ_PER_ARMY)) - Have("rez", frame)
+                         + ((mb and mb.support and mb.support.rez and mb.support.rez.want) or 0)     -- SUPPORT: the groups' rez bots on top of the floor
+    C.supRoom       = SQUAD.SupportRooms(mb and mb.support, frame)                                    -- SUPPORT: the "group-support" want's room per element
     C.airAlarm      = (mb and mb.airAlarm and frame - mb.airAlarm.frame <= AIR_ALARM_TTL) and true or false
     C.bombScoutRoom = (mb and mb.bombScoutRoom) or 0          -- air scouts the bombing runs want (bomb_run WAVE_SCOUTS_MAX)
     -- air defence (AA_FLOOR_* / AIR_RUSH above): the rush's id while a large raid is on, and how many ground AA the floor still wants

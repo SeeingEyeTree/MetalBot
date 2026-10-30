@@ -75,7 +75,10 @@ function M.ArmyMode(cur, x, o)
     return "defend", ratio
 end
 
-M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true }
+M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true }
+-- SUPPORT (user 2026-10-30; nil = off): the army groups' support elements, bar_framework/army_groups.lua (the table's shape is in its header):
+-- SUPPORT = { raid = { aa = { n = 4 }, spam = { n = 6 }, scout = { every_s = 30 } }, slow = { ... }, stage = { ... } }; a stance's
+-- plan.group_support replaces it while that stance runs.
 
 function M.Install(widget, WG, K)
 K = K or {}
@@ -1717,6 +1720,11 @@ local function PublishState(frame)
         local defID = spGetUnitDefID(uid)
         if defID then n = n + 1; armyV = armyV + Value(defID) end
     end
+    if NET.ag then                                    -- SUPPORT: the support elements' own units (not the adopted rez bots) are army spend too
+        for uid, o in pairs(NET.ag.Units()) do
+            if not o.adopt and spGetUnitDefID(uid) then n = n + 1; armyV = armyV + Value(o.defID) end
+        end
+    end
     if K.SPINE_GARRISON then mb.garrisonHave, mb.garrisonWant, mb.garrisonMade = NET.gar.Count(), K.SPINE_GARRISON.N or 6, NET.gar.made or 0 end   -- the labs' 'garrison' want reads these
     if K.SPINE_GARRISON and (Spring.GetGameFrame() % 900 == 0) then
         local p = NET.gar.Posts()
@@ -1912,7 +1920,7 @@ function widget:Initialize()
                 -- unit_runtime: the maneuver blobs' roles too, so their next claim is sent instead of dropped as "already ordered"
                 local role = ARMY and ARMY.RoleOf(uid)
                 if role == "BLOB" or role == "MD_POST" or role == "MD_RESPOND" or role == "MD_RETURN" or role == "MD_SUPPORT"
-                   or role == "AA_SCREEN" or role == "AA_ESCORT" then ARMY.Release(uid) end     -- (Lashers: range_kite 2026-10-28)
+                   or role == "AA_SCREEN" or role == "AA_ESCORT" or (role and role:sub(1, 4) == "SUP_") then ARMY.Release(uid) end     -- (Lashers: range_kite 2026-10-28; SUP_*: army_groups' support elements)
             end }
             CTX = BC.New{ UQ = UQ, MM = MM, allyID = myAllyID }
             -- range_kite: no kiting while the unit defends the base (raid response, home guard) -- it moves in front
@@ -1948,6 +1956,20 @@ function widget:Initialize()
             Spring.Echo("[UnitCtrl] behaviours not loaded: " .. tostring(BH) .. " " .. tostring(BC))
         end
     end
+    -- SUPPORT (user 2026-10-30): the army-group records and the support elements they opt into (bar_framework/army_groups.lua).  Loaded after the
+    -- behaviour host (its claims leave a unit a behaviour is stepping alone).  giveBack: an element nobody wants any more returns its units here.
+    if K.SUPPORT and CA and ARMY then
+        NET.ag = Load("army_groups")
+        if NET.ag then
+            NET.ag.Init{ ARMY = ARMY, CA = CA, MM = MM, EI = EI, SN = SN, RB = RB, RC = RC, UQ = UQ, HOST = HOST, WG = WG, cfg = K.SUPPORT,
+                plan = function() return WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan() end,
+                giveBack = function(uid, defID, el)
+                    if el == "aa" then GROUND_AA.units[uid] = "escort"                       -- back to the AA escorts / screen
+                    elseif el == "spam" then combatUnits[uid] = defID; musterPool[uid] = Spring.GetGameFrame()   -- an ordinary army unit
+                    end                                                                     -- Savior: defense_crew moves it again; jammer: idle
+                end }
+        end
+    end
     if SF then
         SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, label = "RAID_BOT", cfg = HOST and { CHARGE_SPEED = 1e9 } or nil }
         if HOST and SF.SetHold then SF.SetHold(function(uid, f) return HOST:IsHeld(uid, f) end) end
@@ -1956,8 +1978,9 @@ end
 
 -- The commander is seen here rather than in UnitFinished: commanders are builders,
 -- and UnitFinished returns early for builders before its commander branch.
-function widget:UnitCreated(unitID, unitDefID, teamID)
+function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
+    if NET.ag then NET.ag.NoteCreated(unitID, builderID) end     -- SUPPORT: the spam lab's units are known by their builder
     if IsCommander(unitDefID) then commanderID = unitID end
     if IsCommander(unitDefID) and not baseX then
         local x, _, z = spGetUnitPosition(unitID)
@@ -2602,7 +2625,10 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         return
     end
     if not d.speed or d.speed <= 0 then return end
-    if d.name == "cormabm" then return end          -- Savior (mobile anti-nuke): stays by the lab, defense_crew stockpiles it
+    if d.name == "cormabm" then                     -- Savior (mobile anti-nuke): stays by the lab, defense_crew stockpiles it
+        if NET.ag then NET.ag.Offer(unitID, unitDefID) end     -- SUPPORT antinuke: or it walks with a group (defense_crew still stockpiles it)
+        return
+    end
     if (d.transportCapacity or 0) > 0 then return end   -- an air transport belongs to whoever ordered it (line_transition nano_cols/ferry.lua via air_transport.lua), not the army
     if d.name == "corcrwh" and WG and WG.SinkLabs then   -- SINK on: the stance's extras give the Dragon its behaviours
         SINK_EXTRAS[unitID] = true
@@ -2633,12 +2659,20 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             else GROUND_AA.units[uid] = nil end
         end
         local want = math.min(GROUND_AA.SCREEN_MAX, math.max(GROUND_AA.SCREEN_MIN, math.ceil((n + 1) * GROUND_AA.SCREEN_FRAC)))
+        -- SUPPORT aa: once the base screen has its share, the groups' AA elements are filled before the shared escort
+        if screen >= want and NET.ag and NET.ag.Offer(unitID, unitDefID) then
+            if HOST and WG and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end
+            return
+        end
         GROUND_AA.units[unitID] = (screen < want) and "screen" or "escort"
         -- user 2026-10-28: the stance's behaviours for a Lasher too (range_kite: "they just sit in the base doing nothing"); the AA post
         -- keeps its claim, the behaviour steps the unit back when a ground enemy is inside its range and holds it for the step
         if HOST and WG and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end
         return
     end
+
+    -- SUPPORT: a support element (the spam lab's Grunts, a jammer ...) before the garrison, the maneuver blobs and the slow group take the unit
+    if NET.ag and NET.ag.Offer(unitID, unitDefID) then return end
 
     -- SPINE_GARRISON: the first N Pounders stay as the spine's garrison.  This must come before the maneuver blobs and the slow group, which take every Pounder
     -- (the first real game: 6 Pounders built, garrison 0 / 6 all game)
@@ -2754,6 +2788,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
     bombers[unitID]       = nil
     antiRaid[unitID]      = nil
     GROUND_AA.units[unitID] = nil
+    if NET.ag then NET.ag.OnDestroyed(unitID) end
     if RESP then RESP.Forget(unitID) end
     if unitID == commanderID then commanderID = nil end
     if SP then SP.Forget(unitID) end
@@ -2945,6 +2980,8 @@ function widget:GameFrame(frame)
                 if not okM then Spring.Echo("[MD] error: " .. tostring(errM)) end
             end
         end
+        -- SUPPORT: the group records follow click_army's groups as they stand after this tick, then the elements give their orders
+        if NET.ag then NET.ag.Sync(frame); NET.ag.Update(frame) end
         if SF and not HUMAN_SLOW then SF.Update(frame) end
     end
 
