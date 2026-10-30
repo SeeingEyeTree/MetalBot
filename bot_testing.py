@@ -165,6 +165,8 @@ STATS_WIDGET = r"""
 -- Constants injected by setup_player.
 local END_FRAME   = __END_FRAME__   -- game frame at which the match is ended by stats
 local ECO_WEIGHT  = __ECO_WEIGHT__  -- seconds of metal income counted into the score
+local QUIT_AFTER_END = __QUIT_AFTER_END__   -- METALBOT_DEATHMODE=neverend: no commander death ends the game, so quit 10 game-s after the score (clean exit = the replay is written)
+local quitAt
 -- Wall-clock BACKSTOP. If the game-frame limit is not reached in this many real seconds
 -- (slow hardware, or a deliberately short test run) the match is ended and scored anyway,
 -- tagged reason=wallclock so it is never mistaken for a full-length verdict. It uses
@@ -326,6 +328,12 @@ function widget:GameFrame(n)
                 end
             end
         end
+        if QUIT_AFTER_END then quitAt = n + 300 end
+    end
+    if quitAt and n >= quitAt then
+        quitAt = nil
+        Spring.Echo("[GameEnder] neverend: score taken, quitting")
+        Spring.SendCommands("quitforce")       -- "quit" was ignored by the single-client host (2026-10-30: the process ran to the backstop)
     end
 end
 """
@@ -761,7 +769,8 @@ def setup_player(write_dir: Path, bot_files: list, team_id: int, suffix: str,
         (widgets_dir / "headless_stats.lua").write_text(
             team_fix + STATS_WIDGET.replace("__ADJ_SECS__", str(game_end_target))
                         .replace("__END_FRAME__", str(end_frame))
-                        .replace("__ECO_WEIGHT__", str(eco_weight)), encoding="utf-8")
+                        .replace("__ECO_WEIGHT__", str(eco_weight))
+                        .replace("__QUIT_AFTER_END__", "true" if os.environ.get("METALBOT_DEATHMODE") == "neverend" else "false"), encoding="utf-8")
         skip.add("headless_stats.lua")
         active.append("Headless Stats")
 

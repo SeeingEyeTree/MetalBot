@@ -636,7 +636,8 @@ def setup(write_dir: Path, bot_files: "tuple[list, list]", game_end_target: int,
         put("headless_profiler.lua", bt.PROFILER_WIDGET, "Harness Profiler")
 
     stats = (bt.STATS_WIDGET.replace("__ADJ_SECS__", str(game_end_target))
-             .replace("__END_FRAME__", str(end_frame)).replace("__ECO_WEIGHT__", str(eco_weight)))
+             .replace("__END_FRAME__", str(end_frame)).replace("__ECO_WEIGHT__", str(eco_weight))
+             .replace("__QUIT_AFTER_END__", "true" if os.environ.get("METALBOT_DEATHMODE") == "neverend" else "false"))
     tracker_src = bt.REPO_DIR / "metalbot_stats_tracker.lua"
     tracker = tracker_src.read_text(encoding="utf-8") if tracker_src.exists() else None
     dump_src = bt.REPO_DIR / "metalbot_state_dump.lua"   # defs + per-minute unit snapshots for eco_sim.py
