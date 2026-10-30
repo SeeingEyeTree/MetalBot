@@ -32,4 +32,11 @@ UNIT.Install(widget, WG, {
     ENEMY_INTEL = { BLIP_SCOUT_SPEED = 120 },   -- user 2026-10-29: a radar dot faster than any armed enemy type seen (Rovers ~166) is a scout, not army
     PICKET = { N = 2, FRAC = 0.4, START_FRAME = 4 * 60 * 30 },   -- user 2026-10-29: two air scouts fly a picket line across the approach for early warning
     RAID_CARRY = true,          -- user 2026-10-29 (BM_akumar6 game): a stance flip to hold never recalls a raid; every attacking unit keeps going until it dies
+    -- SUPPORT (user 2026-10-30, bar_framework/army_groups.lua): fixed-size support elements per army group, built up to n and then no more (not a stance share).
+    -- raid = each click_army raid group (MAX_GROUPS of them), slow = the slow group while a push runs it, stage = the home blob.  A stance's plan.group_support replaces this.
+    -- First guesses, to be tuned: Grunts from the spam lab (SPAM_LAB, macro) run ahead of the raids, an air scout over each raid's target every 30 s.
+    SUPPORT = {
+        raid = { aa = { n = 3 }, spam = { n = 6 }, scout = { every_s = 30 }, jammer = { n = 1 } },
+        slow = { aa = { n = 6 }, rez = { n = 3 }, antinuke = { n = 1 }, jammer = { n = 1 } },
+    },
 })
