@@ -48,11 +48,21 @@ function M.Install(X)
         local i = math.floor(nc.L.nc / 2)
         local p = T.CFG.NC_NANO_PATTERN or "1"
         local function Off(q) local k = (q % #p) + 1; return p:sub(k, k) == "0" end
+        local nd = UnitDefNames[ROLES.Get("nano")]
+        local function FreeSpot(q)
+            local it = nc.L.NanoItems(i, q)[2]
+            local y = Spring.GetGroundHeight(it.x, it.z) or 0
+            local r = nd and Spring.TestBuildOrder(nd.id, it.x, y, it.z, 0)
+            return r and r > 0 and not nc.ferryRows[i .. ":" .. q]
+        end
         local rows = {}
         for _, d in ipairs({ 1, -1 }) do
             local q = d > 0 and 0 or -1
-            for _ = 1, 8 do if Off(q) then break end; q = q + d end
-            if not Off(q) then q = d > 0 and 1 or -1 end     -- a dense pattern: the row next to the origin row (the front skips it until the nano leaves)
+            for _ = 1, 8 do if Off(q) and FreeSpot(q) then break end; q = q + d end
+            if not (Off(q) and FreeSpot(q)) then          -- a dense pattern, or a re-run after losses: the first free spot from the origin
+                q = d > 0 and 0 or -1
+                for _ = 1, 16 do if FreeSpot(q) then break end; q = q + d end
+            end
             rows[#rows + 1] = { i = i, q = q, dir = d }
         end
         local out = {}
@@ -134,7 +144,9 @@ function M.Install(X)
             fe.ordered = 0                                          -- the order never came out: order again
         end
         -- release: the block is going (or T2): carry them home
-        local release = nc.nanoRowsBuilt >= (K.NC_FERRY_RELEASE_ROWS or 8) or nc.t2
+        local release
+        if fe.rearm then release = nc.nanoN >= 2 * (K.NC_FERRY_REARM or 12)
+        else release = nc.nanoRowsBuilt >= (K.NC_FERRY_RELEASE_ROWS or 8) or nc.t2 end
         local alldone = true
         for _, it in ipairs(fe.items) do
             if not Spring.GetUnitDefID(it.unit) then

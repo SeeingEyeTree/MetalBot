@@ -1,0 +1,76 @@
+{
+ "tag": "nc_stress4",
+ "seeds": "1-4",
+ "minutes": 20,
+ "rank": "inc20",
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false,
+  "phys": {
+   "START": [
+    [
+     2816,
+     1904
+    ],
+    [
+     9472,
+     10384
+    ]
+   ]
+  },
+  "set": {
+   "line_transition": {
+    "SECOND_SPINE": false,
+    "NANO_COLS": true
+   }
+  }
+ },
+ "variants": {
+  "nc_s0": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   }
+  },
+  "nc_s80": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.8
+    }
+   }
+  },
+  "nc_k_nanos": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_nanos.lua"
+  },
+  "nc_k_airlab": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_airlab.lua"
+  },
+  "nc_k_wipe": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_wipe.lua"
+  },
+  "nc_k_half": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_half.lua"
+  }
+ }
+}

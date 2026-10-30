@@ -157,10 +157,12 @@ function M.Install(X)
             target = 0
         else
             local G = T.sg
-            local bank = (res.metalStorage or 0) > 0 and res.metal / res.metalStorage or 0
+            -- the bank in seconds of income (a share of storage reads "low" late: every moho adds 600 storage, user 2026-10-30)
+            local inc = math.max(1, res.metalIncomeS or res.metalIncome or 1)
+            local secs = (res.metal or 0) / inc
             if G and G.realized then
-                if G.realized < share - 0.05 and bank < 0.15 then target = target + step
-                elseif G.realized > share + 0.05 or bank > 0.35 then target = target - step end
+                if G.realized < share - 0.05 and secs < K.NC_PARK_LOW_S then target = target + step
+                elseif G.realized > share + 0.05 or secs > K.NC_PARK_FLOAT_S then target = target - step end
             else
                 target = math.floor(n * share)
             end

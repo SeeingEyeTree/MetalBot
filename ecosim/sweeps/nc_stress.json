@@ -1,0 +1,137 @@
+{
+ "tag": "nc_stress",
+ "seeds": "1-4",
+ "minutes": 20,
+ "rank": "inc20",
+ "base": {
+  "bot": "candidates/CORE_ROWS_ECO",
+  "vacuum": false,
+  "phys": {
+   "START": [
+    [
+     2816,
+     1904
+    ],
+    [
+     9472,
+     10384
+    ]
+   ]
+  },
+  "set": {
+   "line_transition": {
+    "SECOND_SPINE": false,
+    "NANO_COLS": true
+   }
+  }
+ },
+ "variants": {
+  "nc_s0": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   }
+  },
+  "grids_s0": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    },
+    "line_transition": {
+     "NANO_COLS": false
+    }
+   }
+  },
+  "nc_s50": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.5
+    }
+   }
+  },
+  "grids_s50": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.5
+    },
+    "line_transition": {
+     "NANO_COLS": false
+    }
+   }
+  },
+  "nc_s80": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.8
+    }
+   }
+  },
+  "grids_s80": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0.8
+    },
+    "line_transition": {
+     "NANO_COLS": false
+    }
+   }
+  },
+  "nc_machine": {},
+  "grids_machine": {
+   "set": {
+    "line_transition": {
+     "NANO_COLS": false
+    }
+   }
+  },
+  "nc_k_nanos": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_nanos.lua"
+  },
+  "nc_k_aircons": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_aircons.lua"
+  },
+  "nc_k_airlab": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_airlab.lua"
+  },
+  "nc_k_t2labs": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_t2labs.lua"
+  },
+  "nc_k_wipe": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_wipe.lua"
+  },
+  "nc_k_half": {
+   "set": {
+    "macro": {
+     "ARMY_SHARE_FIXED": 0
+    }
+   },
+   "patch": "C:/Users/malco/Documents/GitHub/MetalBot-nanocols/ecosim/stress/k_half.lua"
+  }
+ }
+}

@@ -829,6 +829,7 @@ function widget:Initialize()
         CH.Publish(WG, "TileLabHold", function(labID)
             if labID == nil then return false end
             if trans and labID == trans.airLabID and trans.airConsOrdered > 0 then return true end
+            if trans and trans.nc and trans.nc.conLabHeld and labID == trans.nc.conLab then return true end     -- the nano-column block's T2 con lab (NC_CON_LAB)
             return labID == TS.botLabID
         end)
     end

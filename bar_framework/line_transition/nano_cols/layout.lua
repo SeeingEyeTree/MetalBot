@@ -30,9 +30,10 @@ do
     SPEC.fusion = grid("fusion", { 40, 120, 200, 280 }, { -40, 40 })
     SPEC.afus = grid("afus",   { 64, 160, 256 }, { -48, 48 })
     SPEC.lab  = { { role = "lab_t2_air", dc = 168, da = 8 } }
+    SPEC.airlab = { { role = "lab_t1_air", dc = 160, da = 0 } }     -- a T1 air lab (144 x 96) when the line's is lost (nano_cols/recovery.lua)
 end
 M.SPEC = SPEC
-M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 1 }
+M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 1, airlab = 1 }
 
 -- o = { ox, oz (world point of a = 0, c = 0), ux, uz (unit vector of +a), vx, vz (unit vector of +c), nc, mapX, mapZ, margin }
 function M.New(o)

@@ -31,6 +31,7 @@ function M.Install(X)
     local NcNanos, NcNanoFinished, NcNanoDestroyed = X.NcNanos, X.NcNanoFinished, X.NcNanoDestroyed     -- nano_cols/nanos
 
     local KIND_RANK = { nano = 1, build = 2, retro = 3 }
+    local RedoReady                     -- (defined with Startable)
     -- projections only (Full Metal Plate: every extractor sits on 4 squares of 592.5 metal; knowledge/economy_numbers.md)
     local M_MEX, M_MOHO = 15 * 2.37, 15 * 9.48
 
@@ -179,24 +180,34 @@ function M.Install(X)
     local function RetroCandidates(nc, f)
         local out = {}
         for _, b in pairs(nc.blocks) do
-            if b.j == f.col and b.state == "t1done" and b.kind ~= "lab" and ((f.dir > 0) == (b.r >= 0)) then out[#out + 1] = b end
+            if b.j == f.col and b.state == "t1done" and b.kind ~= "lab" and b.kind ~= "airlab" and ((f.dir > 0) == (b.r >= 0)) then out[#out + 1] = b end
         end
         return out
     end
 
+    -- a recovered block waits for nanos in reach of it (the T1 air lab block and a first-time redo do not)
+    RedoReady = function(T, nc, b)
+        if not b.recovered or b.kind == "mex" then return true end      -- a mex (50 metal, ~20 s payback) is rebuilt at once: after a wipe metal is what is short
+        local cx, cz = nc.L.BlockCenter(b.j, b.r)
+        return #(T.BP.NanosInRange(cx, cz) or {}) >= (T.CFG.NC_RECOVER_NANOS or 0)
+    end
+
     -- does the front have work for one more con now?
     local function Startable(T, nc, f)
-        if f.active >= (f.kind == "retro" and T.CFG.NC_RETRO_CONS_PER_FRONT or T.CFG.NC_CONS_PER_FRONT) then return false end
+        local cap = (f.kind == "retro" and T.CFG.NC_RETRO_CONS_PER_FRONT or T.CFG.NC_CONS_PER_FRONT)
+        if f.kind ~= "retro" and #f.redo > 0 then cap = math.max(cap, T.CFG.NC_REDO_CONS_PER_FRONT or 0) end   -- rebuilding after losses: more cons
+        if f.active >= cap then return false end
         if f.kind == "nano" then
             if #f.redo > 0 then return true end
             if not BudgetOK(T, nc, 3) then return false end
             return NanoForward(T, nc, f) ~= nil or NanoFill(T, nc, f) ~= nil
         elseif f.kind == "build" then
-            if #f.redo > 0 then return true end
+            if #f.redo > 0 and RedoReady(T, nc, f.redo[1]) then return true end
             if not BudgetOK(T, nc, 24) then return false end
             return BuildForward(T, nc, f) ~= nil
         else
             if not nc.t2 then return false end
+            if T.CFG.NC_RETRO_NANOS and nc.nanoN < T.CFG.NC_RETRO_NANOS and X.NcPendingRows(nc) > 0 then return true end
             return #RetroCandidates(nc, f) > 0
         end
     end
@@ -219,7 +230,16 @@ function M.Install(X)
             layout[#layout + 1] = { n = ROLES.Get(it.role), x = it.x - ax, z = it.z - az, f = 0 }
         end
         local st = T.BP.New({ layout = layout }, conID, ax, az, 0, {})
-        for _, it in ipairs(st.queue) do it.strictFrame = true end       -- items 48 apart: a neighbour's frame must not pass for ours
+        for _, it in ipairs(st.queue) do
+            it.strictFrame = true                                        -- items 48 apart: a neighbour's frame must not pass for ours
+            -- already standing (a block recovered by nano_cols/recovery.lua rebuilds only its holes)
+            for _, uid in ipairs(Spring.GetUnitsInCylinder(it.wx, it.wz, 12) or {}) do
+                if Spring.GetUnitDefID(uid) == it.defID and not Spring.GetUnitIsBeingBuilt(uid) then
+                    it.built, it.status, it.frameID = true, "built", uid
+                    break
+                end
+            end
+        end
         st.handoffProgress = T.CFG.NC_HANDOFF
         st.interruptMinNanos = 0
         -- the hand-off needs a few standing nanos on the state; ours stand in the nano columns, outside the placer's own +-240 box
@@ -257,14 +277,24 @@ function M.Install(X)
         return st
     end
 
+    -- NC_LAB_SPACING: T2 air labs are spread over the block (raid answers come from all of them): none within that many block rows in this or
+    -- a neighbouring building column
+    local function LabSpaced(T, nc, j, r)
+        local sp = T.CFG.NC_LAB_SPACING or 0
+        for _, b in pairs(nc.blocks) do
+            if b.kind == "lab" and math.abs(b.j - j) <= 1 and math.abs(b.r - r) < sp then return false end
+        end
+        return true
+    end
+
     local function StartBuild(T, nc, f, conID, res)
-        local b = table.remove(f.redo, 1)
+        local b = (#f.redo > 0 and RedoReady(T, nc, f.redo[1])) and table.remove(f.redo, 1) or nil
         if not b then
             local r = BuildForward(T, nc, f)
             while r do
                 -- the block's kind
                 local kind
-                if nc.labsPlanned < LabsWanted(T, nc, res) then kind = "lab"
+                if nc.labsPlanned < LabsWanted(T, nc, res) and LabSpaced(T, nc, f.col, r) then kind = "lab"
                 elseif nc.t2 then kind = NeedEnergyFuture(T, nc, res) and "gap" or "mex"
                 else kind = NeedEnergyT1(T, nc, res) and "wind" or "mex" end
                 b = { j = f.col, r = r, kind = kind, state = "t1" }
@@ -308,7 +338,9 @@ function M.Install(X)
         table.sort(cands, function(a, b) return Score(a) < Score(b) end)
         local b = cands[1]
         local target
-        if b.kind == "mex" then
+        if b.rebuildTarget then
+            target, b.rebuildTarget = b.rebuildTarget, nil                -- recovered: rebuilt as it was
+        elseif b.kind == "mex" then
             -- NC_MEX_TO_ENERGY: energy is short and no wind block or gap is left on this front: the T1 mex block becomes an energy block
             target = (needE and K.NC_MEX_TO_ENERGY) and K.NC_ENERGY_UNIT or "moho"
         else target = needE and K.NC_ENERGY_UNIT or "moho" end
@@ -335,6 +367,15 @@ function M.Install(X)
         if not pick then
             for _, f in ipairs(nc.fronts) do
                 if f.kind == kind and Startable(T, nc, f) then pick = f; break end
+            end
+        end
+        -- NC_RETRO_NANOS: while the block has fewer nanos than this and nano rows wait to be rebuilt, a T2 con rebuilds nanos first
+        if kind == "retro" and T.CFG.NC_RETRO_NANOS and nc.nanoN < T.CFG.NC_RETRO_NANOS then
+            for _, nf in ipairs(nc.fronts) do
+                if nf.kind == "nano" and #nf.redo > 0 then
+                    local st = StartNano(T, nc, nf, conID)
+                    if st then nf.active = nf.active + 1; return st end
+                end
             end
         end
         if not pick then return false end
@@ -373,7 +414,10 @@ function M.Install(X)
         elseif info.kind == "build" then
             local b = info.block
             if b.kind == "mex" or b.kind == "wind" then nc.run[b.kind] = math.max(0, nc.run[b.kind] - 1) end
-            if ok then
+            if ok and b.recovered then
+                b.state, b.recovered = "t1done", nil
+                Echo(T, "%s: block %d (%s) rebuilt", FrontName(f), b.r, b.kind)
+            elseif ok then
                 b.state = "t1done"
                 if b.kind == "mex" then
                     nc.count.mexT1 = nc.count.mexT1 + 1
@@ -391,7 +435,10 @@ function M.Install(X)
             local b = info.block
             if info.target == "moho" then nc.run.moho = math.max(0, nc.run.moho - 1) else nc.run.energy = math.max(0, nc.run.energy - 1) end
             if b.kind == "wind" then nc.run.windOut = math.max(0, nc.run.windOut - 1) end
-            if ok then
+            if ok and b.wasFinal then
+                b.state, b.wasFinal = "final", nil
+                Echo(T, "%s: block %d rebuilt (%s)", FrontName(f), b.r, info.target)
+            elseif ok then
                 b.state = "final"
                 if b.kind == "mex" then nc.count.mexT1 = math.max(0, nc.count.mexT1 - 1)
                 elseif b.kind == "wind" then nc.count.windT1 = math.max(0, nc.count.windT1 - 1)
@@ -622,6 +669,16 @@ function M.Install(X)
         if frame % 60 == 0 then nc.ecoUnits, nc.added = CountEcoUnits(T), 0 end
         X.UpdateNcHelpers(T, frame)
         X.NcFerryUpdate(T, nc, frame)
+        X.NcRecover(T, nc, frame, res)
+        -- NC_CON_LAB: the oldest T2 air lab of the block is held for T2 cons (macro_runtime's TileLabHold) while the retro fronts want cons;
+        -- the other labs are free for the lab controller (raid Wasps, the defence floor)
+        if K.NC_CON_LAB and frame % 30 == 0 then
+            if not (nc.conLab and Spring.GetUnitDefID(nc.conLab)) then
+                nc.conLab = nil
+                for id in pairs(nc.labIDs or {}) do if not nc.conLab or id < nc.conLab then nc.conLab = id end end
+            end
+            nc.conLabHeld = nc.conLab ~= nil and Want(T, "retro") > 0
+        end
         NcNanos(T, nc, frame, res)
         if frame % K.NC_LOG_EVERY == 0 then Status(T, nc, frame) end
         -- a session whose builder has stood with an empty queue for 20 s: log what its queue holds (a stuck session holds its con for ever)
@@ -673,6 +730,7 @@ function M.Install(X)
         end
         NcNanoFinished(T, nc, unitID, defID, x, z)
         X.NcFerryUnitFinished(T, nc, unitID, defID)
+        X.NcRecoverUnitFinished(T, nc, unitID, defID, x, z)
     end
 
     function X.NcUnitDestroyed(T, unitID)
@@ -737,7 +795,9 @@ function M.Install(X)
         end
         local held = 0
         for _ in pairs(nc.helpers) do held = held + 1 end
-        return out, math.max(0, math.min(total, K.NC_HELPER_CAP - held))
+        local cap = K.NC_HELPER_CAP
+        if K.NC_HELPER_CAP_RECOVER and X.NcPendingRows(nc) > 0 then cap = math.max(cap, K.NC_HELPER_CAP_RECOVER) end
+        return out, math.max(0, math.min(total, cap - held))
     end
 
     local function StartHelper(T, id)
@@ -778,6 +838,7 @@ function M.Install(X)
 
     X.NcBlock = Block
     X.NcRowOfStep = RowOfStep
+    X.NcNewSession = NewSession
 end
 
 return M
