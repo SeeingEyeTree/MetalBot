@@ -61,6 +61,22 @@ the last 60 s), enemy mobile units in view, made/lost, the enemy ring's size.
   (11:00), explored 45% -> 81%; game 1 (wing late) had `fresh_enemy` 0.07 at 10:00. No wing scout died (the enemy, CORE_ROWS_ECO,
   lost its commander at 11:25), so losses to real AA are untested.  -> the air lab gate moved to 7:00 (user: up by ~9:30).
 
+## Game 3: 25-min CORE_v4 vs CORE_ROWS_ECO (main 34897c6; ended ~19:30 on the wall-clock backstop, CORE_ROWS_ECO won on phi)
+
+Replay: `BAR data/demos/2026-10-30_22-20-20-550_Full Metal Plate 1.7_2026.07.04.sdfz`.  The scouting did NOT hold up:
+- Slow start: air lab 8:16, but 1 Finch at 9:17, 4 at 10:17 (the lab alone, its nanos still to come; metal stall 13% at 8:00).
+- Attrition beat production: from 9:30 ~4-5 air scouts died a minute; made 78 / lost 76 air by 18:47 (190 corfink lost in all, PICKET's
+  included: ~9.7k metal + ~275k energy).  The wing sat at 1-2 of 13 air at 13:47, 17:47, 18:47.  Ground: made 37 / lost 28.
+- The enemy ring was in the wrong place: CORE_ROWS_ECO's buildings spread so far (footprint radius 711 -> ~4400) that the ring sat
+  ~4400 + 1300 + 1500 (loss push) = ~7200 from their centre, on a map whose bases are ~10.6k apart: it orbited near OUR side.
+- Tracker: our `fresh_enemy` 0.12-0.15 (8-14 min) -> 0.05 (16:00) -> 0.003 (18:00); theirs (no wing) 0.34-0.47.  `cov60` (any cell
+  touched in 60 s) said 38-97%: a passing scout touches many cells, so it overstates vision -- read `fresh_enemy` instead.
+- Arrivals warned: ours 237 of 257 (lead_med 3270), theirs 11 of 14.  Both scout labs died at 19:04 when the base was overrun.
+
+Fixes to try: cap the enemy ring (a fraction of the base-to-base distance, not the footprint's far edge; robust footprint percentile);
+loss push should not move the ring onto our half; nanos before scouts start, or the scouts built ahead of them; scouts kept off
+known AA / enemy groups harder (losses ~4/min); per-kind loss rate in [SW].
+
 ## Open
 
 - The enemy ring has not been seen against real AA yet; `RING_E_MARGIN` / `AA_AVOID` are first guesses.
