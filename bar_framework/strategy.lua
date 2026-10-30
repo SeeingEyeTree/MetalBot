@@ -39,7 +39,7 @@ function M.New(o)
     local loader = o.loader or SL
     assert(loader, "stance_loader not available")
     local s = setmetatable({ loader = loader, stances = {}, hooks = o.hooks or {}, ledger = nil, weights = nil,
-                             log = o.log ~= false, switchedF = -1e9, capFilter = o.capFilter }, Strategy)
+                             log = o.log ~= false, switchedF = -1e9, capFilter = o.capFilter, maxShare = o.maxShare }, Strategy)
     local list = o.stances or {}
     for k, v in pairs(list) do
         local name, st
@@ -92,6 +92,8 @@ function Strategy:Tick(frame, state)
     -- plan.share (optional, AIR_TIMING 2026-10-25): a floor under the hook's share while this stance is current (a burst stance)
     local plan = self.current and self.current.plan
     if plan and tonumber(plan.share) then share = math.max(share or 0, tonumber(plan.share)) end
+    -- maxShare (o.maxShare, macro_runtime ARMY_SHARE_MAX; user 2026-10-29): never all of income to the army -- at least 1 - maxShare stays eco
+    if self.maxShare and share then share = math.min(share, self.maxShare) end
     if self.capFilter and state.capFrac then         -- the unit-cap filter (see CapFiltered), with a little hysteresis
         local was = self.capTight
         if state.capFrac >= self.capFilter then self.capTight = true

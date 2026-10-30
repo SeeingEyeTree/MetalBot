@@ -21,11 +21,15 @@ local UNIT = VFS.Include("LuaUI/Widgets/bar_framework/unit_runtime.lua")
 -- The opening raid (user 2026-10-27; stance raid_start, army = "raid" + survive): units leave as soon as they are made, no early home guards, the first three ground units are free,
 -- a small garrison after that; new production stays home while a ground raid is on the base (HOLD_HOME), six ground scouts first (FIND_SCOUTS), blind groups go to unseen ground.
 UNIT.Install(widget, WG, {
-    RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450 },
+    RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450, OUR_HALF = true, THREAT_HOME = true },   -- THREAT_HOME (user 2026-10-29): under_attack / the con hold count only threats near the eco, scouts at 0.1   -- OUR_HALF (user 2026-10-28): an enemy seen on our side of the map is an intruder; HOME_R is from the eco footprint
     HOME_DEFENCE = { R = 700, SLACK = 150, POST_R = 550, LEASH = 250, GROUP_UNDER = 6, EARLY_UNTIL = 0, EARLY_MAX = 0 },
     MECH = { HOME_GROUND_AFTER = 3, HOME_GROUND_MIN = 0, HOME_GROUND_SHARE = 0.15, HOME_GROUND_MAX = 4, FIND_SCOUTS = 6 },
-    CLICK_ARMY = { EARLY_LAUNCH = { f0 = 7200, av0 = 130, f1 = 25200, av1 = 1800 }, LAUNCH_RATIO_EARLY = 0, MIN_GROUP_UNITS = 1, STAGE_FRAC = 0.12, MAX_GROUPS = 2, UNSEEN_FIRST = true },
+    CLICK_ARMY = { EARLY_LAUNCH = { f0 = 7200, av0 = 130, f1 = 25200, av1 = 1800 }, LAUNCH_RATIO_EARLY = 0, MIN_GROUP_UNITS = 1, STAGE_FRAC = 0.12, MAX_GROUPS = 2, UNSEEN_FIRST = true,
+                   LEG_LEAD = 600 },   -- LEG_LEAD (user 2026-10-29): each move ends 600 past the front-most unit, so units do not slow down between legs
     HOLD_HOME = { VALUE = 300 },
     FAST_RAIDERS = true,        -- user 2026-10-27: raiders and raid defenders with an enemy near get orders at 3 Hz (unit_clock FAST tier)
     RAID_SQUAD = { N = 5 },     -- user 2026-10-27: five gators keep raiding (survive-first) while the army holds, refilled from the blobs
+    ENEMY_INTEL = { BLIP_SCOUT_SPEED = 120 },   -- user 2026-10-29: a radar dot faster than any armed enemy type seen (Rovers ~166) is a scout, not army
+    PICKET = { N = 2, FRAC = 0.4, START_FRAME = 4 * 60 * 30 },   -- user 2026-10-29: two air scouts fly a picket line across the approach for early warning
+    RAID_CARRY = true,          -- user 2026-10-29 (BM_akumar6 game): a stance flip to hold never recalls a raid; every attacking unit keeps going until it dies
 })

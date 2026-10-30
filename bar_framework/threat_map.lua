@@ -163,8 +163,9 @@ end
 
 function M.PosWeight(channel, x, z)
     if not (MM and MM.Ready()) then return 1 end
-    local hx, hz = MM.Home()
-    local frac = MM.DistBetween(hx, hz, x, z) / math.max(1, MM.Dist())
+    -- user 2026-10-28: measured from our eco footprint (MM.BaseDist: the nearest eco / production structure), not from the
+    -- commander's spawn, so the bands move out with the base instead of firing late once the eco has grown away from the spawn
+    local frac = MM.BaseDist(x, z) / math.max(1, MM.Dist())
     return BandLookup(channel == "air" and M.POS_AIR or M.POS_GROUND, frac)
 end
 
@@ -373,7 +374,7 @@ function M.ProductionUrgency()
     -- and the position table does the escalation: a raid at the midline weighs 0.10
     -- of its value, in our half 0.30, in the mex grid 0.70.
     if MM and MM.Ready() then
-        local hx, hz = MM.Home()
+        local hx, hz = MM.Base()
         for _, ch in ipairs({ "ground", "air" }) do
             local score = M.ApproachScore(ch)
             if score > 0 then
@@ -571,7 +572,7 @@ end
 -- no-chase rule: a faster raider on its way out cannot be caught.
 function M.IsLeaving(inc)
     if not (MM and MM.Ready()) then return false end
-    local hx, hz = MM.Home()
+    local hx, hz = MM.Base()
     local toHomeX, toHomeZ = hx - inc.x, hz - inc.z
     return (inc.vx * toHomeX + inc.vz * toHomeZ) < 0
 end

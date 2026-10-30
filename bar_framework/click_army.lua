@@ -60,6 +60,10 @@ local CFG = {
     FALL_MAX_FRAMES = 1200,   -- ...and survivors give up waiting for the return after this long
     FALL_ARRIVE     = 700,    -- back at stage when the centroid is this close
     LEG             = 1000,   -- steering leg length (human legs: median 900-1900)
+    -- LEG_LEAD (nil = off; user 2026-10-29, the BM_akumar6 game: the 11:00 push crawled -- units turn and accelerate, so a move that ends just
+    -- ahead of a unit makes it slow down at the point and speed up again for the next one): the leg point is at least LEG_LEAD past the
+    -- FRONT-most unit of the core along the way (not LEG from the centroid), so no unit nears its goal before the next order (every 3-5 s)
+    LEG_LEAD        = nil,
     ATTACK_SWITCH   = 800,    -- closer than this to the target: ATTACK it
     NO_TARGET_R     = 1500,   -- at the enemy start with nothing to hit this close: give up
     LOOK_FRAMES     = 180,    -- ...after looking this long (intel scans every 90 frames)
@@ -269,7 +273,9 @@ local CFG = {
     SURVIVE            = false,
     SURVIVE_SET        = { ESCAPE_RATIO = 1.0, COMMIT_RATIO = 0.8, ESCAPE_LOSS_FRAC = 0.15, SURROUND_SECTORS = 2, ENGAGE_R = 1100, FALL_FRAC = 0,
                            DEF_PENALTY = 0.05, TARGET_DEF_MAX = 0.6, FLANK_PENALTY = 0.05, HOLE_N = 16, HOLE_R = 1800, HOLE_REPICK_FRAC = 0.25,
-                           FLANK_MIN_FRAC = 0.25, FLANK_CLEAR = 2400, CMDR_OPEN_FRAC = 0.15, ENEMY_NEAR_R = 1500 },
+                           FLANK_MIN_FRAC = 0.25, FLANK_CLEAR = 2400, CMDR_OPEN_FRAC = 0.15, ENEMY_NEAR_R = 1500, EVADE_FOE_PULL = 0.3, LOSS_MIN_THREAT = 0.25 },
+    LOSS_MIN_THREAT    = 0,        -- EngageSurvive: a recent loss (ESCAPE_LOSS_FRAC) is danger only when the armed enemy value near the group is at least this x the core's; 0 = any loss
+    EVADE_FOE_PULL     = 0,        -- EngageSurvive: how much cheaper a heading toward the enemy base is (x the core's value per evade distance); 0 = pure threat avoidance
     SURVIVE_R          = 1200,
     SURVIVE_STEP       = 500,
     SURVIVE_HOLE_FRAC  = 0.10,     -- dive only when the armed value round the target is under this x the core (0.35 dived into 2-3 defenders)
@@ -352,7 +358,7 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[CK] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
-M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY", "LAUNCH_PROD_S", "SIDE_R" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY", "LAUNCH_PROD_S", "SIDE_R", "LEG_LEAD" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     BC.Apply("click_army", CFG, o.cfg, o.label, M.NIL_OPTIONS)    -- caller overrides (LINE_CLICK: no automatic slow group)
@@ -889,12 +895,20 @@ end
 -- Next leg: toward (tx,tz), turned up to ~70 degrees if that avoids enemy armed value.
 -- The unit being attacked (skipUid) is not something to steer round: an armed target such as the
 -- enemy commander would otherwise push every leg sideways and the group would circle it.
-local function LegPoint(frame, cx, cz, tx, tz, groupValue, skipUid)
+local function LegPoint(frame, cx, cz, tx, tz, groupValue, skipUid, units)
     local dx, dz = tx - cx, tz - cz
     local d = math.sqrt(dx * dx + dz * dz)
     if d < 1 then return tx, tz end
     local step = math.min(CFG.LEG, d)
     dx, dz = dx / d, dz / d
+    if CFG.LEG_LEAD and units then                 -- LEG_LEAD: past the front-most unit, not just LEG from the centroid
+        local front = 0
+        for _, u in ipairs(units) do
+            local a = (u.x - cx) * dx + (u.z - cz) * dz
+            if a > front then front = a end
+        end
+        step = math.min(d, math.max(step, front + CFG.LEG_LEAD))
+    end
     local bx, bz, bestCost
     for _, ang in ipairs({ 0, 0.6, -0.6, 1.2, -1.2 }) do
         local c, s = math.cos(ang), math.sin(ang)
@@ -1393,15 +1407,24 @@ local function EngageSurvive(frame, g, list, cx, cz, fightV)
     local T, sectors = LocalThreat(frame, cx, cz, CFG.ENGAGE_R, CFG.SECTOR_MIN_FRAC * fightV)
     local loss = RecentLoss(g, frame)
     local lossFrac = loss / math.max(1, fightV + loss)
-    local danger = (sectors >= CFG.SURROUND_SECTORS and T >= CFG.SURROUND_MIN_FRAC * fightV) or lossFrac >= CFG.ESCAPE_LOSS_FRAC or T >= CFG.COMMIT_RATIO * fightV
+    -- LOSS_MIN_THREAT (user 2026-10-28, "they pulled back when there was nothing there"): losing a unit only counts as danger while armed enemy value
+    -- is actually known near the group.  Without it one dead Incisor of a small group (16% of its value) with 0 threat in view sent the whole
+    -- group 900 elmos away, shunned its target for 60 s and cancelled its set-targets -- over and over (7:40, 7:44, 7:48 in the test game).
+    local lossDanger = lossFrac >= CFG.ESCAPE_LOSS_FRAC and T >= (CFG.LOSS_MIN_THREAT or 0) * fightV
+    local danger = (sectors >= CFG.SURROUND_SECTORS and T >= CFG.SURROUND_MIN_FRAC * fightV) or lossDanger or T >= CFG.COMMIT_RATIO * fightV
     if not danger then return nil end
     local tx, tz = g.target and g.target.x, g.target and g.target.z
     local bx, bz, bc
+    local fx, fz = MM.Foe()
     for i = 0, 11 do
         local a = i * math.pi / 6
         local px, pz = MM.Clamp(cx + math.cos(a) * CFG.SURVIVE_EVADE_D, cz + math.sin(a) * CFG.SURVIVE_EVADE_D, CFG.MARGIN)
         local c = SteerValueNear(frame, px, pz, CFG.ENEMY_NEAR_R)
         if tx then c = c + 0.1 * fightV * Dist(px, pz, tx, tz) / 3000 end
+        -- EVADE_FOE_PULL (user 2026-10-28: "when they retreat they are just trying to leave instead of getting closer to the enemy base"):
+        -- a heading toward the enemy base is cheaper by up to 2 x pull x the core's value than one away from it, so the group steers AROUND
+        -- the threat on the side that keeps it going toward the enemy, and only turns back when every way forward is that much worse
+        if fx and (CFG.EVADE_FOE_PULL or 0) > 0 then c = c + CFG.EVADE_FOE_PULL * fightV * Dist(px, pz, fx, fz) / math.max(1, CFG.SURVIVE_EVADE_D) end
         if not bc or c < bc then bx, bz, bc = px, pz, c end
     end
     g.evadeUntil = frame + CFG.SURVIVE_HOLD
@@ -1711,7 +1734,7 @@ local function UpdateAttack(frame, g, list)
             for _, p in ipairs(g.holeScout or {}) do pts[#pts + 1] = p end
             g.scoutPts = pts
         end
-        local lx, lz = LegPoint(frame, cx, cz, ltx, ltz, fightV, g.target and g.target.uid)
+        local lx, lz = LegPoint(frame, cx, cz, ltx, ltz, fightV, g.target and g.target.uid, core)
         for _, u in ipairs(core) do Claim(frame, u.uid, CMD_MOVE, lx, lz) end
     end
 end

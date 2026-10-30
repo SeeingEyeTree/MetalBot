@@ -34,10 +34,13 @@ local LEDGER = VFS.Include("LuaUI/Widgets/bar_framework/eco_ledger.lua")   -- sp
 local UQ = VFS.Include("LuaUI/Widgets/bar_framework/unit_query.lua")   -- the per-frame unit snapshot (C5)
 local RegisterJobs                                                       -- defined below the jobs it registers
 
-LT.NIL_OPTIONS = { "NANO_CREW_PAUSE_SHARE", "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+LT.NIL_OPTIONS = { "GRID_FOCUS", "AIR_LAB_INCOME", "NANO_CREW_PAUSE_SHARE", "SHARE_GOV_ALPHA_FLOOR", "SHARE_GOV_ALPHA_CAP", "SHARE_GOV_MIN_ALPHA", "NANO_FIRST", "ANTINUKE_GRIDS", "BANK_LOW", "CAPSTONE_MAX", "CAP_SLACK_FRAC", "CONSOLIDATE_MAX", "CON_HOLD", "EARLY_CAPSTONES", "EARLY_CAPSTONE_NANOS", "FAST_OPEN_CAP", "HELP_ANY", "HELP_MAX", "HELP_NANOS", "NANO_CREW_NANOS", "PLANNER_CFG", "PLANNER_NEW_CELLS", "PLANNER_ONLY", "RECLAIM_BUDGET_FRAC", "RECLAIM_EVERY", "RETROFIT_FLOAT_BATCH", "RETROFIT_FLOAT_FRAC", "SPEND_SLOW", "STACK_HALF", "TIGHT_FLOAT_FRAC", "TIGHT_FLOAT_FRAMES", "TIGHT_FLOAT_START", "WIND_LATTICE", "EP_RATIO", "EP_BANK_SECONDS" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 LT.CFG = {
     GAP            = 48,          -- elmos between the line's outer edge and the first grid
     NANO_FIRST     = nil,         -- n: every grid's first jobs are n nanos, chained (a nano a finished nano reaches first); nil = the blueprint's order
+    GRID_FOCUS     = nil,         -- n: grid focus (user 2026-10-28) -- no new grid opens while the newest has fewer than n nanos, and every idle air con guards the con that started it (grid_helpers.lua)
+    GRID_FOCUS_GATE = true,       -- ... false: only the helpers focus (new grids still open as before)
+    GRID_FOCUS_MAX = 2700,        -- ... a grid holds the focus at most this many frames (a grid that cannot place its nanos must not freeze the expansion)
     GRID_REACH     = false,       -- a new grid cell opens only if a finished nano reaches one of its nano spots (after the first grid)
     GRID_REACH_WAIT = 3600,       -- ... after this many frames of waiting for one it opens the best cell anyway (GRID_REACH_FALLBACK_OK: wait for ever)
     GRID_REACH_FALLBACK_OK = false,
@@ -217,7 +220,18 @@ LT.CFG = {
     VP_NANO_ASSIST = false,
     -- NANOS_FIRST (user 2026-10-27): the lab's nanos are built BEFORE the lab (the con places them, then the lab) so they stand free and the lab is built fast and the line keeps scaling; false = the lab, then its nanos.
     VP_NANOS_FIRST = false, AIR_LAB_NANOS_FIRST = false, NANOS_FIRST_LEAD = 20 * 30,   -- LEAD: frames added to the lab's start time for the nanos
-    AIR_LAB_NANO_ASSIST = true,    -- false: the air lab's nanos are not ordered to guard it (UpdateLabAssist off); the engine's own auto-assist
+    SECOND_SPINE   = false,        -- true: line cons that finish their row start a second slot_spine instance elsewhere on the enemy side (line_transition/spine2.lua)
+    SPINE2_CONS    = 2,            -- ... how many finished line cons it takes
+    SPINE2_MIN_FRAME = 9000,       -- ... not before this frame (5:00)
+    SPINE2_SIDE    = "away",       -- ... "away": behind the line, away from the enemy (enemy raiders killed its cons on the enemy-facing strip, mirror 2026-10-27); falls back to the enemy side if there is no room.  "enemy": beside the first spine
+    SPINE2_OFFSET  = 2400,         -- ... enemy side: its base sits this far along the line from the first spine's (tried on both sides, the one nearer the map centre wins); away side: the offsets tried are 0, 1/3, 2/3 and 1 of this, either way
+    SPINE2_FRAC    = 0.4,          -- ... its share of the income it plans with while both stand (the first gets 1 - this); the one that stands alone gets all of it, the other keeps this much to rebuild
+    SPINE2_CFG     = { MAX_BLOCKS = 4 },   -- slot_spine overrides of the second spine (it also drops the first spine's air labs from LAB_CANDIDATES: it has no air cons)
+    AIR_LAB_FLOAT = false,         -- true: after EARLIEST_FRAME the air lab also goes down on a metal float (besides the bank + income test); LATEST_FRAME is the backstop
+    AIR_LAB_INCOME = nil,          -- m/s: after EARLIEST_FRAME the air lab also goes down once metal income reaches this, whatever the bank holds
+    AIR_LAB_FLOAT_FRAC = 0.25,     -- the bank counts as floating at this share of the metal storage ...
+    AIR_LAB_FLOAT_FRAMES = 90,     -- ... held this many frames
+    AIR_LAB_NANO_ASSIST = true,   -- false: the air lab's nanos are not ordered to guard it (UpdateLabAssist off); the engine's own auto-assist
     VP_ASSIST_SHARE = 0.6,
     VP_ASSIST_UNTIL = 7 * 60 * 30,
     VP_FIRST      = 2,
@@ -317,7 +331,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons" }) do
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons", "spine2" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
 local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine" }   -- registration order
@@ -581,7 +595,17 @@ local function UpdateWait(T, frame, res)
             end
         end
     end
-    if early or not (p.ok or late) then return end
+    -- AIR_LAB_FLOAT: from EARLIEST_FRAME on the lab also goes down as soon as the metal bank has floated (>= AIR_LAB_FLOAT_FRAC of storage for AIR_LAB_FLOAT_FRAMES), besides the bank + income test (p.ok)
+    local ready = p.ok
+    if T.CFG.AIR_LAB_FLOAT then
+        local frac = (res.metalStorage and res.metalStorage > 0) and res.metal / res.metalStorage or 0
+        if early or frac < (T.CFG.AIR_LAB_FLOAT_FRAC or 0.25) then T.labFloatSince = nil
+        else T.labFloatSince = T.labFloatSince or frame end
+        ready = ready or (T.labFloatSince ~= nil and frame - T.labFloatSince >= (T.CFG.AIR_LAB_FLOAT_FRAMES or 90))
+    end
+    -- AIR_LAB_INCOME: from EARLIEST_FRAME on, metal income at this level is enough (the army share can keep the bank near zero, so the bank test never passes)
+    if T.CFG.AIR_LAB_INCOME and not early and (res.metalIncomeS or res.metalIncome or 0) >= T.CFG.AIR_LAB_INCOME then ready = true end
+    if early or not (ready or late) then return end
     -- GOV_AIR_LAB: while the share governor holds the eco pipeline paused (the army is starved of metal) the air lab waits, at most GOV_AIR_LAB_MAX frames
     if T.CFG.GOV_AIR_LAB and T.ecoPaused then
         T.labGovSince = T.labGovSince or frame
@@ -793,12 +817,13 @@ end
 -- Spine geometry: cell 1 sits directly in front of the vehicle lab (just outside the line, on the lab's side), so the
 -- lab's two nanos reach it; the labs face away from the line and the stack of cells runs PARALLEL to the line.
 -- Returns { geo, baseX, baseZ } (base = one cell behind cell 1) or nil.
-local function SpineGeo(T)
+local function SpineGeo(T, dbx, behind)
     local SPINE, LC = T.spineMod, T.LC
     local lane = VpLane(T)
     if not lane then return nil end
     local out = (lane == 3) and 1 or -1                           -- b-z outward: lane 3 south of the line, lane 4 north
-    local bx = T.vpSite and T.vpSite.bx or (LC.X0 + 64 * 8)       -- the lab's place along the line
+    if behind then out = -out end                                 -- the second spine: the far side of the line, away from the enemy
+    local bx = (T.vpSite and T.vpSite.bx or (LC.X0 + 64 * 8)) + (dbx or 0)       -- the lab's place along the line (dbx: the second spine's offset along it)
     local bz = out > 0 and (LINE_BOX.z1 + T.CFG.SPINE_GAP + HALF_GRID) or (LINE_BOX.z0 - T.CFG.SPINE_GAP - HALF_GRID)
     local cx, cz = LC.World(T.L, bx, bz)
     cx, cz = math.floor(cx / 16 + 0.5) * 16, math.floor(cz / 16 + 0.5) * 16
@@ -814,24 +839,9 @@ local function SpineGeo(T)
     return { geo = geo, baseX = baseX, baseZ = baseZ }
 end
 
-StartSpine = function(T, frame)
-    local SPINE = T.spineMod
-    if T.spineOn or not (SPINE and T.spineBPs and T.spineBPs.T1) then return end
-    local g = SpineGeo(T)
-    if not g then
-        Spring.Echo("[LT] spine: no room in front of the vehicle lab; spine off")
-        T.spineMod = nil
-        return
-    end
-    -- Every cell and exit lane of the stack: grid cells must keep off them (their own lattice differs).
-    T.spineBoxes = {}
-    for n = 1, 2 * SPINE.CFG.STACK_HALF + 1 do
-        local ax, az = SPINE.CellAnchor(g.geo, g.baseX, g.baseZ, n)
-        local lx, lz = SPINE.LaneAnchor(g.geo, g.baseX, g.baseZ, n)
-        T.spineBoxes[#T.spineBoxes + 1] = { x = ax, z = az }
-        T.spineBoxes[#T.spineBoxes + 1] = { x = lx, z = lz }
-    end
-    SPINE.Init{
+-- The host environment of a slot_spine instance (the first spine, and the second one: line_transition/spine2.lua).
+local function SpineEnv(T, g)
+    return {
         BP_PLACER = T.BP, NANO = T.BP.NANO, blueprints = T.spineBPs,
         baseX = g.baseX, baseZ = g.baseZ, mapX = T.L.mapX, mapZ = T.L.mapZ,
         geo = g.geo, GroundOnly = true,        -- built by the vehicle lab's ground cons only, never by air cons
@@ -856,6 +866,28 @@ StartSpine = function(T, frame)
         MexGridsReady   = function() return SpineMexGridsReady(T) end,
         GroundArmyValue = function() return SpineGroundArmyValue(T) end,
     }
+end
+X.SpineGeo, X.SpineEnv = SpineGeo, SpineEnv
+X.SpineGroundArmyValue, X.SpineMexGridsReady = SpineGroundArmyValue, SpineMexGridsReady
+
+StartSpine = function(T, frame)
+    local SPINE = T.spineMod
+    if T.spineOn or not (SPINE and T.spineBPs and T.spineBPs.T1) then return end
+    local g = SpineGeo(T)
+    if not g then
+        Spring.Echo("[LT] spine: no room in front of the vehicle lab; spine off")
+        T.spineMod = nil
+        return
+    end
+    -- Every cell and exit lane of the stack: grid cells must keep off them (their own lattice differs).
+    T.spineBoxes = {}
+    for n = 1, 2 * SPINE.CFG.STACK_HALF + 1 do
+        local ax, az = SPINE.CellAnchor(g.geo, g.baseX, g.baseZ, n)
+        local lx, lz = SPINE.LaneAnchor(g.geo, g.baseX, g.baseZ, n)
+        T.spineBoxes[#T.spineBoxes + 1] = { x = ax, z = az }
+        T.spineBoxes[#T.spineBoxes + 1] = { x = lx, z = lz }
+    end
+    SPINE.Init(SpineEnv(T, g))
     -- lab_controller reads WG.Spine.  The widget's WG is passed in: a module included with VFS.Include does not
     -- see the widget environment's globals (a bare WG was nil in the real game and killed this function here).
     if T.WG then CH.Publish(T.WG, "Spine", SPINE) end
@@ -1271,11 +1303,20 @@ function LT.Update(T, frame, res)
     UpdateVpNanoAssist(Vp2(T), frame)
     UpdateSpineOpen(T, frame)
     UpdateRaidFocus(T, frame)
-    if T.spineOn then T.spineMod.Update(frame, res) end
+    if T.spineOn then
+        local r1, r2 = X.Spine2Split(T, res)
+        T.spineMod.Update(frame, r1)
+        if r2 then T.spine2Mod.Update(frame, r2) end
+    end
+    X.UpdateSpine2(T, frame)
 end
+
+-- a line con finished its lane: the second spine may take it (spine2.lua)
+function LT.OnLaneDone(T, laneID, conID) X.Spine2LaneDone(T, laneID, conID) end
 
 function LT.OnUnitCreated(T, unitID, defID, builderID)
     if T.spineOn then T.spineMod.OnUnitCreated(unitID, defID, builderID) end
+    if T.spine2On then T.spine2Mod.OnUnitCreated(unitID, defID, builderID) end
 end
 
 function LT.OnUnitFinished(T, unitID, defID, x, z)
@@ -1313,6 +1354,7 @@ function LT.OnUnitFinished(T, unitID, defID, x, z)
         end
     end
     if T.spineOn then T.spineMod.OnUnitFinished(unitID, defID, x, z) end
+    if T.spine2On then T.spine2Mod.OnUnitFinished(unitID, defID, x, z) end
     CB.EachSession(T.CB, function(st) T.BP.OnUnitFinished(st, unitID, defID, x, z) end)
     LineDecoyFinished(T, unitID, defID, x, z)
     local L2 = T.lab2
@@ -1344,10 +1386,12 @@ function LT.OnUnitFromFactory(T, unitID, defID, factID)
     if IsGroundCon(gd) then
         local owner
         if gd.canResurrect then owner = "rez"
-        elseif factID and ((factID == T.vpID) or (factID == T.vp2ID) or (T.spineOn and T.spineMod.IsLab and T.spineMod.IsLab(factID))) then owner = "spine" end
+        elseif factID and ((factID == T.vpID) or (factID == T.vp2ID) or (T.spineOn and T.spineMod.IsLab and T.spineMod.IsLab(factID))) then owner = "spine"
+        elseif factID and T.spine2On and T.spine2Mod.IsLab(factID) then owner = "spine2" end
         LT.AdoptCon(T, unitID, owner)
     end
     if T.spineOn then T.spineMod.OnUnitFromFactory(unitID, defID, factID) end
+    if T.spine2On then T.spine2Mod.OnUnitFromFactory(unitID, defID, factID) end
 end
 
 function LT.OnUnitDestroyed(T, unitID, attackerID)
@@ -1364,6 +1408,7 @@ function LT.OnUnitDestroyed(T, unitID, attackerID)
         if T.WG and T.WG.RezLab and T.WG.RezLab.id == unitID then T.WG.RezLab = nil end    -- the other labs make rez bots again
     end
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID, attackerID) end
+    if T.spine2On then T.spine2Mod.OnUnitDestroyed(unitID, attackerID) end
 end
 
 -- What defense_crew needs from the broker (its `pool` option): which cons it may use, taking one, giving it back.

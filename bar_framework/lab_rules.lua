@@ -20,9 +20,14 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
-M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR" }
+M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
+-- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
+-- Hawks -- 232 Shurikens killed, Wasps 84 -> 27): while the enemy's anti-air is large, no want may queue a stunner or an air raider (roles
+-- "stunner" / "raider": Shuriken, Wasp); the next want picks instead.  A live ground raid at home lifts it (the home answer keeps its stunners).
+--   { MIN = 2000, RATIO = 1.0, STATIC_W = 0.25 }: on when  aa >= MIN  and  aa >= RATIO x our armed air value, where
+--   aa = scouted mobile AA + scouted enemy armed air + STATIC_W x scouted static AA (static flak mostly guards the enemy's own base)
 
 function M.Install(widget, WG, K)
 K = K or {}
@@ -87,7 +92,8 @@ local DECOY_ORDER_TTL  = O("DECOY_ORDER_TTL", 3600)
 local SCOUTS_FIRST      = O("SCOUTS_FIRST", 0)         -- >0: the first N scouts are inserted at the HEAD of a lab's queue (ahead of the army): the ground scouts (corfav) go out first and look for the enemy
 local ARMY_QUEUE_MIN   = O("ARMY_QUEUE_MIN", 0)          -- army want keeps at least this many orders queued (0 = the old "refill when empty")
 local ARMY_TOPUP_GRACE  = O("ARMY_TOPUP_GRACE", 30)      -- frames between top-ups of the army want (the default grace is 120)
-local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- raiders ordered / adopted, for the raid-squad want (unit_runtime RAID_SQUAD)
+local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0,   -- raiders ordered / adopted, for the raid-squad want (unit_runtime RAID_SQUAD)
+                pk = { ordered = 0, made = 0, moved = 0, lastOrder = 0 } }   -- .pk: picket air scouts, the same counts (unit_runtime PICKET)
 local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
 local GARRISON_START = O("GARRISON_START_FRAME", 4 * 60 * 30)   -- SPINE_GARRISON (unit_runtime): the unit controller posts the first N Pounders on the spine's flanks (mb.garrisonWant);
                                                                 -- from this frame the labs make them first, ahead of the other picks, until they stand
@@ -1173,7 +1179,46 @@ end
 
 RegisterWants = function()
     lb.onOrder = OnOrder
-    local function add(spec) LB.AddWant(lb, spec) end
+    -- AIR_AA_GATE (header): every want's pick passes through the gate
+    local GATE = K.AIR_AA_GATE
+    local gatedDef = {}
+    if GATE then
+        for _, role in ipairs({ "stunner", "raider" }) do
+            local ud = UnitDefNames[ROLES.Get(role) or ""]
+            if ud then gatedDef[ud.id] = true end
+        end
+    end
+    local gateF, gateOn = -1, false
+    local function AirGated(frame)
+        if frame == gateF then return gateOn end
+        gateF = frame
+        local mb = C.mb
+        local f = mb and mb.intel and mb.intel.facts
+        local was = gateOn
+        local aa = f and ((f.aaMobile or 0) + ((mb.intel and mb.intel.airValue) or 0) + (GATE.STATIC_W or 0.25) * (f.aaStatic or 0)) or 0
+        if not f or RAID.live then
+            gateOn = false
+        else
+            gateOn = aa >= (GATE.MIN or 2000) and aa >= (GATE.RATIO or 1.0) * (mb.armyAir or 0)
+        end
+        if gateOn ~= was then
+            Spring.Echo(string.format("[LabCtrl] %d:%02d air gate %s: enemy anti-air %.0f vs our air %.0f (Shurikens / Wasps %s)",
+                math.floor(frame / 1800), math.floor(frame / 30) % 60, gateOn and "ON" or "off", aa, (mb and mb.armyAir) or 0,
+                gateOn and "held" or (RAID.live and "allowed: a raid is on the base" or "allowed again")))
+        end
+        return gateOn
+    end
+    local function add(spec)
+        if GATE and spec.pick then
+            local pick0 = spec.pick
+            spec.pick = function(lab, frame, slot)
+                local defID, why = pick0(lab, frame, slot)
+                if defID and gatedDef[defID] and AirGated(frame) then return nil end
+                return defID, why
+            end
+        end
+        LB.AddWant(lb, spec)
+    end
     local function picks(lab) return lab.picks end
 
     -- ── air defence (user 2026-10-25) ── a large air raid: every lab that can make AA clears its queue once per raid and makes AA
@@ -1194,6 +1239,17 @@ RegisterWants = function()
          pick = function()
              local ud = UnitDefNames[ROLES.Get("scout_air")]
              if ud and (C.bombScoutRoom or 0) > 0 then C.bombScoutRoom = C.bombScoutRoom - 1; return ud.id end
+         end }
+    -- the picket line's air scouts (unit_runtime PICKET, user 2026-10-29): one at a time, ahead of a busy air lab
+    add{ name = "picket-scout", prio = 74, mode = "ahead", why = "picket-scout", grace = 60,
+         applies = function(lab) return (C.picketRoom or 0) > 0 and not lab.held and not lab.isSink and not lab.isRezLab and LabCanBuild(lab.defID, ROLES.Get("scout_air")) end,
+         pick = function()
+             local ud = UnitDefNames[ROLES.Get("scout_air")]
+             if ud and (C.picketRoom or 0) > 0 then
+                 C.picketRoom = C.picketRoom - 1
+                 SQUAD.pk.ordered, SQUAD.pk.lastOrder = SQUAD.pk.ordered + 1, C.frame or 0
+                 return ud.id
+             end
          end }
     -- user 2026-10-26 (slimegirl game: "no scout"): the first AIR_SCOUTS_EARLY scouts are air scouts, ahead of any queue in any lab that can build one
     -- (outranks the air-con queue, the floors and the army).  C.scoutsHave counts scouts alive, building and ordered (Have), so labs do not over-order.
@@ -1562,7 +1618,7 @@ function widget:GameFrame(frame)
         local plan = WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan()
         local sup = plan and plan.support
         local rr = mb and mb.raid
-        local underAttack = rr ~= nil and frame - (rr.frame or -1e9) <= 300 and (rr.value or 0) >= 800
+        local underAttack = rr ~= nil and frame - (rr.frame or -1e9) <= 300 and (rr.home or rr.value or 0) >= 800   -- (rr.home: raid_response THREAT_HOME)
         local off = sup == false or (sup == "unless_raided" and underAttack)
         if off ~= (C.noSupport == true) then
             local sec = math.floor(frame / 30)
@@ -1571,6 +1627,18 @@ function widget:GameFrame(frame)
         C.noSupport = off
         if off then
             C.scoutRoom, C.bombScoutRoom, C.radarRoom, C.aaFloorRoom, RR.room = 0, 0, 0, 0, 0
+        end
+    end
+    -- the picket line (unit_runtime PICKET): air scouts still missing = wanted - flying - ordered but not yet adopted (an order not adopted in 60 s is dropped)
+    C.picketRoom = 0
+    do
+        local want = mb and mb.picketWant
+        if want and want > 0 then
+            local P, made = SQUAD.pk, mb.picketMade or 0
+            if made ~= P.made then P.made, P.moved = made, frame end
+            if P.ordered < made then P.ordered = made end
+            if P.ordered > made and frame - math.max(P.moved, P.lastOrder) > 1800 then P.ordered = made end
+            C.picketRoom = want - (mb.picketHave or 0) - (P.ordered - made)
         end
     end
     -- the raid squad (unit_runtime RAID_SQUAD, only while the army holds): raiders still missing = wanted - in the squad - ordered but not yet adopted

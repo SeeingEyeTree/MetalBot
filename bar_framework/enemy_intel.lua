@@ -62,6 +62,11 @@ M.BLIP_DEFAULT     = 150
 M.BLIP_MOVING      = 12      -- elmos/s: a blip that once went faster than this has moved (not a building)
 M.BLIP_SPEED_FIT   = 0.85    -- a seen type fits a blip when its max speed >= this x the blip's speed
 M.BLIP_AIR_HEIGHT  = 60      -- a blip this far above the ground is flying
+-- BLIP_SCOUT_SPEED (nil = off; user 2026-10-29, the BM_akumar6 game: 3 Rovers on radar, before any armed type was seen, were worth
+-- 3 x BLIP_DEFAULT = 450 of "army" and ended the opening raid): a moving dot this fast that no seen armed type can keep up with is a
+-- scout, worth BLIP_SCOUT_VALUE -- not the mean of the comp, not BLIP_DEFAULT.  Bots set it through unit_runtime ENEMY_INTEL.
+M.BLIP_SCOUT_SPEED = nil
+M.BLIP_SCOUT_VALUE = 0
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -121,6 +126,7 @@ local function Class(defID)
         bp        = d.buildSpeed or 0,
         radarR    = d.radarRadius or 0,        -- radar / jammer reach (structures only matter: see RadarCovers)
         jamR      = d.jammerRadius or 0,
+        mex       = (d.extractsMetal or 0) > 0,      -- Facts mexes / mexesT2 (signals enemy_income_est, eco_ratio)
         eco       = (d.extractsMetal or 0) > 0 or (d.energyMake or 0) > 0
                     or (d.windGenerator or 0) > 0 or (d.tidalGenerator or 0) > 0,
     }
@@ -297,6 +303,7 @@ function M.BlipValue(uid)
         if e.speed >= M.BLIP_SPEED_FIT * b.speed then fitN, fitV = fitN + e.n, fitV + e.n * e.value end
     end
     if fitN > 0 then return fitV / fitN end
+    if M.BLIP_SCOUT_SPEED and b.speed >= M.BLIP_SCOUT_SPEED then return M.BLIP_SCOUT_VALUE end   -- faster than any armed type seen: a scout
     if allN > 0 then return allV / allN end
     return M.BLIP_DEFAULT
 end
@@ -531,7 +538,7 @@ end
 -- Plain numbers for hooks: what the enemy has that we have to plan around.
 function M.Facts(frame)
     local f = { antiNuke = 0, aaStatic = 0, aaMobile = 0, aaDedicated = 0, radars = 0, jammers = 0,
-                ecoValue = 0, ecoStructs = 0, staticDef = 0, t2Units = 0, airFactories = 0 }
+                ecoValue = 0, ecoStructs = 0, staticDef = 0, t2Units = 0, airFactories = 0, mexes = 0, mexesT2 = 0 }
     for _, rec in pairs(seen) do
         local c = rec.c
         if c.interceptor and c.interceptor > 0 then f.antiNuke = f.antiNuke + 1 end
@@ -548,6 +555,7 @@ function M.Facts(frame)
         if c.jamR > 0 then f.jammers = f.jammers + 1 end
         if c.eco and not c.mobile and not c.armed then f.ecoValue, f.ecoStructs = f.ecoValue + c.value, f.ecoStructs + 1 end
         if c.armed and not c.mobile then f.staticDef = f.staticDef + c.value end
+        if c.mex then if c.tech >= 2 then f.mexesT2 = f.mexesT2 + 1 else f.mexes = f.mexes + 1 end end
         if c.mobile and c.tech >= 2 and c.armed then f.t2Units = f.t2Units + 1 end
         if c.airFactory then f.airFactories = f.airFactories + 1 end
     end

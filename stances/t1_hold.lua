@@ -2,14 +2,13 @@
 -- perK = units per 1000 metal-equivalent of army spend (metal + energy/70). behaviors / cfg: bar_framework/behavior_host.
 local M = {}
 M.name = "t1_hold"
-M.intent = [=[T1 hold: Pounders and Grunts screen, Aggravators / Wolverines give range, a ring that holds further out from the base.]=]
-M.control = [=[maneuver blobs on a perimeter ~1100 elmos out; long-range units stand behind their blob; the army only pushes when it clearly outweighs the scouted enemy.]=]
+M.intent = [=[T1 hold: Pounders and Grunts screen, Aggravators / Wolverines give range, a ring that holds further out from the base; a quiet blob goes out as a raid group.]=]
+M.control = [=[maneuver blobs on a perimeter ~1100 elmos out; long-range units stand behind their blob; the army only pushes when it clearly outweighs the scouted enemy. A blob with nothing attacking it (raid_sections) is released as a raid group and does not come back.]=]
 M.suggestedShare = [=[30]=]
-M.plan = { army = "hold", support = "unless_raided", bombers = 0.3, maneuver = { R_MIN = 900, WATCH = 600, OUT_EXTRA = 400 } }
+M.plan = { army = "hold", support = "unless_raided", bombers = 0.3, maneuver = { R_MIN = 900, WATCH = 600, OUT_EXTRA = 400 }, raid_sections = { n = 1, quiet_s = 5, min_units = 5, cooldown_s = 60 } }
+M.extras = { { n = "corraid", behaviors = { "brute_raid" }, note = "Brutes left over from raid_brutes / t1_push" } }
 M.units = {
-  { n = "corlevlr", share = 0.4000, ratio = 0.2890, perK = 1.556, cost = 257.1, note = [=[Pounder: the screen]=], tag = "mass" },
-  { n = "corthud", share = 0.3950, ratio = 0.4691, perK = 2.525, cost = 156.4, note = [=[Thug: tough bot]=] },
-  { n = "corgator", share = 0.1050, ratio = 0.1437, perK = 0.774, cost = 135.7, note = [=[Incisor: fast answer to raiders]=] },
-  { n = "cormist", share = 0.1000, ratio = 0.0981, perK = 0.528, cost = 189.3, note = [=[Lasher: T1 AA]=] },
+  { n = "corlevlr", share = 0.3000, ratio = 0.3098, perK = 1.167, cost = 257.1, note = [=[Pounder: the screen]=], tag = "mass" },
+  { n = "corraid", share = 0.7000, ratio = 0.6902, perK = 2.599, cost = 269.3, note = [=[]=] },
 }
 return M

@@ -514,10 +514,23 @@ function renderRight() {
         R.append(el("div", { class: "dim", style: "margin:6px 0" }, st.intent));
         R.append(el("div", {}, ...Object.entries(st.plan || {}).map(([k, v]) => el("span", { class: "chip" }, k + "=" + (typeof v === "object" ? JSON.stringify(v) : v)))));
         const tot = st.units.reduce((a, u) => a + (u.share || 0), 0) || 1;
-        for (const u of st.units) R.append(el("div", { style: "display:flex;gap:6px;align-items:center;margin-top:3px" },
-          el("span", { style: `width:10px;height:10px;background:${colorFor(u.n)};border-radius:2px;flex:none` }),
-          el("span", { style: "flex:1" }, IDX.units[u.n] || u.n), el("span", { class: "dim" }, Math.round(100 * u.share / tot) + "%"),
-          u.behaviors ? el("span", { class: "chip" }, u.behaviors.join(",")) : null));
+        // every unit: its share, the NAMED behaviours it carries (hover for what each does) and who drives it when the behaviours do not
+        // (click_army raid group, maneuver blob, AA post ...).  To change a unit's behaviour edit `behaviors = {...}` on its row in stances/<name>.lua.
+        const BEH = IDX.behaviors || {};
+        const chips = (list) => (list || []).map((b) => el("span", { class: "chip", title: BEH[b] || "" }, b));
+        if (st.control) R.append(el("div", { class: "dim", style: "margin:4px 0" }, st.control));
+        for (const u of st.units) {
+          R.append(el("div", { style: "display:flex;gap:6px;align-items:center;margin-top:3px" },
+            el("span", { style: `width:10px;height:10px;background:${colorFor(u.n)};border-radius:2px;flex:none` }),
+            el("span", { style: "flex:1" }, IDX.units[u.n] || u.n), el("span", { class: "dim" }, Math.round(100 * u.share / tot) + "%"),
+            ...chips(u.behaviors)));
+          if (u.driver) R.append(el("div", { class: "dim", style: "margin:0 0 2px 16px;font-size:11px" }, "driven by: " + u.driver));
+        }
+        if ((st.extra_units || []).length) {
+          R.append(el("div", { class: "dim", style: "margin-top:6px" }, "also controlled (not built by this stance):"));
+          for (const e of st.extra_units) R.append(el("div", { style: "display:flex;gap:6px;align-items:center;margin-top:2px" },
+            el("span", { style: "flex:1" }, IDX.units[e.n] || e.n), ...chips(e.behaviors)));
+        }
       }
     } else if (nd.hook) {
       const sl = el("select", { onchange: (ev) => { snap(); nd.hook = ev.target.value; nd.cfg = clone(HOOKS[nd.hook] || {}); renderAll(); persist(); } });

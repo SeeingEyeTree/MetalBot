@@ -68,7 +68,9 @@ M.CFG = {
     NANO_BATCH      = 6,      -- nanos released per tick
     NANO_INFLIGHT   = 12,     -- released nanos that may be unfinished at once
     MOVES_MAX       = 6,      -- nano assignment changes per tick
+    BLOCK_LAB_NANOS = 0,       -- >0: a block gets a lab in a free slot for every this-many of its nanos that stand (0 = the plan alone decides)
     PARK_NANOS      = true,
+    GUARD_NANOS     = true,    -- false: the spine never orders a nano to guard / assist (the engine's own assist does it); surplus nanos are still parked to the army share
     BUILDERS_PER_JOB = 2,     -- cons on a job (a block or a lab slot)
     MAX_JOBS        = 3,      -- lab slot jobs (build or clear) at once
     FLOAT_MULT      = 1,      -- while both banks float (free run) nanos and labs are planned for this multiple of income (capacity look-ahead)
@@ -158,7 +160,7 @@ local function Cfg() return M.CFG end
 local function Log(fmtStr, ...)
     local f = S and S.frame or 0
     local sec = math.floor(f / 30)
-    Spring.Echo(string.format("[SLOT] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
+    Spring.Echo(string.format("[SLOT%s] %d:%02d " .. fmtStr, S and S.env and S.env.logTag or "", math.floor(sec / 60), sec % 60, ...))
 end
 
 local function RotateOffset(x, z, r)
@@ -1270,6 +1272,24 @@ local function PlanLabs()
         room = room - c
     end
     if forcedVp then need[K.FIRST_VP_NAME] = math.max(need[K.FIRST_VP_NAME] or 0, forcedNeed) end    -- the slot-room cap above must not trim the forced plant
+    -- BLOCK_LAB_NANOS: a block puts a lab in a slot for every BLOCK_LAB_NANOS of its nanos that stand (at most one per slot), whatever the plan counts already (the host's
+    -- adopted plants fill the plan; without this the first slot lab came after two full blocks of nanos, mirror 2026-10-27)
+    if (K.BLOCK_LAB_NANOS or 0) > 0 and #order > 0 then
+        local per, want, cur = {}, 0, 0
+        for uid, n in pairs(S.nanos) do
+            if Alive(uid) and not Spring.GetUnitIsBeingBuilt(uid) then per[n.block] = (per[n.block] or 0) + 1 end
+        end
+        for _, c in pairs(per) do want = want + math.min(2, math.floor(c / K.BLOCK_LAB_NANOS)) end
+        for _, slot in ipairs(S.slots) do if slot.state == "build" or slot.state == "lab" then cur = cur + 1 end end
+        if want > cur then
+            for _, name in ipairs(order) do
+                if HasConSource(name) then
+                    need[name] = math.max(need[name] or 0, (have[name] or 0) + (building[name] or 0) + (want - cur))
+                    break
+                end
+            end
+        end
+    end
     S.plan, S.need = plan, need
 
     -- mark surplus: a standing lab beyond need (or not in the plan at all) has been unneeded since...
@@ -1416,6 +1436,7 @@ local function UpdateNanos()
     local nd = NanoDef()
     local reachBase = nd and nd.buildDistance or 128
     local moves = 0
+    local noGuard = K.GUARD_NANOS == false
     -- WAVE_SWAP: nanos near a slot that is being cleared or built are never parked; they assist the builder of that job
     local swapSites = {}
     if K.WAVE_SWAP then
@@ -1445,7 +1466,14 @@ local function UpdateNanos()
             local a = NANO.Assignment(uid)
             if a and a.prio < gp then
                 -- a hand-off or reclaim owns it right now
-            elseif SwapSite(x, z) then
+            elseif noGuard and i <= activeWant then
+                -- GUARD_NANOS off: an active nano is left to the engine's own assist (no guard order); only the surplus is parked below
+                if n.parked or n.guard or n.assist then
+                    NANO.Release(uid)
+                    n.parked, n.guard, n.assist = nil, nil, nil
+                    moves = moves + 1
+                end
+            elseif not noGuard and SwapSite(x, z) then
                 local w = SwapSite(x, z)
                 if w.builder then
                     if n.assist ~= w.builder then
@@ -1490,7 +1518,10 @@ local function UpdateNanos()
         end
     end
     S.active = 0
-    for _, uid in ipairs(list) do if S.nanos[uid] and S.nanos[uid].guard then S.active = S.active + 1 end end
+    for _, uid in ipairs(list) do
+        local nn = S.nanos[uid]
+        if nn and (nn.guard or (noGuard and not nn.parked)) then S.active = S.active + 1 end
+    end
     S.parked = #list - S.active
 end
 

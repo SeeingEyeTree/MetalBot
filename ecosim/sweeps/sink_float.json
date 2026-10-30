@@ -1,0 +1,12 @@
+{
+ "tag": "sink_float",
+ "seeds": "1-6",
+ "minutes": 22,
+ "base": { "bot": "candidates/CORE_ROWS_ECO", "vacuum": false },
+ "variants": {
+  "base":      { "set": { "line_transition": {} } },
+  "start5k":   { "set": { "metal_sink": { "SINK_START_MIN": 5000, "SINK_START_FRAMES": 450 } } },
+  "frac60":    { "set": { "metal_sink": { "SINK_SPEND_FRAC": 0.6, "SINK_START_MIN": 5000, "SINK_START_FRAMES": 450 } } },
+  "mexdone":   { "set": { "line_transition": { "RETROFIT_MEX_DONE": true } } }
+ }
+}

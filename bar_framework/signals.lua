@@ -31,6 +31,11 @@ M.list = {
     { "army_count",      "number", "number of combat units", "", function(s) return s.armyCount end },
     { "army_ground",     "number", "value of our armed ground units", "metal", function(s) return s.armyGround end },
     { "army_air",        "number", "value of our armed air units", "metal", function(s) return s.armyAir end },
+    -- idle value (user 2026-10-29; bar_framework/idle_value.lua): a unit not within 15 s of a comparable amount of enemy value is idle, and an
+    -- idle unit's worth decays with an 80 s time constant
+    { "army_idle_frac",  "number", "share of our army value that is idle (no comparable enemy value within 15 s of travel)", "", function(s) return s.armyIdleFrac end },
+    { "army_value_eff",  "number", "our army value with idle units' worth decayed (80 s time constant)", "metal", function(s) return s.armyEffValue end },
+    { "army_wasted",     "number", "army value lost to idling so far (cumulative)", "metal", function(s) return s.armyWasted end },
     -- the enemy as scouted
     { "enemy_located",   "bool",   "an enemy unit has been seen at least once", "", function(s) return s.located end },
     { "enemy_ground",    "number", "scouted enemy ground army value", "metal", function(s) return s.enemyGround end },
@@ -48,6 +53,20 @@ M.list = {
     { "enemy_silos",     "number", "scouted enemy nuke silos", "", function(s) return Intel(s).silos end },
     { "enemy_antinuke",  "bool",   "enemy has an anti-nuke", "", function(s) return s.enemyHasAntiNuke end },
     { "enemy_radar",     "bool",   "enemy has radar", "", function(s) return s.enemyRadar end },
+    -- user 2026-10-29 (the BM_akumar6 game: an 11x army "lead" while the enemy had 3.5x our income in mexes, towers and a T3 gantry): what the
+    -- enemy put its metal into besides its army.  Mex yields are Full Metal Plate's (knowledge/economy_numbers.md: T1 2.37, T2 9.48 m/s);
+    -- only scouted mexes count, so the income is a LOWER bound and eco_ratio an upper one
+    { "enemy_def",       "number", "scouted enemy static defence value (towers, flak, artillery)", "metal", function(s) return s.facts and s.facts.staticDef or 0 end },
+    { "enemy_mexes",     "number", "scouted enemy metal extractors (T1 + T2)", "", function(s) local f = s.facts or {}; return (f.mexes or 0) + (f.mexesT2 or 0) end },
+    { "enemy_income_est","number", "enemy metal income estimated from the scouted mexes (a lower bound; nil while none seen)", "m/s",
+      function(s) local f = s.facts or {}; local n1, n2 = f.mexes or 0, f.mexesT2 or 0
+          if n1 + n2 == 0 then return nil end
+          return n1 * 2.37 + n2 * 9.48 end },
+    { "eco_ratio",       "number", "our metal income / enemy_income_est (nil while no enemy mex is seen; an upper bound)", "",
+      function(s) local f = s.facts or {}; local e = (f.mexes or 0) * 2.37 + (f.mexesT2 or 0) * 9.48
+          local inc = s.metal and s.metal.income
+          if e <= 0 or not inc then return nil end
+          return inc / e end },
     -- army-value derivatives (av_rates.lua; nil until ~25 s of samples)
     { "own_av_rate",     "number", "d(our ground army value)/dt over ~60 s (net of losses)", "m/s", function(s) return s.avOwnRate end },
     { "enemy_av_rate",   "number", "rough enemy reinforcement rate: d(scouted enemy ground value)/dt + what we killed, ~60 s", "m/s", function(s) return s.avEnemyRate end },
@@ -69,11 +88,12 @@ M.list = {
     { "air_raid_bombers","number", "bombers counted in the current air raid", "", function(s) local r = Raid(s); return r and r.n or 0 end },
     { "air_lost",        "number", "own air value lost, last 120 s", "metal", function(s) return s.airLost end },
     { "air_kills",       "number", "enemy air value killed, last 120 s", "metal", function(s) return s.airKills end },
-    -- attacks on us (raid_response's intruder groups inside our territory, held 10 s)
+    -- attacks on us (raid_response's intruder groups inside our territory, held 10 s).  With raid_response THREAT_HOME the value is the record's `home`:
+    -- only groups near the eco footprint, scouts at SCOUT_WEIGHT (user 2026-10-29: Rovers on our half held the share at 1.0 and recalled every raid)
     { "enemy_near_base", "number", "value of enemy groups inside our territory right now (near the spine's build power); 0 when none", "metal",
-      function(s) local r = s.raid; if r and (s.frame or 0) - (r.frame or -1e9) <= 300 then return r.value or 0 end return 0 end },
+      function(s) local r = s.raid; if r and (s.frame or 0) - (r.frame or -1e9) <= 300 then return r.home or r.value or 0 end return 0 end },
     { "under_attack",    "bool",   "a REAL attack on us: enemy groups worth >= 800 inside our territory within the last 10 s", "",
-      function(s) local r = s.raid; return r ~= nil and (s.frame or 0) - (r.frame or -1e9) <= 300 and (r.value or 0) >= 800 end },
+      function(s) local r = s.raid; return r ~= nil and (s.frame or 0) - (r.frame or -1e9) <= 300 and (r.home or r.value or 0) >= 800 end },
     -- ground raids / urgency
     { "raid_active",     "bool",   "an enemy ground/air raid group is at our base (raid_response record)", "", function(s) return s.raid ~= nil end },
     { "raid_value",      "number", "value of the raid at the base", "metal", function(s) return s.raid and s.raid.value or 0 end },
