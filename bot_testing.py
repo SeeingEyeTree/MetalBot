@@ -1136,7 +1136,7 @@ def _parse_tracker(text: str, team: int) -> list:
     return rows
 
 
-BOT_ECHO_TAGS = ("[LT]", "[CB]", "[AUDIT]", "[LN]", "[CFG]", "[LB]", "[NANO]")
+BOT_ECHO_TAGS = ("[LT]", "[CB]", "[AUDIT]", "[LN]", "[CFG]", "[LB]", "[NANO]", "[SW]")   # [SW]: the scout wing (bar_framework/scout_wing.lua)
 
 
 def _parse_state_dump(text: str, team: int) -> dict:

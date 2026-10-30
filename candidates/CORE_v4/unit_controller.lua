@@ -31,6 +31,10 @@ UNIT.Install(widget, WG, {
     RAID_SQUAD = { N = 5 },     -- user 2026-10-27: five gators keep raiding (survive-first) while the army holds, refilled from the blobs
     ENEMY_INTEL = { BLIP_SCOUT_SPEED = 120 },   -- user 2026-10-29: a radar dot faster than any armed enemy type seen (Rovers ~166) is a scout, not army
     PICKET = { N = 4, FRAC = 0.4, START_FRAME = 3 * 60 * 30 },   -- user 2026-10-29: two air scouts fly a picket line across the approach for early warning
+    -- SCOUT WING (user 2026-10-30, bar_framework/scout_wing.lua): owns the scout labs' units (macro SCOUT_LAB).  Air scouts: 3 orbit just outside the enemy's
+    -- buildings (the ring grows as they build out), 2 orbit our base, the rest sweep the map for stale ground and lost enemy groups; ground scouts hold posts
+    -- on the axis, its flanks and our approaches.  Want 6 air + 4 ground, more with income (16 / 10 at most); every loss is rebuilt at once.  { } = its defaults.
+    SCOUT_WING = {},
     RAID_CARRY = true,          -- user 2026-10-29 (BM_akumar6 game): a stance flip to hold never recalls a raid; every attacking unit keeps going until it dies
     -- SUPPORT (user 2026-10-30, bar_framework/army_groups.lua): fixed-size support elements per army group, built up to n and then no more (not a stance share).
     -- raid = each click_army raid group (MAX_GROUPS of them), slow = the slow group while a push runs it, stage = the home blob.  A stance's plan.group_support replaces this.
