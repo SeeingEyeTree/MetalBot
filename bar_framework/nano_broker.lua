@@ -39,6 +39,7 @@ M.PRIO = {
     VP           = 0.25,  -- the vehicle lab frame while it is built with an enemy about (line_transition VP_RUSH): every nano in reach, ahead of the energy guard
     ENERGY       = 0.5,   -- energy is stalling: nanos in reach of a fusion job guard its builder (line_transition ENERGY_PRIORITY)
     WIND_RECLAIM = 1,
+    FOCUS        = 1.5,   -- nano-column block: nanos in reach of an eco frame of the type the economy needs (line_transition/nano_cols/nanos.lua)
     HANDOFF      = 2,
     SPINE        = 2.5,   -- spine lab guard/park: beats CLEAR/BALANCE, yields to hand-offs
     CLEAR        = 3,

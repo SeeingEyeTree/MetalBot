@@ -1,0 +1,26 @@
+{
+ "tag": "nc1",
+ "seeds": "1-4",
+ "minutes": 20,
+ "rank": "dbl_10_16",
+ "base": {"bot": "candidates/CORE_ROWS_ECO", "vacuum": false,
+          "phys": {"START": [[2816, 1904], [9472, 10384]]},
+          "set": {"line_transition": {"SECOND_SPINE": false}, "macro": {"ARMY_SHARE_FIXED": 0}}},
+ "variants": {
+  "grids_s0":   {},
+  "grids_s20":  {"set": {"macro": {"ARMY_SHARE_FIXED": 0.2}}},
+  "nc_s0":      {"set": {"line_transition": {"NANO_COLS": true}}},
+  "nc_s20":     {"set": {"line_transition": {"NANO_COLS": true}, "macro": {"ARMY_SHARE_FIXED": 0.2}}},
+  "nc_afus":    {"set": {"line_transition": {"NANO_COLS": true, "NC_ENERGY_UNIT": "afus"}}},
+  "nc_pat1111": {"set": {"line_transition": {"NANO_COLS": true, "NC_NANO_PATTERN": "1111"}}},
+  "nc_pat11100":{"set": {"line_transition": {"NANO_COLS": true, "NC_NANO_PATTERN": "11100"}}},
+  "nc_e1t15":   {"set": {"line_transition": {"NANO_COLS": true, "NC_E_RATIO_T1": 15}}},
+  "nc_unit07":  {"set": {"line_transition": {"NANO_COLS": true, "NC_UNIT_FRAC": 0.7}}},
+  "nc_cpf2":    {"set": {"line_transition": {"NANO_COLS": true, "NC_CONS_PER_FRONT": 2}}},
+  "nc_cpf5":    {"set": {"line_transition": {"NANO_COLS": true, "NC_CONS_PER_FRONT": 5}}},
+  "nc_ahead0":  {"set": {"line_transition": {"NANO_COLS": true, "NC_NANO_AHEAD": 0}}},
+  "nc_aheadInf":{"set": {"line_transition": {"NANO_COLS": true, "NC_NANO_AHEAD": false}}},
+  "nc_noRecl":  {"set": {"line_transition": {"NANO_COLS": true, "NC_RECLAIM_NANOS": false}}},
+  "nc_noM2E":   {"set": {"line_transition": {"NANO_COLS": true, "NC_MEX_TO_ENERGY": false}}}
+ }
+}

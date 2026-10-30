@@ -304,6 +304,44 @@ LT.CFG = {
     REZ_LAB_LANES     = { 4, 2, 1 },   -- outer lanes tried for the site, in order (after the T2 bot lab has taken its own)
     T2BOT_LANES       = { 3, 4 },      -- outer lanes tried for the site, in order (3 first: the lab faces out of the line there; 4 faced into it)
     LAB2_NANO_HELP    = false,         -- every nano in reach reclaims what stands on the site, then builds the lab frame
+    -- NANO COLUMNS (user 2026-10-30; line_transition/nano_cols/*.lua): instead of the mex grids, a block of nano columns with a building column on each side
+    -- (B N B N B N B), built by fronts that grow up and down from the origin row and T2 cons retrofitting behind them.  See nano_cols/fronts.lua.
+    NANO_COLS         = false,
+    NC_NANO_COLS      = 3,             -- nano columns (building columns = this + 1); fewer when the block does not fit beyond the line
+    NC_GAP            = 48,            -- elmos between the line's away edge (rows included) and the block
+    NC_MARGIN         = 96,            -- the block keeps this far from the map edge
+    NC_NANO_PATTERN   = "1010",        -- the nano rows of a block (4 per block, repeating): 1 = built in T1, 0 = left for the T2 fill
+    NC_FILL           = true,          -- T2: the nano fronts go back and fill the rows the pattern skipped
+    NC_NANO_AHEAD     = 1,             -- block rows a nano front may run ahead of the building fronts beside it (false = no limit)
+    NC_BUILD_LEAD     = 1,             -- block rows a building front may run ahead of the nano fronts beside it
+    NC_CONS_PER_FRONT = 3,             -- cons (block sessions) working one T1 front (nano / build) at once
+    NC_RETRO_CONS_PER_FRONT = 4,       -- T2 cons working one retro front at once
+    NC_MEX_TO_ENERGY  = true,          -- a retro front with energy short and no wind block / gap left turns a T1 mex block into an energy block
+    NC_HELP_NANO      = 2,             -- free T1 cons that guard each nano-row builder (the "nchelp" job) ...
+    NC_HELP_BUILD     = 1,             -- ... and each T1 block builder ...
+    NC_HELP_RETRO     = 0,             -- ... and each retrofit (T2) builder ...
+    NC_HELPER_CAP     = 16,            -- ... at most this many helpers in all
+    NC_E_RATIO_T1     = 12,            -- T1: a wind block when energy income (+ blocks being built) < this x metal income
+    NC_E_RATIO        = 15,            -- T2: an energy gap / energy retrofit when energy < this x metal (the T1 mex blocks counted as mohos for a new block)
+    NC_ENERGY_UNIT    = "fusion",      -- what an energy block becomes at T2: roles "fusion" (4x2) or "afus" (3x2)
+    NC_T2_LAB_INCOME  = 600,           -- metal income at which the first T2 air lab block is placed (or NC_T2_LAB_CAP_FRAC of the unit budget filled) ...
+    NC_T2_LAB_CAP_FRAC = 0.5,
+    NC_T2_LAB_STEP    = 400,           -- ... one more per this much income above it ...
+    NC_T2_LABS_MAX    = 4,             -- ... at most this many
+    NC_UNIT_FRAC      = 0.6,           -- the fronts stop while the eco units (every unit but the army) are over this share of the unit cap
+    NC_CAP_WIND_FIRST = 0.85,          -- eco units over this share of that budget: the retro fronts take wind blocks first
+    NC_HANDOFF        = 0.30,          -- a con leaves a frame to the nanos at this build progress
+    NC_FOCUS          = true,          -- nanos in reach of an eco frame of the type the economy needs focus on it (nano_cols/nanos.lua)
+    NC_FOCUS_MAX      = 6,             -- ... at most this many per frame
+    NC_FOCUS_HIGH     = true,          -- ... and are switched to high builder priority while they do
+    NC_PARK           = true,          -- the block's nanos are parked to meet the army share
+    NC_MIN_ACTIVE     = 0.3,           -- ... at least this share of them always active
+    NC_PARK_STEP      = 0.1,           -- ... parked / unparked this share at a time
+    NC_RECLAIM_NANOS  = true,          -- T2: nanos whose blocks are all finished are reclaimed (frees unit cap)
+    NC_LAB_NANOS      = 4,             -- ... except this many nearest each T2 air lab of the block
+    NC_RECLAIM_BATCH  = 20,            -- ... at most this many started per look (every 10 s)
+    NC_LOG_EVERY      = 1800,          -- [NC] status row
+    NC_MAP_EVERY      = 5 * 60 * 30,   -- [NC] map dump (false = off)
 }
 
 local HALF_GRID = 240
@@ -331,10 +369,14 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons", "spine2" }) do
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
+                        "nano_cols/nanos", "nano_cols/fronts" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
-local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine" }   -- registration order
+local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine",
+                    "ncnano", "ncbuild", "ncretro", "nchelp" }   -- registration order (the nc* jobs register only with NANO_COLS)
+-- NANO_COLS replaces the mex grids: their jobs are not registered
+local NC_REPLACES = { consolidate = true, retrofit = true, nanocrew = true, grid = true, fusionhelp = true, gridhelp = true }
 
 -- what the line / lab / spine code below calls from the modules
 local FindAirConDef, LiftAirConCap, ConHold, OrderT2Con = X.FindAirConDef, X.LiftAirConCap, X.ConHold, X.OrderT2Con
@@ -691,19 +733,25 @@ RegisterJobs = function(T)
         end
     end
 
-    for _, name in ipairs(JOB_ORDER) do X.jobs[name](T, cb) end
+    for _, name in ipairs(JOB_ORDER) do
+        if not (T.CFG.NANO_COLS and NC_REPLACES[name]) then X.jobs[name](T, cb) end
+    end
 end
 
 local function UpdateGrids(T, frame, res)
-    AuditGrids(T, frame)
-    UpdateRecovery(T, frame)
+    local NC = T.CFG.NANO_COLS          -- the nano-column block instead of the mex grids (line_transition/nano_cols)
+    if not NC then
+        AuditGrids(T, frame)
+        UpdateRecovery(T, frame)
+    end
     UpdateLineRecovery(T, frame)
     UpdateSecondLab(T, frame, res)
     UpdateT2BotLab(T, frame, res)
     UpdateRezLab(T, frame, res)
     UpdateLineDecoy(T, frame, res)
-    UpdateEligibility(T, frame)
-    UpdateNanoCrew(T, frame)
+    if NC then X.UpdateNanoCols(T, frame, res) end
+    if not NC then UpdateEligibility(T, frame) end
+    if not NC then UpdateNanoCrew(T, frame) end
     if not T.firstGridOK and T.firstGrid then
         local st, n, done = T.firstGrid, 0, 0
         for _, it in ipairs(st.queue) do
@@ -720,19 +768,21 @@ local function UpdateGrids(T, frame, res)
     end
     -- every job's build sessions run now (grids, retrofits, fusions, silos, cells, the second lab); a finished one frees its con
     CB.RunSessions(T.CB, frame, res)
-    local gridsPaused = T.ecoPaused and not T.CFG.GOV_KEEP_GRIDS
-    if not gridsPaused then UpdateGridHelpers(T, frame) end
-    if not gridsPaused then ReleaseCandidates(T, frame, res) end
-    CheckCapPressure(T, res, frame)
-    if not T.ecoPaused then
-        UpdateRetrofits(T, frame, res)
-        UpdateT2TopUp(T, frame, res)
-        UpdateT2Deferred(T, frame)
-        UpdateIdleCons(T, frame, res)
-        UpdateConsolidation(T, frame, res)
+    if not NC then
+        local gridsPaused = T.ecoPaused and not T.CFG.GOV_KEEP_GRIDS
+        if not gridsPaused then UpdateGridHelpers(T, frame) end
+        if not gridsPaused then ReleaseCandidates(T, frame, res) end
+        CheckCapPressure(T, res, frame)
+        if not T.ecoPaused then
+            UpdateRetrofits(T, frame, res)
+            UpdateT2TopUp(T, frame, res)
+            UpdateT2Deferred(T, frame)
+            UpdateIdleCons(T, frame, res)
+            UpdateConsolidation(T, frame, res)
+        end
+        if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end
+        UpdateSpendPressure(T, res)
     end
-    if frame % T.CFG.RECLAIM_EVERY == 0 then UpdateWindReclaim(T) end
-    UpdateSpendPressure(T, res)
     -- hand the cons out, ask the labs for what is short (T1: the reserve; T2: the jobs' `produce`)
     CB.Update(T.CB, frame, res, true)
     X.UpdateAirConRecovery(T, frame, res)
@@ -1071,7 +1121,7 @@ function LT.OnJobDone(T, j, state)
         if T.labNanosPending == 0 and not T.CFG.GRID_START then LiftAirConCap(T, "no lab nanos to wait for") end
         local lx, _, lz = Spring.GetUnitPosition(T.airLabID)
         if T.airConDefID and lx then
-            OpenFirstGrid(T, T.frame, lx, lz)
+            if T.CFG.NANO_COLS then X.OpenNanoCols(T, T.frame) else OpenFirstGrid(T, T.frame, lx, lz) end
             for _ = 1, 1 + T.CFG.AIR_CON_RESERVE do QueueAirCon(T, T.frame) end
         else
             Spring.Echo("[LT] the air lab has no air constructor to build")
@@ -1355,6 +1405,7 @@ function LT.OnUnitFinished(T, unitID, defID, x, z)
     end
     if T.spineOn then T.spineMod.OnUnitFinished(unitID, defID, x, z) end
     if T.spine2On then T.spine2Mod.OnUnitFinished(unitID, defID, x, z) end
+    if T.nc then X.NcUnitFinished(T, unitID, defID, x, z) end
     CB.EachSession(T.CB, function(st) T.BP.OnUnitFinished(st, unitID, defID, x, z) end)
     LineDecoyFinished(T, unitID, defID, x, z)
     local L2 = T.lab2
@@ -1409,6 +1460,7 @@ function LT.OnUnitDestroyed(T, unitID, attackerID)
     end
     if T.spineOn then T.spineMod.OnUnitDestroyed(unitID, attackerID) end
     if T.spine2On then T.spine2Mod.OnUnitDestroyed(unitID, attackerID) end
+    if T.nc then X.NcUnitDestroyed(T, unitID) end
 end
 
 -- What defense_crew needs from the broker (its `pool` option): which cons it may use, taking one, giving it back.

@@ -600,6 +600,10 @@ local function ApplyOrder(o)
     end
     if STATE_CMDS[cmd] or cmd >= 30000 then
         if cmd == CMD.ONOFF then u.active = (params[1] or 1) ~= 0 end
+        -- BAR builder priority gadget (GameCMD.PRIORITY): {0} low = passive (gets what the stall rule leaves), {1} high = served first
+        if cmd == P.CMD_PRIORITY and u.isBuilder and P.PRIORITY and not (u.d.customParams and u.d.customParams.iscommander) then
+            u.passive = (params[1] or 1) == 0
+        end
         return
     end
     if cmd == CMD.SELFD then

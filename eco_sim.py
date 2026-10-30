@@ -292,14 +292,16 @@ def cmd_sweep(a):
     rank = []
     for v, sums in by.items():
         ok = [s for s in sums if "crash" not in s]
-        vals = [s.get(rank_key, 0) or 0 for s in ok]
-        rank.append((statistics.median(vals) if vals else 0, v, sums))
+        low = rank_key.startswith("dbl_")          # doubling time: lower is better (a run that never doubled ranks last)
+        vals = [s.get(rank_key) or (99 if low else 0) for s in ok]
+        med = statistics.median(vals) if vals else (99 if low else 0)
+        rank.append((-med if low else med, v, sums))
     rank.sort(reverse=True)
     reals = [real_minutes(p) for p in sorted(glob.glob(a.calibrate))] if a.calibrate else None
     sinky = any("dragon20" in s for _, _, sums in rank for s in sums)
     print(f"\nranked by median {rank_key}")
     print(f"{'variant':24s} {'n':>2} {'inc20 med [range]':>22} " + " ".join(f"{m:>6}" for m in (8, 10, 12, 14, 16, 18))
-          + "   t1600  t3200  errs" + ("  calib" if reals else "") + (f"   {rank_key if rank_key.startswith('dragon') else 'dragon20'}k [range]  blocks  first" if sinky else ""))
+          + "   t1600  t3200  " + " ".join(f"{'dbl' + str(lo) + '-' + str(hi):>8}" for lo, hi in DBL_WINDOWS) + "  errs" + ("  calib" if reals else "") + (f"   {rank_key if rank_key.startswith('dragon') else 'dragon20'}k [range]  blocks  first" if sinky else ""))
     out = {}
     for med, v, sums in rank:
         ok = [s for s in sums if "crash" not in s]
@@ -313,6 +315,8 @@ def cmd_sweep(a):
         mi20 = statistics.median(i20) if i20 else 0
         line = (f"{v:24s} {len(ok):2d} {mi20:7.0f} [{min(i20) if i20 else 0:5.0f}-{max(i20) if i20 else 0:5.0f}] " + " ".join(cols)
                 + f"  {statistics.median(t16) if t16 else float('nan'):5.2f}  {statistics.median(t32) if t32 else float('nan'):5.2f}"
+                + "".join(f"  {statistics.median(d) if d else float('nan'):7.2f}" for d in
+                          ([s[f"dbl_{lo}_{hi}"] for s in ok if s.get(f"dbl_{lo}_{hi}")] for lo, hi in DBL_WINDOWS))
                 + f"  {sum(s.get('errors', 0) for s in ok) + len(sums) - len(ok):4d}")
         if sinky:
             dk = [s.get(rank_key if rank_key.startswith("dragon") else "dragon20", 0) / 1000 for s in ok]
@@ -339,12 +343,33 @@ def print_group(name, sums):
         v = [s[f"inc{m}"] for s in ok if f"inc{m}" in s]
         if v:
             parts.append(f"{m}:{statistics.median(v):.0f} [{min(v)}-{max(v)}]")
+    for lo, hi in DBL_WINDOWS:
+        v = [s[f"dbl_{lo}_{hi}"] for s in ok if s.get(f"dbl_{lo}_{hi}")]
+        if v:
+            parts.append(f"dbl{lo}-{hi}:{statistics.median(v):.2f}")
     print(f"{name}: n={len(ok)} " + "  ".join(parts))
 
 
 # ── summaries ────────────────────────────────────────────────────────────────
 
 MILESTONES = (200, 400, 800, 1600, 3200, 6400)
+DBL_WINDOWS = ((6, 12), (10, 16), (14, 20))     # minutes: income doubling time fitted over each window (dbl_<a>_<b>)
+
+
+def fit_doubling(tl, lo, hi):
+    """minutes per doubling of metal income over [lo, hi] game-minutes: log-linear least squares of the 10 s samples
+    (eco_scaling.fit_doubling on the sim timeline).  None when income does not grow."""
+    xs = [(r["frame"] / 1800, math.log(r["mi"])) for r in tl if lo * 1800 <= r["frame"] <= hi * 1800 and r["mi"] > 1]
+    if len(xs) < 4:
+        return None
+    n = len(xs)
+    mx = sum(x for x, _ in xs) / n
+    my = sum(y for _, y in xs) / n
+    sxx = sum((x - mx) ** 2 for x, _ in xs)
+    sxy = sum((x - mx) * (y - my) for x, y in xs)
+    if sxx <= 0 or sxy <= 0:
+        return None
+    return math.log(2) / (sxy / sxx)
 
 
 def avg_income(tl, frame, window=900):
@@ -363,6 +388,9 @@ def summarize(res):
     for x in MILESTONES:
         hit = next((r["frame"] for r in tl if r["mi"] >= x), None)
         s[f"t{x}"] = round(hit / 1800, 2) if hit else None
+    for lo, hi in DBL_WINDOWS:
+        d = fit_doubling(tl, lo, hi)
+        s[f"dbl_{lo}_{hi}"] = round(d, 2) if d else None
     if tl and "dragon_m" in tl[-1]:
         at20 = next((r for r in tl if r["frame"] == 36000), tl[-1])
         s["dragon20"] = round(at20.get("dragon_m", 0))          # metal into Dragons by 20:00
@@ -391,6 +419,7 @@ def print_summary(res):
     ms = "  ".join(f"{x}@{s.get(f't{x}') or '-'}" for x in MILESTONES)
     print(f"income (avg m/s at minute)  {inc}")
     print(f"time to m/s (min)           {ms}")
+    print("doubling time (min)         " + "  ".join(f"{lo}-{hi}:{s.get(f'dbl_{lo}_{hi}') or '-'}" for lo, hi in DBL_WINDOWS))
     print(f"metal produced {s.get('mprod')}  used {s.get('mused')}  wasted {s.get('mwaste')}  bank at end {s.get('bank_end')}"
           f"  units {s.get('units_end')}")
     if "dragon20" in s:
@@ -604,6 +633,11 @@ def cmd_compare(a):
     sb = [r["summary"].get("inc20") for r in B if r["summary"].get("inc20")]
     if sa and sb:
         print(f"\n20:00 income: A {statistics.median(sa):.0f}  B {statistics.median(sb):.0f}  (x{statistics.median(sb) / statistics.median(sa):.2f})")
+    for lo, hi in DBL_WINDOWS:          # recomputed from the timeline, so runs saved before the metric existed compare too
+        da = [d for d in (fit_doubling(r["timeline"], lo, hi) for r in A) if d]
+        db = [d for d in (fit_doubling(r["timeline"], lo, hi) for r in B) if d]
+        if da and db:
+            print(f"doubling time {lo}-{hi} min: A {statistics.median(da):.2f}  B {statistics.median(db):.2f} min")
 
 
 # ── categories (same rule as ecosim/world.lua Category) ──────────────────────

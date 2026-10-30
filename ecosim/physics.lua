@@ -35,6 +35,7 @@ local P = {
     -- priority (stock widget unit_builder_priority.lua); low-priority builders are switched fully on or off in a stable
     -- order so the team never stalls past these margins.
     PRIORITY      = true,
+    CMD_PRIORITY  = 34571,   -- GameCMD.PRIORITY (BAR modules/customcommands.lua): params {1} high, {0} low; a high builder is served before every low one
     STALL_MARGIN_INC_M = 0.2,
     STALL_MARGIN_INC_E = 0.4,
     STALL_MARGIN_STO   = 0.01,

@@ -18,6 +18,7 @@ SCENARIOS = {                       # name -> eco_sim.py run args
     "DRAGON_ECO":  ["--bot", "candidates/DRAGON_ECO", "--seed", "3", "--no-vacuum"],
     "STANCE_ECO2_vac": ["--bot", "candidates/STANCE_ECO2", "--seed", "4"],
     "CORE":        ["--bot", "candidates/CORE", "--seed", "2", "--no-vacuum"],
+    "CORE_ROWS_ECO": ["--bot", "candidates/CORE_ROWS_ECO", "--seed", "1", "--no-vacuum"],   # the main CORE (2026-10-28)
 }
 # A scenario with no baseline of its own is compared with another scenario's baseline: CORE (the config-driven bot) must play
 # exactly like RAID_BOT, so it runs RAID_BOT's seed and is diffed against RAID_BOT.base.txt.  `save` skips these.

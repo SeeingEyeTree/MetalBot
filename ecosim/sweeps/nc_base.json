@@ -1,0 +1,13 @@
+{
+ "tag": "nc_base",
+ "seeds": "1-8",
+ "minutes": 20,
+ "rank": "dbl_10_16",
+ "base": {"bot": "candidates/CORE_ROWS_ECO", "vacuum": false},
+ "variants": {
+  "grids_s0":        {"set": {"macro": {"ARMY_SHARE_FIXED": 0}}},
+  "grids_s20":       {"set": {"macro": {"ARMY_SHARE_FIXED": 0.2}}},
+  "grids_nosp2_s0":  {"set": {"macro": {"ARMY_SHARE_FIXED": 0},   "line_transition": {"SECOND_SPINE": false}}},
+  "grids_nosp2_s20": {"set": {"macro": {"ARMY_SHARE_FIXED": 0.2}, "line_transition": {"SECOND_SPINE": false}}}
+ }
+}
