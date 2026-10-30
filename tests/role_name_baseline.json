@@ -67,6 +67,7 @@
   "army_share"
  ],
  "unit_runtime.lua": [
+  "army_groups",
   "corape",
   "corbw",
   "corcrwh",
