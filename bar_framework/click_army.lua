@@ -250,6 +250,12 @@ local CFG = {
     HOLE_SCOUTS        = 2,       -- unseen ring points added to the group's scout requests
     -- Game plan (M.SetMode): "hold" launches nothing, recalls the groups and moves the stage back to HOLD_STAGE_FRAC.
     HOLD_STAGE_FRAC    = 0.25,
+    -- STAGE_DYNAMIC (false = off; user 2026-10-30: "if the bot is winning it is fine to have it that far forward but if it is losing it needs to
+    -- move it back so units don't try to gather in enemy area"): { MIN, MAX, R_LOW, R_HIGH, STEP, EVERY, THREAT_R, THREAT_AGE, THREAT_FRAC }.
+    -- Every EVERY frames the stage fraction slides from MIN (our ground army <= R_LOW x the enemy's scouted ground value) to MAX
+    -- (>= R_HIGH x), in STEP steps; then, while an enemy group seen in the last THREAT_AGE frames with armed value > THREAT_FRAC x our
+    -- ground army stands within THREAT_R of the stage spot, it steps back by STEP (to MIN at most).  Replaces STAGE_FRAC (not HOLD_STAGE_FRAC).
+    STAGE_DYNAMIC      = false,
     TRADE_WINDOW       = 5400,    -- frames M.TradeSummary looks back
     -- FIGHTER_POST (user 2026-10-13: "stage the fighters closer to the front, still far enough back that enemy ground AA
     -- cannot hit them"): the dedicated fighters click_army holds wait FIGHT-ing at M.FighterPost() -- FIGHTER_POST_BACK
@@ -331,6 +337,7 @@ local stageAV, reinforceAV = 0, 0
 local totals      = { launches = 0, kills = 0, killBP = 0, killValue = 0, lostUnits = 0, lostValue = 0 }
 local mode        = "raid"  -- M.SetMode: "raid" | "hold"
 local stageFrac   = nil     -- the STAGE_FRAC the stage point was computed with
+local dynStage    = { f = -1e9 }   -- STAGE_DYNAMIC: the fraction it last chose (.frac), when (.f), and why (.why)
 local tradeLog    = {}      -- { f, killed, lost }: every enemy death near a group / every group loss (TradeSummary)
 local groupEnds   = {}      -- { f, killed, lost, reason } per ended group, oldest first
 local lastPruneF  = -99999
@@ -373,6 +380,7 @@ function M.Init(o)
     stageAV, reinforceAV = 0, 0
     totals = { launches = 0, kills = 0, killBP = 0, killValue = 0, lostUnits = 0, lostValue = 0 }
     mode, stageFrac, tradeLog, groupEnds, lastPruneF = "raid", nil, {}, {}, -99999
+    dynStage = { f = -1e9 }
 end
 
 -- Game plan: "raid" (default) or "hold".  Hold launches nothing, sends every attacking group back (they fall to the
@@ -448,6 +456,13 @@ function M.Detach(uid)
     local g = byId[unitGroup[uid]]
     if not g then return nil end
     unitGroup[uid] = nil
+    return g.cx, g.cz
+end
+
+-- The centre of the group a unit is in (nil if none), without taking it out (Detach does that).
+function M.GroupCentre(uid)
+    local g = byId[unitGroup[uid]]
+    if not g then return nil end
     return g.cx, g.cz
 end
 
@@ -1776,6 +1791,31 @@ local function JoinGroup(frame, g, u)
     if g.cx then Claim(frame, u.uid, CMD_MOVE, g.cx, g.cz) end
 end
 
+-- raid_response CONTACTS (user 2026-10-30): interceptors that met a contact far out are already close to the enemy, so they raid from
+-- where they stand -- a new group while one is free, else they join the weakest attacking group -- instead of walking back to the stage.
+-- Only fast ground units in no group; returns how many were taken.
+function M.Adopt(frame, uids)
+    local fast = {}
+    for _, uid in ipairs(uids or {}) do
+        local defID = combat and combat[uid]
+        if defID and Alive(uid) and not unitGroup[uid] and not UQ.is_air(defID) and not IsSlow(defID) then
+            local x, _, z = Spring.GetUnitPosition(uid)
+            if x then fast[#fast + 1] = { uid = uid, defID = defID, x = x, z = z, hp = 1, v = Value(defID), slow = false } end
+        end
+    end
+    if #fast == 0 then return 0 end
+    if FastCount() < CFG.MAX_GROUPS then
+        local g = Launch(frame, fast, false)
+        Log(frame, "group #%d = %d interceptors that met a contact far out: they raid from there", g.id, #fast)
+    else
+        local g = WeakestAttacker()
+        if not g then return 0 end
+        for _, u in ipairs(fast) do JoinGroup(frame, g, u) end
+        Log(frame, "%d interceptors that met a contact far out -> group #%d", #fast, g.id or 0)
+    end
+    return #fast
+end
+
 -- ── Bombers ───────────────────────────────────────────────────────────────────
 
 local function UpdateBombers(frame)
@@ -1940,6 +1980,45 @@ local function RunArmyBehaviors(frame, ground)
     end
 end
 
+-- STAGE_DYNAMIC (CFG): the stage fraction for this tick -- forward while our ground army outvalues the enemy's, back while it does not,
+-- and back again while a strong enemy group stands near the stage spot.  Without STAGE_DYNAMIC it is STAGE_FRAC.
+local function StageFrac(frame)
+    local D = CFG.STAGE_DYNAMIC
+    if not D then return CFG.STAGE_FRAC end
+    if dynStage.frac and frame - dynStage.f < (D.EVERY or 300) then return dynStage.frac end
+    dynStage.f = frame
+    local own = 0
+    for uid, defID in pairs(combat or {}) do
+        if Alive(uid) and not UQ.is_air(defID) then own = own + Value(defID) end
+    end
+    local enemy = (EI and EI.GroundValue and EI.GroundValue(frame)) or 0
+    local r = enemy > 0 and own / enemy or 10
+    local lo, hi, step = D.MIN or 0.15, D.MAX or CFG.STAGE_FRAC, D.STEP or 0.05
+    local rl, rh = D.R_LOW or 0.7, D.R_HIGH or 1.5
+    local t = math.max(0, math.min(1, (r - rl) / math.max(0.01, rh - rl)))
+    local frac = math.floor((lo + (hi - lo) * t) / step + 0.5) * step
+    frac = math.max(lo, math.min(hi, frac))
+    local why = string.format("ground army %.0f vs enemy %.0f (%.2fx)", own, enemy, r)
+    if EI and EI.Groups and MM.Ready() then
+        local gs = EI.Groups(frame, 600, D.THREAT_AGE or 1800)
+        while frac > lo do
+            local sx, sz = MM.PointAt(frac * MM.Dist(), 0)
+            local near = 0
+            for _, g in ipairs(gs) do
+                if (g.armedValue or 0) > 0 and Dist(g.x, g.z, sx, sz) <= (D.THREAT_R or 1500) then near = near + g.armedValue end
+            end
+            if near <= (D.THREAT_FRAC or 0.5) * own then break end
+            why = why .. string.format("; enemy %.0f near the stage at %.2f", near, frac)
+            frac = math.max(lo, frac - step)
+        end
+    end
+    if frac ~= dynStage.frac then
+        Log(frame, "stage %.2f -> %.2f of the way to the enemy: %s", dynStage.frac or CFG.STAGE_FRAC, frac, why)
+    end
+    dynStage.frac, dynStage.why = frac, why
+    return frac
+end
+
 function M.Update(frame)
     if not (MM and ARMY and EI and MM.Ready()) then return end
 
@@ -1948,7 +2027,7 @@ function M.Update(frame)
     -- foe, and no group leaves on a guess.
     local fx, fz = MM.Foe()
     local src = MM.FoeSource()
-    local wantFrac = (mode == "hold") and CFG.HOLD_STAGE_FRAC or CFG.STAGE_FRAC
+    local wantFrac = (mode == "hold") and CFG.HOLD_STAGE_FRAC or StageFrac(frame)
     if not stageX or Dist(fx, fz, foeSeenX, foeSeenZ) > 300 or src ~= foeSeenSrc or wantFrac ~= stageFrac then
         foeSeenX, foeSeenZ, foeSeenSrc, stageFrac = fx, fz, src, wantFrac
         stageX, stageZ = MM.PointAt(wantFrac * MM.Dist(), 0)

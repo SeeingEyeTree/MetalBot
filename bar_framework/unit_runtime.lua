@@ -1868,7 +1868,19 @@ function widget:Initialize()
     if CA then
         CA.Init{ cfg = Load("bot_config").Preset("click_army", "RAID", K.CLICK_ARMY), label = "RAID_BOT",     -- CLICK_ARMY = { ... }: a variant's click_army tweaks (CORE_ROWS_ECO: the opening raid)
                  unseen = function(x, z, f) if SP and SP.NextUnseen then return SP.NextUnseen(x, z, f) end end,   -- (an `and` chain would cut the second return value, z)
-                 holdHome = K.HOLD_HOME and function()
+                 holdHome = (K.HOLD_HOME or (K.RAID_RESPONSE and K.RAID_RESPONSE.COVER)) and function()
+                     -- RAID_RESPONSE.COVER (user 2026-10-30): no raid launches, and no batch leaves, while a threat on our side is uncovered (cover_defence)
+                     local cv = WG and WG.MetalBot and WG.MetalBot.cover
+                     if cv and Spring.GetGameFrame() - (cv.frame or -1e9) <= 90 and (cv.uncovered or 0) > 0 then
+                         if Spring.GetGameFrame() - (NET.coverHoldLogF or -1e9) >= 450 then
+                             NET.coverHoldLogF = Spring.GetGameFrame()
+                             Spring.Echo(string.format("[COVER] %s launch held: %d threat(s) uncovered (value %.0f)",
+                                 string.format("%d:%02d", math.floor(Spring.GetGameFrame() / 1800), math.floor(Spring.GetGameFrame() / 30) % 60),
+                                 cv.uncovered, cv.uncoveredValue or 0))
+                         end
+                         return true
+                     end
+                     if not K.HOLD_HOME then return false end
                      local r = WG and WG.MetalBot and WG.MetalBot.raid
                      -- proportional (user 2026-10-28): new production stays home only while the units already answering are worth less than what the
                      -- reachable intruders call for (raid_response's need / committed); a raid nobody can reach holds nothing
@@ -1890,7 +1902,7 @@ function widget:Initialize()
                                 for k, v in pairs(K.RAID_RESPONSE or {}) do t[k] = v end     -- RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450 }: a variant's tweaks
                                 return t
                             end)()), label = "RAID_BOT",
-                            ARMY = ARMY, UQ = UQ, TM = TM, CA = CA, MM = MM,
+                            ARMY = ARMY, UQ = UQ, TM = TM, CA = CA, MM = MM, EI = EI,
                             combatUnits = combatUnits, musterPool = musterPool, responding = responding,
                             teamID = myTeamID, allyID = myAllyID, isCommander = IsCommander, lineAdvAt = LineAdvAt,
                             line = function() return nodes, baseX, baseZ, advDir, perpDir end,

@@ -40,6 +40,18 @@
 --                    and held the army share at 1.0 for minutes) the raid record also carries `home` = the THREAT value of the intruder groups
 --                    within THREAT_HOME_R of the eco footprint (MM.BaseDist).  A group's threat is its cost with scouts (UQ.is_scout) counted at
 --                    SCOUT_WEIGHT.  The fsm signals under_attack / enemy_near_base read `home` when it is there (signals.lua)
+--   CONTACTS         (nil = off; user 2026-10-30, CORE_v4: "intercept far out units but I don't want it to count as a raid ... keep the fighting
+--                    away from the base") { LEAK_R, LEAK_ETA_S, CONVERT_FWD, MIN_THREAT }.  An intruder group farther than LEAK_R from the eco footprint is a
+--                    CONTACT: it is met by interceptors taken only from the stage, new production and the muster pool (never home guards or
+--                    attack groups), with no HOME_R limit, and it is NOT a raid: it is not in mb.raid, so under_attack / enemy_near_base /
+--                    holdHome / the share machine do not see it.  A group becomes a LEAK -- the old raid response, home guards and all, and
+--                    counted in mb.raid -- once it is inside LEAK_R, or when the interceptors are short of its need and it is closing on the
+--                    eco with LEAK_ETA_S seconds or less to go.  Interceptors whose contact is gone and that stand past CONVERT_FWD of the way
+--                    to the enemy become raiders where they are (click_army Adopt: a new group, or the weakest one).  mb.contacts = { n, value }.
+--                    MIN_THREAT (default 0): a contact whose threat (cost, scouts at SCOUT_WEIGHT) is under this gets no interceptors (lone scouts).
+--   COVER            (nil = off; user 2026-10-30, CORE_v4 game review): { <cover_defence.lua CFG keys> }.  The GROUND answer to threats on our
+--                    side goes to bar_framework/cover_defence.lua (radar dots included, a line in front of the threatened eco that pushes out,
+--                    cut-offs, a launch gate through mb.cover); this module keeps air raids, stuns and Wasps.  Replaces CONTACTS for ground.
 
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")
 
@@ -47,8 +59,9 @@ local RR = {}
 
 RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIUS = 700, KEEP = 1500,
            KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150, OUR_HALF = false,
-           THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1, REINFORCE_PULL = nil, SQUAD_MIN = nil, SQUAD_WAIT = 20, SQUAD_RALLY = 0.4 }
-RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN" }
+           THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1, REINFORCE_PULL = nil, SQUAD_MIN = nil, SQUAD_WAIT = 20, SQUAD_RALLY = 0.4,
+           CONTACTS = nil, COVER = nil }
+RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN", "CONTACTS", "COVER" }
 
 function RR.New(o)
     local C = {}
@@ -59,6 +72,11 @@ function RR.New(o)
     local ARMY, UQ, TM, CA = o.ARMY, o.UQ, o.TM, o.CA
     local MM = o.MM                                  -- map_model (HOME_R is measured from the eco footprint; OUR_HALF)
     local combatUnits, musterPool, responding = o.combatUnits, o.musterPool, o.responding
+    -- COVER: the ground answer (cover_defence.lua); its units sit in `responding` as { cover = true, ... } and are skipped below
+    local COV = C.COVER and VFS.Include("LuaUI/Widgets/bar_framework/cover_defence.lua").New{
+        cfg = C.COVER, ARMY = o.ARMY, UQ = o.UQ, TM = o.TM, EI = o.EI, MM = o.MM, CA = o.CA,
+        combatUnits = combatUnits, musterPool = musterPool, responding = responding, teamID = o.teamID, allyID = o.allyID } or nil
+    r.cover = COV
     local myTeamID, myAllyID = o.teamID, o.allyID
     local IsCommander, LineAdvAt = o.isCommander, o.lineAdvAt
     local function host() return o.host and o.host() end
@@ -155,6 +173,19 @@ function RR.New(o)
             local w = math.max(1, g.cost)
             g.vx, g.vz = g.wvx / w, g.wvz / w
             g.speed = math.sqrt(g.vx * g.vx + g.vz * g.vz)
+            -- CONTACTS: how far from the eco, and how soon it gets there (only while it is closing on the base)
+            if C.CONTACTS and MM and MM.BaseDist then
+                g.dEco = MM.BaseDist(g.x, g.z)
+                g.contact = g.dEco > (C.CONTACTS.LEAK_R or 1500)
+                g.etaEco = math.huge
+                local bx, bz = MM.Base()
+                if bx and g.speed >= ICPT.STILL_SPEED then
+                    local dx, dz = bx - g.x, bz - g.z
+                    local d = math.sqrt(dx * dx + dz * dz)
+                    local closing = d > 0 and (g.vx * dx + g.vz * dz) / d or 0      -- elmos/s toward the base
+                    if closing > 1 then g.etaEco = g.dEco / closing end
+                end
+            end
         end
         -- forget enemies not seen for a while
         for id, h in pairs(ICPT.hist) do
@@ -355,28 +386,43 @@ function RR.New(o)
 
         local groups = IntruderGroups(frame)
         r.clusters = groups
+        if COV then                     -- COVER: ground threats are cover_defence's; this pass answers air raids only
+            local airOnly = {}
+            for _, g in ipairs(groups) do if g.channel == "air" then airOnly[#airOnly + 1] = g end end
+            groups = airOnly
+        end
 
         -- Each responder stays with the group nearest its last one; no group near, stand down.
         local have = {}   -- [group] = value committed
+        local convert = {}  -- CONTACTS: interceptors whose contact is gone, far enough out to raid from where they are
         for uid, last in pairs(responding) do
+          if not last.cover then          -- COVER units are cover_defence's
             local role = ARMY.RoleOf(uid)
             local best, bestD = nil, RESPOND_KEEP ^ 2
             for _, g in ipairs(groups) do
                 local d = (g.x - last.x) ^ 2 + (g.z - last.z) ^ 2
                 if d < bestD then best, bestD = g, d end
             end
-            if best and OutsideHome(combatUnits[uid], best.x, best.z, C.HOME_SLACK) then best = nil end       -- the raid moved out of the home radius
+            -- (a CONTACT is met wherever it is: HOME_R only binds the answer to a leak)
+            if best and not best.contact and OutsideHome(combatUnits[uid], best.x, best.z, C.HOME_SLACK) then best = nil end       -- the raid moved out of the home radius
             local ux0, _, uz0 = spGetUnitPosition(uid)
-            if best and ux0 and OutsideHome(combatUnits[uid], ux0, uz0, 2 * C.HOME_SLACK) then best = nil end   -- the unit itself got too far out
+            if best and not best.contact and ux0 and OutsideHome(combatUnits[uid], ux0, uz0, 2 * C.HOME_SLACK) then best = nil end   -- the unit itself got too far out
             if not best or not spGetUnitDefID(uid) or role == "RETREAT" then
                 if role == "RESPOND" then ARMY.Release(uid) end
                 responding[uid] = nil
                 EndIntercept(uid)
+                if C.CONTACTS and last.contact and ux0 and role ~= "RETREAT" and MM and MM.Ready() and spGetUnitDefID(uid)
+                   and MM.Forward(ux0, uz0) >= (C.CONTACTS.CONVERT_FWD or 0.3) * MM.Dist() then
+                    convert[#convert + 1] = uid
+                end
             else
                 responding[uid] = best
                 have[best] = (have[best] or 0) + (UQ.metal_cost(combatUnits[uid]) or 0)
             end
+          end
         end
+
+        if #convert > 0 and CA and CA.Adopt then CA.Adopt(frame, convert) end
 
         if RESPOND_KEEP_MULT then
             -- RAID_BOT: as raiders die, pull responders off down to RESPOND_KEEP_MULT x the raid's channel value (furthest
@@ -432,10 +478,54 @@ function RR.New(o)
             end
         end
 
+        -- CONTACTS: a contact's interceptors come from the stage, new production and the muster pool only, wherever the contact is
+        local function ContactCands(g)
+            local cands = {}
+            for uid, defID in pairs(combatUnits) do
+                if spGetUnitDefID(uid) and not responding[uid] and CanAnswer(defID, g.channel) then
+                    local role = ARMY.RoleOf(uid)
+                    local ok = musterPool[uid] or role == nil or (role == "BLOB" and CA and not CA.InGroup(uid))
+                    if ok then
+                        local ux, _, uz = spGetUnitPosition(uid)
+                        if ux then
+                            cands[#cands + 1] = { uid = uid, cost = UQ.metal_cost(defID) or 0,
+                                                  eta = math.sqrt((ux - g.x) ^ 2 + (uz - g.z) ^ 2) / math.max(1, UQ.max_speed(defID)) }
+                        end
+                    end
+                end
+            end
+            return cands
+        end
+
         for _, g in ipairs(groups) do
             local need = ChannelValue(g) * RESPOND_NEED_MULT
             local got  = have[g] or 0
-            if got < need then
+            local mode = "leak"
+            if C.CONTACTS and g.contact then
+                mode = "contact"
+                if got < need and (g.threat or g.cost or 0) >= (C.CONTACTS.MIN_THREAT or 0) then
+                    local cands = ContactCands(g)
+                    table.sort(cands, function(a, b) return a.eta < b.eta end)
+                    local added = 0
+                    for _, c in ipairs(cands) do
+                        if got >= need or (added > 0 and got + c.cost > need) then break end
+                        responding[c.uid] = g
+                        got, added = got + c.cost, added + 1
+                    end
+                    if added > 0 then
+                        local sec = math.floor(frame / 30)
+                        Spring.Echo(string.format("[UC/contact] %d:%02d %s contact at %d,%d (%.0f from the eco, eta %s): seen %d units cost %.0f, +%d interceptors (committed %.0f / %.0f)",
+                            math.floor(sec / 60), sec % 60, g.channel, g.x, g.z, g.dEco or 0,
+                            (g.etaEco or math.huge) < 1e8 and string.format("%.0fs", g.etaEco) or "-", g.n, g.cost, added, got, need))
+                    end
+                end
+                -- a contact we cannot stop in time is a leak: the full raid response (home guards, the pull) answers the rest
+                g.leak = got < need and (g.etaEco or math.huge) <= (C.CONTACTS.LEAK_ETA_S or 25)
+                if g.leak then mode = "leak" end
+            else
+                g.leak = true
+            end
+            if mode == "leak" and got < need then
                 local cands = {}
                 for uid, defID in pairs(combatUnits) do
                     local pulled = false
@@ -444,8 +534,12 @@ function RR.New(o)
                         elseif CA and CA.InGroup(uid) and MM and MM.BaseDist and not (UnitDefs[defID] or {}).canFly then
                             local px, _, pz = spGetUnitPosition(uid)
                             if px and MM.BaseDist(px, pz) <= C.REINFORCE_PULL then
-                                local cx, cz = CA.Detach(uid)
+                                -- only a straggler of a group that is far away is pulled; the test reads the group's centre and detaches
+                                -- after it (2026-10-30: Detach ran first, so every group just launched from the stage, ~1600 from the eco,
+                                -- lost all its units the next tick: 630 of 653 launches ended "0 of peak N left after 0s")
+                                local cx, cz = (CA.GroupCentre or CA.Detach)(uid)
                                 pulled = cx ~= nil and MM.BaseDist(cx, cz) > 2 * C.REINFORCE_PULL
+                                if pulled and CA.GroupCentre then CA.Detach(uid) end
                             end
                         end
                     end
@@ -493,6 +587,7 @@ function RR.New(o)
                         added, got, need))
                 end
             end
+            have[g] = got
         end
 
         -- SQUAD_MIN: a group's responders form up first (rally point toward the intruders), then go out together
@@ -520,7 +615,9 @@ function RR.New(o)
         local stunners, wasps = {}, {}
         for uid, g in pairs(responding) do
             local nm = (UnitDefs[combatUnits[uid] or -1] or {}).name or ""
-            if forming[g] and not STUN.NAMES[nm] and not SPLIT_WASP.NAMES[nm] and not (UnitDefs[combatUnits[uid] or -1] or {}).canFly then
+            if g.cover then
+                -- COVER: cover_defence orders this unit
+            elseif forming[g] and not STUN.NAMES[nm] and not SPLIT_WASP.NAMES[nm] and not (UnitDefs[combatUnits[uid] or -1] or {}).canFly then
                 EndIntercept(uid)
                 ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_MOVE_, x = g.rx, z = g.rz }, frame)
             elseif STUN.NAMES[nm] then
@@ -560,16 +657,37 @@ function RR.New(o)
     end
 
     r.icpt = ICPT
-    r.Dispatch = DispatchResponses
+    r.Dispatch = function(frame)
+        DispatchResponses(frame)
+        if COV then
+            local ok, err = pcall(COV.Step, frame)     -- a planner error is logged, not fatal to the unit controller
+            if not ok then Spring.Echo("[COVER] error: " .. tostring(err)) end
+        end
+    end
     r.Assets = ICPT.Assets
     r.Order = ICPT.Order
     function r.Forget(uid) ICPT.units[uid] = nil end
     function r.NoteAirLoss(frame) ICPT.airLoss[#ICPT.airLoss + 1] = frame end
     -- the raid state the labs read: the intruder clusters now (value, channel, speed), kept for them to apply a TTL
     function r.Publish(frame, mb)
-        if #r.clusters > 0 then
+        if COV then COV.Publish(frame, mb) end
+        if #r.clusters > 0 or (COV and #COV.FightGroups() > 0) then
+            -- CONTACTS: only leaks are a raid; contacts are published apart (mb.contacts)
+            local raidGroups = r.clusters
+            if COV then
+                raidGroups = {}
+                for _, g in ipairs(r.clusters) do if g.channel == "air" then raidGroups[#raidGroups + 1] = g end end
+                for _, g in ipairs(COV.FightGroups()) do raidGroups[#raidGroups + 1] = g end
+            elseif C.CONTACTS then
+                raidGroups = {}
+                local cn, cv = 0, 0
+                for _, g in ipairs(r.clusters) do
+                    if g.leak or not g.contact then raidGroups[#raidGroups + 1] = g else cn, cv = cn + 1, cv + (g.cost or 0) end
+                end
+                mb.contacts = { frame = frame, n = cn, value = cv }
+            end
             local v, gnd, air, spd, moving = 0, 0, 0, 0, false
-            for _, g in ipairs(r.clusters) do
+            for _, g in ipairs(raidGroups) do
                 v, gnd, air = v + g.cost, gnd + g.gnd, air + g.air
                 spd = math.max(spd, g.speed or 0)
                 if (g.speed or 0) >= ICPT.STILL_SPEED then moving = true end
@@ -578,7 +696,7 @@ function RR.New(o)
             -- (NEED_MULT x their channel value), `committed` = the value of the units answering now.  holdHome keeps new production home only
             -- while committed < need, so a raid in our half does not freeze production once it is answered
             local need, committed = 0, 0
-            for _, g in ipairs(r.clusters) do
+            for _, g in ipairs(raidGroups) do
                 if not (C.HOME_R and MM and MM.BaseDist and MM.BaseDist(g.x, g.z) > C.HOME_R) then need = need + ChannelValue(g) * RESPOND_NEED_MULT end
             end
             for uid in pairs(responding) do committed = committed + (UQ.metal_cost(combatUnits[uid]) or 0) end
@@ -586,12 +704,14 @@ function RR.New(o)
             local home
             if C.THREAT_HOME and MM and MM.BaseDist then
                 home = 0
-                for _, g in ipairs(r.clusters) do
+                for _, g in ipairs(raidGroups) do
                     if MM.BaseDist(g.x, g.z) <= C.THREAT_HOME_R then home = home + (g.threat or g.cost or 0) end
                 end
             end
-            ICPT.raid = { frame = frame, value = v, ground = gnd, air = air, speed = spd, moving = moving,
-                          channel = (air > gnd) and "air" or "ground", n = #r.clusters, need = need, committed = committed, home = home }
+            if #raidGroups > 0 then
+                ICPT.raid = { frame = frame, value = v, ground = gnd, air = air, speed = spd, moving = moving,
+                              channel = (air > gnd) and "air" or "ground", n = #raidGroups, need = need, committed = committed, home = home }
+            end
         end
         mb.raid = ICPT.raid
         local nl, keep = 0, {}

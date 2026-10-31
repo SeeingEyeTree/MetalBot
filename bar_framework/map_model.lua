@@ -163,6 +163,29 @@ function M.BaseDist(x, z)
     return math.max(0, d - BASE_CELL * 0.5)
 end
 
+-- The base point nearest (x, z) that lies inside the cone around the heading (dx, dz) -- cos of the angle >= cosMin -- else the
+-- nearest of all (also with no heading, or cosMin < -1).  Returns x, z, distance; the spawn while the footprint is empty.
+-- (cover_defence.lua: which eco a moving threat can reach.)
+function M.BaseNearestInCone(x, z, dx, dz, cosMin)
+    if baseN == 0 then
+        if not homeX then return nil end
+        return homeX, homeZ, math.sqrt((x - homeX) ^ 2 + (z - homeZ) ^ 2)
+    end
+    local hd = math.sqrt((dx or 0) ^ 2 + (dz or 0) ^ 2)
+    local ux, uz = 0, 0
+    if hd > 1e-6 then ux, uz = dx / hd, dz / hd end
+    local bx, bz, bd, cx, cz, cd
+    for i = 1, baseN do
+        local px, pz = basePts[2 * i - 1], basePts[2 * i]
+        local ex, ez = px - x, pz - z
+        local d = math.sqrt(ex * ex + ez * ez)
+        if not bd or d < bd then bx, bz, bd = px, pz, d end
+        if hd > 1e-6 and d > 1e-6 and (ex * ux + ez * uz) / d >= cosMin and (not cd or d < cd) then cx, cz, cd = px, pz, d end
+    end
+    if cx then return cx, cz, cd end
+    return bx, bz, bd
+end
+
 function M.Base()
     if baseCx then return baseCx, baseCz end
     return homeX, homeZ

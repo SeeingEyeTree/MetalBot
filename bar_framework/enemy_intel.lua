@@ -308,6 +308,26 @@ function M.BlipValue(uid)
     return M.BLIP_DEFAULT
 end
 
+-- A radar dot's likely type (user 2026-10-30: "if you have mostly seen gators and brutes and you see units moving at those speeds it
+-- is a pretty good guess"): of the enemy's armed ground types seen so far (comp: counts and max speeds), the most common one fast
+-- enough to move at the dot's measured speed.  Returns { defID, name, value, speed }, or with no type that fits { value = BlipValue,
+-- speed = the dot's speed, name = "?" }; nil for a dot that never moved, flies, or is a scout (BlipValue 0).
+function M.GuessType(uid)
+    local b = blips[uid]
+    if not b or b.air or not b.moved then return nil end
+    local best, bestN
+    for defID, e in pairs(comp) do
+        if e.speed > 0 and e.speed >= M.BLIP_SPEED_FIT * b.speed and (not bestN or e.n > bestN) then best, bestN = defID, e.n end
+    end
+    if best then
+        local d = UnitDefs[best]
+        return { defID = best, name = d and d.name or "?", value = comp[best].value, speed = comp[best].speed }
+    end
+    local v = M.BlipValue(uid)
+    if v <= 0 then return nil end
+    return { value = v, speed = b.speed, name = "?" }
+end
+
 -- The ground value of the radar dots on the map now (fresh blips).
 function M.BlipGroundValue(frame)
     local v = 0
