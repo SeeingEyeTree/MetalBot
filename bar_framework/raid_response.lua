@@ -94,6 +94,11 @@ function RR.New(o)
         if channel == "air" then return UQ.can_hit_air(defID) end
         return UQ.can_hit_ground(defID)
     end
+    -- COVER: a ground raid's ground answer is cover_defence's, its AIR answer (Shurikens' stuns, Wasps) stays here (g.airOnly)
+    local function CanAnswerG(defID, g)
+        if g.airOnly and not (UnitDefs[defID] or {}).canFly then return false end
+        return CanAnswer(defID, g.channel)
+    end
 
     -- STANCE_BOT raid response (behaviors/intercept.lua).
     --   hist     [enemy id] = {x, z, f, vx, vz, still}  position history -> velocity (elmos/s) and when it last went slow
@@ -386,10 +391,9 @@ function RR.New(o)
 
         local groups = IntruderGroups(frame)
         r.clusters = groups
-        if COV then                     -- COVER: ground threats are cover_defence's; this pass answers air raids only
-            local airOnly = {}
-            for _, g in ipairs(groups) do if g.channel == "air" then airOnly[#airOnly + 1] = g end end
-            groups = airOnly
+        if COV then                     -- COVER: ground threats are cover_defence's ground units; this pass answers air raids, and ground raids with aircraft only
+            -- (user 2026-10-31: CORE_v4 almost never sent Shurikens at a raid -- this used to drop the ground raids here, so no Shuriken / Wasp answered them)
+            for _, g in ipairs(groups) do if g.channel ~= "air" then g.airOnly = true end end
         end
 
         -- Each responder stays with the group nearest its last one; no group near, stand down.
@@ -449,7 +453,7 @@ function RR.New(o)
                         local to
                         for _, g2 in ipairs(groups) do
                             if g2 ~= g and (have[g2] or 0) < ChannelValue(g2) * RESPOND_NEED_MULT
-                               and CanAnswer(combatUnits[m.uid], g2.channel) then to = g2; break end
+                               and CanAnswerG(combatUnits[m.uid], g2) then to = g2; break end
                         end
                         if to then
                             responding[m.uid] = to
@@ -482,7 +486,7 @@ function RR.New(o)
         local function ContactCands(g)
             local cands = {}
             for uid, defID in pairs(combatUnits) do
-                if spGetUnitDefID(uid) and not responding[uid] and CanAnswer(defID, g.channel) then
+                if spGetUnitDefID(uid) and not responding[uid] and CanAnswerG(defID, g) then
                     local role = ARMY.RoleOf(uid)
                     local ok = musterPool[uid] or role == nil or (role == "BLOB" and CA and not CA.InGroup(uid))
                     if ok then
@@ -529,7 +533,7 @@ function RR.New(o)
                 local cands = {}
                 for uid, defID in pairs(combatUnits) do
                     local pulled = false
-                    if C.REINFORCE_PULL and spGetUnitDefID(uid) and not responding[uid] and CanAnswer(defID, g.channel) then
+                    if C.REINFORCE_PULL and spGetUnitDefID(uid) and not responding[uid] and CanAnswerG(defID, g) then
                         if musterPool[uid] then pulled = true
                         elseif CA and CA.InGroup(uid) and MM and MM.BaseDist and not (UnitDefs[defID] or {}).canFly then
                             local px, _, pz = spGetUnitPosition(uid)
@@ -544,7 +548,7 @@ function RR.New(o)
                         end
                     end
                     if spGetUnitDefID(uid) and not responding[uid] and (pulled or not musterPool[uid])
-                       and CanAnswer(defID, g.channel) and not OutsideHome(defID, g.x, g.z, 0) then
+                       and CanAnswerG(defID, g) and not OutsideHome(defID, g.x, g.z, 0) then
                         local role = ARMY.RoleOf(uid)
                         local ok = role == nil or role == "HOME_GUARD"
                         -- LINE_CLICK: only reinforcements (new units and the ones waiting at the stage), home

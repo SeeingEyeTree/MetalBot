@@ -1,7 +1,7 @@
 -- tests/test_rez_broker.lua     python tests/run_lua.py tests/test_rez_broker.lua
 -- bar_framework/rez_broker.lua with rez_crew's finders, the map model and army_broker replaced by fakes: jobs by priority, a bot
 -- HOLDS its job (no flip-flop), reservations (one wreck / friend
--- per bot), identical claims for a held job, dead bots release what they held, AddJob for new logic; and lab_broker's lab.only.
+-- per bot), the next wreck queued behind the current one (2026-10-31), identical claims for a held job, dead bots release what they held, AddJob for new logic; and lab_broker's lab.only.
 
 local failures, checks = 0, 0
 local function check(cond, what)
@@ -34,6 +34,14 @@ local RC = {
     RefreshNanos = function() end,
     HealPoint = function() return 10, 20, "nano" end,
     DamagedFriend = function(uid) return friends[uid] end,
+    Wrecks = function(minMetal)
+        local t = {}
+        for fid, f in pairs(features) do
+            if (f.metal or 0) >= minMetal then t[#t + 1] = { fid = fid, x = f.x or 1000, z = f.z or 1000, metal = f.metal, rez = f.cmd == 125 } end
+        end
+        table.sort(t, function(a, b) return a.fid < b.fid end)
+        return t
+    end,
     BestWreck = function(frame, uid, x, z, busy, noRez)
         local best
         for fid, f in pairs(features) do
@@ -70,11 +78,12 @@ check(claims[1].cmd == 90 and claims[1].targetID == 5 + 32000, "a wreck outranks
 features[3] = { metal = 500, cmd = 125 }
 Pass()
 check(claims[1].targetID == 5 + 32000, "a better wreck appearing does not pull a bot off the one it is working (no flip-flop)")
+check(claims[1].queue and claims[1].queue[1].targetID == 3 + 32000, "...it is queued behind it instead (two jobs deep)")
 Pass(); Pass()
 check(claims[1].targetID == 5 + 32000, "...still working it later")
 features[5] = nil
 Pass()
-check(claims[1].targetID == 3 + 32000 and claims[1].cmd == 125, "the wreck gone: the next pick is the other wreck (resurrect)")
+check(claims[1].targetID == 3 + 32000 and claims[1].cmd == 90, "the wreck gone: the queued wreck is promoted (reclaimed: RESURRECT off)")
 
 -- 3. repair is lower than a safe wreck; a friend is repaired up to REPAIR_STOP -------------------
 Fresh(); frame = 0
@@ -99,7 +108,8 @@ check(claims[1].cmd == 40, "a wreck does not preempt a job held under MIN_HOLD")
 Pass(200)
 check(claims[1].cmd == 90, "...but does once MIN_HOLD has passed (the higher-priority job)")
 
--- 4. reclaim by default; RESURRECT only with a full-enough bank --------------------------------------
+-- 4. RESURRECT = true: an armed wreck is resurrected only with a full-enough bank ------------------------
+RB.Init{ RC = RC, MM = MM, ARMY = ARMY, cfg = { RESURRECT = true } }
 Fresh(); frame = 0
 bank = 0.3
 Bot(1); features[3] = { metal = 500, cmd = 125 }
@@ -123,6 +133,7 @@ Bot(1); features[3] = { metal = 500, cmd = 125 }
 Pass()
 check(claims[1].cmd == 90, "bank at 45% (under RESURRECT_BANK): a new job reclaims")
 bank = 0.8
+RB.Init{ RC = RC, MM = MM, ARMY = ARMY, cfg = { RESURRECT = false } }
 
 -- 5. reservations ----------------------------------------------------------------------------
 Fresh(); frame = 0

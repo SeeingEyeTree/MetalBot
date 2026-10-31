@@ -104,6 +104,7 @@ local function NeedsOrder(d, spec, unitID, frame)
     if not d.lastOrderFrame then return true end
     if d.lastCmd ~= spec.cmd then return true end
     if d.targetID ~= spec.targetID then return true end
+    if (spec.qkey or false) ~= (d.issuedQKey or false) then return true end   -- the queued tail (spec.queue) changed
     -- Compare against what the unit was actually TOLD, not what we last wanted.
     -- Comparing against the desired target lost every repositioning that arrived
     -- while the rate limit was active: the desired target updated, so the next tick
@@ -128,10 +129,20 @@ local function Issue(unitID, spec, frame)
         local y = spec.y or Spring.GetGroundHeight(spec.x, spec.z) or 0
         Spring.GiveOrderToUnit(unitID, spec.cmd, { spec.x, y, spec.z }, spec.opts or {})
     end
+    -- spec.queue = { { cmd, targetID } | { cmd, x, z }, ... }: orders queued (shift) behind the first, so the unit never waits for
+    -- the next pass between two jobs (rez_broker: two wrecks deep).  spec.qkey names the tail; a new tail is a new order.
+    for _, q in ipairs(spec.queue or {}) do
+        if q.targetID then
+            Spring.GiveOrderToUnit(unitID, q.cmd, { q.targetID }, { "shift" })
+        elseif q.x then
+            Spring.GiveOrderToUnit(unitID, q.cmd, { q.x, Spring.GetGroundHeight(q.x, q.z) or 0, q.z }, { "shift" })
+        end
+    end
     local d = duty[unitID]
     d.lastOrderFrame     = frame
     d.lastCmd            = spec.cmd
     d.issuedX, d.issuedZ = spec.x, spec.z
+    d.issuedQKey         = spec.qkey
 end
 
 -- Request a unit for a duty.  Returns true if this planner owns the unit after the

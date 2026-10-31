@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "REZ_DEMAND", "REZ_INCOME_PER_BOT", "REZ_OVERFLOW", "REZ_LAB_DEPTH", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
 -- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
@@ -97,6 +97,10 @@ local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0,   -- raiders or
                 sup = {},                                                     -- .sup[el]: the army groups' support elements, the same counts (unit_runtime SUPPORT)
                 SPAM_DEPTH = O("SPAM_LAB_DEPTH", 3),                          -- the spam lab (WG.SpamLab, line_transition/spam_lab.lua) keeps this many queued
                 SCL_DEPTH = O("SCOUT_LAB_DEPTH", 2),                          -- each scout lab (WG.ScoutLabs, line_transition/scout_lab.lua) keeps this many queued
+                -- rez bots sized by the work (user 2026-10-31): WG.MetalBot.rez.want (rez_broker Demand: wreck metal + missing army hp), at most one per
+                -- REZ_INCOME_PER_BOT m/s of income (early only a few: the metal is the army's); demand counts before REZ_START_FRAME too (reclaim in front
+                -- of the base pays for itself).  REZ_OVERFLOW: more than this past the rez lab's queue, the T1 bot labs make rez bots too.
+                REZ_DEMAND = O("REZ_DEMAND", true), REZ_INCOME_PER_BOT = O("REZ_INCOME_PER_BOT", 8), REZ_OVERFLOW = O("REZ_OVERFLOW", 4),
                 sclBorn = {},                                                 -- [unitID] = true: started in a scout lab (the scout wing's, not counted as our scouts)
                 SUP_BUDGET = O("SUPPORT_FROM_BUDGET", true) }                 -- support orders spend the army budget (never refused by it): support is army, not extra
 local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
@@ -991,6 +995,28 @@ function SQUAD.SpamLabID()
     local r = WG and WG.SpamLab
     return (r and r.id and spGetUnitDefID(r.id)) and r.id or nil
 end
+
+-- The macro's starter bot lab (WG.StarterLab() -> labID, conOpen): it is held for the macro's cons, but makes rez bots between them ("rez-starter").
+function SQUAD.StarterLab()
+    local f = WG and WG.StarterLab
+    if not f then return nil, false end
+    local id, conOpen = f()
+    if id and spGetUnitDefID(id) then return id, conOpen end
+    return nil, false
+end
+
+-- Rez bots still to order: the floor (REZ_BASE + army / REZ_PER_ARMY, from REZ_START_FRAME) or the broker's demand, whichever is more, at most
+-- REZ_MAX and one per REZ_INCOME_PER_BOT of income; minus what we have; plus the army groups' rez elements.
+function SQUAD.RezRoom(mb, frame, metalIncome, have)
+    local floor = frame < REZ_START_FRAME and 0 or (REZ_BASE + math.floor(((mb and mb.armyCount) or 0) / REZ_PER_ARMY))
+    local want = floor
+    local d = SQUAD.REZ_DEMAND and mb and mb.rez
+    if d and (d.want or 0) > 0 then
+        local byIncome = math.floor(metalIncome / math.max(1, SQUAD.REZ_INCOME_PER_BOT))
+        want = math.max(floor, math.min(d.want, byIncome))
+    end
+    return math.min(REZ_MAX, want) - have + ((mb and mb.support and mb.support.rez and mb.support.rez.want) or 0)
+end
 -- the line's decoy labs (line_decoy.lua: T2 bot labs on the line, 8 decoys assist each), alive, in id order
 local function LineLabs()
     local out, seen = {}, {}
@@ -1121,6 +1147,10 @@ local function Describe(labID, labDefID, frame)
                   skip = leaving or not spGetUnitDefID(labID), liftedHold = false }
     if lab.skip then return lab end
     lab.held = CH.TileLabHeld(WG, labID)      -- owes the macro's air cons (or is the starter lab): the air-rush flush leaves it alone
+    if lab.held and SQUAD.StarterLab() == labID then       -- the starter lab: rez bots between the macro's cons ("rez-starter")
+        local p = GetArmyPicks(labDefID)
+        lab.isStarter, lab.rezDef = true, p and p.rez
+    end
     if SINK_ON and IsSinkLab(labID) then lab.isSink = true; return lab end    -- no picks: only the "sink" want applies
     -- the line's rez lab: ONE want ("rez-lab") owns its queue (lab.only), so no floor / scout / radar / army rule can fill it
     if RezLabID() == labID then
@@ -1507,6 +1537,20 @@ RegisterWants = function()
     add{ name = "rez", prio = 60, mode = "empty",
          applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
          pick = function(lab) if C.rezRoom > 0 and lab.picks.rez then return lab.picks.rez end end }
+    -- user 2026-10-31: rez bots early from the starter bot lab when there is reclaim to get (the macro holds it for its cons: only while
+    -- no con order is open and the queue is empty, so a con is never delayed by more than one rez bot)
+    add{ name = "rez-starter", prio = 90, mode = "empty", why = "rez-starter",
+         applies = function(lab)
+             if not (lab.isStarter and lab.rezDef) then return false end
+             local _, conOpen = SQUAD.StarterLab()
+             return not conOpen
+         end,
+         pick = function(lab) if C.rezRoom > 0 then return lab.rezDef end end }
+    -- many rez bots wanted (more than the rez lab's queue -- or the starter lab's one -- by REZ_OVERFLOW): the other T1 bot labs put one ahead
+    -- of their queue too (close spawns 2026-10-31: no room for the rez lab, the starter lab alone made 9 against a want of 42)
+    add{ name = "rez-overflow", prio = 58, mode = "ahead", why = "rez-overflow",
+         applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and lab.picks.rez ~= nil and not lab.isSink end,
+         pick = function(lab) if C.rezRoom > (RezLabID() and REZ_LAB_DEPTH or 1) + SQUAD.REZ_OVERFLOW then return lab.picks.rez end end }
     -- LINE_CLICK scout calls: one T2 air lab keeps the radar plane plus one Hawk per call the attack groups have out
     add{ name = "radar-plane", prio = 55, mode = "empty", applies = picks,
          pick = function(lab)
@@ -1686,9 +1730,7 @@ function widget:GameFrame(frame)
     C.defendersHave = Have("defender", frame)
     C.scoutsHave    = Have("scout", frame)
     C.scoutRoom     = ((mb and mb.scoutWant) or SCOUT_TARGET) - C.scoutsHave
-    C.rezRoom       = frame < REZ_START_FRAME and 0
-                      or math.min(REZ_MAX, REZ_BASE + math.floor(((mb and mb.armyCount) or 0) / REZ_PER_ARMY)) - Have("rez", frame)
-                         + ((mb and mb.support and mb.support.rez and mb.support.rez.want) or 0)     -- SUPPORT: the groups' rez bots on top of the floor
+    C.rezRoom       = SQUAD.RezRoom(mb, frame, metalIncome, Have("rez", frame))     -- floor / rez_broker demand (+ SUPPORT: the groups' rez bots)
     C.supRoom       = SQUAD.SupportRooms(mb and mb.support, frame)                                    -- SUPPORT: the "group-support" want's room per element
     C.airAlarm      = (mb and mb.airAlarm and frame - mb.airAlarm.frame <= AIR_ALARM_TTL) and true or false
     C.bombScoutRoom = (mb and mb.bombScoutRoom) or 0          -- air scouts the bombing runs want (bomb_run WAVE_SCOUTS_MAX)

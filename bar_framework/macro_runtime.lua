@@ -832,6 +832,8 @@ function widget:Initialize()
             if trans and trans.nc and trans.nc.conLabHeld and labID == trans.nc.conLab then return true end     -- the nano-column block's T2 con lab (NC_CON_LAB)
             return labID == TS.botLabID
         end)
+        -- user 2026-10-31: the starter bot lab makes rez bots between the cons (lab_rules "rez-starter"); conOpen = a con order is waiting in it
+        CH.Publish(WG, "StarterLab", function() return TS.botLabID, TS.conOrderOpen == true end)
     end
     for _, u in ipairs(BUILD_ORDER.layout) do
         local ud = UnitDefNames[u.n]

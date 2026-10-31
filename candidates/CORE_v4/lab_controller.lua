@@ -18,7 +18,9 @@ local LAB = VFS.Include("LuaUI/Widgets/bar_framework/lab_rules.lua")
 
 LAB.Install(widget, WG, {
     REZ_START_FRAME = 8 * 60 * 30,    -- rez floor (user 2026-10-25): the line's T1 bot lab (REZ_LAB) makes rez bots from 8:00 ...
-    REZ_BASE = 4, REZ_MAX = 20,       -- ... keeping at least 4 alive (more with the army, up to 20).  2026-10-25 eco_sim (6 seeds): 3:00 / 8 cost 13% income at 10:00
+    REZ_BASE = 4, REZ_MAX = 100,      -- ... keeping at least 4 alive (more with the army).  2026-10-25 eco_sim (6 seeds): 3:00 / 8 cost 13% income at 10:00
+    -- user 2026-10-31: above the floor, rez bots follow the work (rez_broker Demand: wreck metal + missing army hp), up to 100, at most one per 8 m/s
+    -- of income, from the starter bot lab too (between its cons) and before 8:00 when there is reclaim near the base (REZ_DEMAND, REZ_INCOME_PER_BOT)
     AIR_SCOUTS_EARLY = 0,         -- user 2026-10-27: the air lab comes at 5:30, so the first scouts are six GROUND scouts (corfav) from the vehicle plant (unit_controller MECH.FIND_SCOUTS = 6)
     SCOUTS_FIRST = 6,             -- user 2026-10-27: the first six units out of the vehicle plant are ground scouts (inserted at the head of its queue)
     ARMY_QUEUE_MIN = 2,           -- user 2026-10-27: every army lab keeps at least two units queued (nanos waited for the next order between units)

@@ -10,6 +10,9 @@
 -- --server single that is a per-team shim).  Overrides (K): MECH = { <keys of the MECH table below> }, BOMB_RUN = { <bomb_run.lua
 -- CFG keys> }, ENDGAME = { <endgame.lua M.* settings, e.g. STRIKE_MIN_VALUE> }, STUN_KILL = { <see UpdateStunKill> } or true.
 -- REZ_BROKER = false | { <rez_broker.lua CFG keys> } (default ON: rez_broker.lua owns the rez bots' orders instead of rez_crew.Update).
+-- HEAL_PULL = false | { BASE, PER_REZ, MAX, HEAL_TO } (default ON with the rez broker, user 2026-10-31): at most BASE + PER_REZ x rez bots (<= MAX) badly
+--   hurt units are pulled back to a rez bot at once, the most valuable first, and wait there until healed to HEAL_TO (HEAL_WAIT frames at most); a hurt unit still has its full dps,
+--   so the rest keep fighting.
 -- SCOUT_NET = { <scout_net.lua CFG keys> } (default CREEP = true: a map-wide grid of parked scouts for vision; SCOUT_NET = { CREEP = false } opts out).
 -- Install(widget, WG, {}) is the plain unit controller.
 -- Everything inside Install is CORE's unit_controller.lua, edited only where marked "unit_runtime".
@@ -86,6 +89,7 @@ function M.Install(widget, WG, K)
 K = K or {}
 -- On by default for every CORE variant (user 2026-10-25); a bot opts out with REZ_BROKER = false / SCOUT_NET = { CREEP = false }.
 if K.REZ_BROKER == nil then K.REZ_BROKER = true end
+if K.HEAL_PULL == nil then K.HEAL_PULL = { BASE = 2, PER_REZ = 0.1, MAX = 6, HEAL_TO = 0.9, HEAL_WAIT = 2700 } end
 -- HOME_DEFENCE (user 2026-10-26, the _Opal_ game): early Grunts stay close to the base.  R = ground units answer intruders only inside R of the base
 -- and are released past R + SLACK (raid_response HOME_R); POST_R = how far out the home guard posts are; LEASH = a guard farther than that from its
 -- post walks back (MOVE) before it fights again; GROUP_UNDER = fewer ground guards than this share one post; EARLY_UNTIL / EARLY_MAX = every
@@ -1353,6 +1357,11 @@ end
 -- never rejoin, because nothing lower may claim it.
 local function UpdateRetreats(frame)
     if not ARMY or not baseX then return end
+    NET.pulled = NET.pulled or {}            -- HEAL_PULL: [unitID] = frame it was pulled back (a unit nobody heals goes back after HEAL_WAIT)
+    local pulledSince = NET.pulled
+    local hurt, retreating = {}, {}
+    local healWait = (K.HEAL_PULL and K.HEAL_PULL.HEAL_WAIT) or 2700
+    local healTo = (K.HEAL_PULL and RB and K.HEAL_PULL.HEAL_TO) or (RETREAT_HP + RETREAT_CLEAR)   -- a pulled unit waits for the rez bot to heal it
     for unitID in pairs(combatUnits) do
         -- Raiders are committed and do not retreat (game_mechanics 7.2).
         if spGetUnitDefID(unitID) and not (RG and RG.IsRaider(unitID))
@@ -1361,25 +1370,48 @@ local function UpdateRetreats(frame)
             local hp, maxHP = spGetUnitHealth(unitID)
             if hp and maxHP and maxHP > 0 then
                 local frac = hp / maxHP
-                if frac < RETREAT_HP then
-                    -- Healing costs only time (1.4): go to the nearest rez bot or nano
-                    -- turret rather than all the way to the base centre.
-                    local rx, rz = baseX, baseZ
-                    local ux, _, uz = spGetUnitPosition(unitID)
-                    if RC and ux then
-                        local hx, hz = RC.HealPoint(ux, uz)
-                        if hx then rx, rz = hx, hz end
-                    end
-                    ARMY.Claim(ARMY.PRIO.RETREAT, unitID, {
-                        role = "RETREAT", cmd = CMD_MOVE, x = rx, z = rz,
-                    }, frame)
-                elseif ARMY.RoleOf(unitID) == "RETREAT"
-                       and frac >= RETREAT_HP + RETREAT_CLEAR then
+                local on = ARMY.RoleOf(unitID) == "RETREAT"
+                local waited = on and frac >= RETREAT_HP and frame - (pulledSince[unitID] or frame) > healWait
+                if waited then
+                    ARMY.Release(unitID)                -- pulled back but nobody healed it: back to the fight
+                elseif frac < RETREAT_HP or (on and frac < healTo) then
+                    local d = UnitDefs[combatUnits[unitID]]
+                    hurt[#hurt + 1] = { uid = unitID, frac = frac, v = (1 - frac) * ((d and d.metalCost) or 0), on = on }
+                elseif on and frac >= healTo then
                     ARMY.Release(unitID)
                 end
             end
         end
     end
+    -- HEAL_PULL (user 2026-10-31): only a few at once -- the ones already walking back first, then the most valuable
+    local cap = #hurt
+    if K.HEAL_PULL and RB then
+        local hp = K.HEAL_PULL
+        cap = math.min(hp.MAX or 6, (hp.BASE or 2) + math.floor((hp.PER_REZ or 0) * (RC and RC.Count() or 0)))
+        table.sort(hurt, function(a, b) if a.on ~= b.on then return a.on end return a.v > b.v end)
+    end
+    for i, h in ipairs(hurt) do
+        local unitID = h.uid
+        if i <= cap then
+            -- Healing costs only time (1.4): go to the nearest rez bot or nano
+            -- turret rather than all the way to the base centre.
+            local rx, rz = baseX, baseZ
+            local ux, _, uz = spGetUnitPosition(unitID)
+            if RC and ux then
+                local hx, hz = RC.HealPoint(ux, uz)
+                if hx then rx, rz = hx, hz end
+            end
+            ARMY.Claim(ARMY.PRIO.RETREAT, unitID, {
+                role = "RETREAT", cmd = CMD_MOVE, x = rx, z = rz,
+            }, frame)
+            retreating[unitID] = true
+            pulledSince[unitID] = pulledSince[unitID] or frame
+        elseif h.on then
+            ARMY.Release(unitID)                    -- over the cap: back to the fight
+        end
+    end
+    for uid in pairs(pulledSince) do if not retreating[uid] then pulledSince[uid] = nil end end
+    if RB then RB.SetPatients(retreating) end
 end
 
 -- ── MECH_BOT planners ─────────────────────────────────────────────────────────
@@ -1718,6 +1750,7 @@ local function PublishState(frame)
         end
     end
     mb.armyCount = n
+    mb.rez = RB and RB.Demand() or nil                -- rez_broker: how many rez bots the reclaim / repair wants (lab_rules' rez floor)
     for uid, _ in pairs(GROUND_AA.units) do           -- RAID_BOT: ground AA is army spend too
         local defID = spGetUnitDefID(uid)
         if defID then n = n + 1; armyV = armyV + Value(defID) end
@@ -1860,7 +1893,11 @@ function widget:Initialize()
     if RC then RC.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY,
                         teamID = myTeamID, allyID = myAllyID } end
     RB = (RC and K.REZ_BROKER) and Load("rez_broker") or nil
-    if RB then RB.Init{ RC = RC, MM = MM, ARMY = ARMY, cfg = type(K.REZ_BROKER) == "table" and K.REZ_BROKER or nil } end
+    if RB then RB.Init{ RC = RC, MM = MM, ARMY = ARMY, EI = EI, UQ = UQ, combat = combatUnits,
+                        -- user 2026-10-31: idle rez bots follow the attack group likely to trade soonest (click_army's groups), else the stage
+                        groups = function() return CA and CA.Groups() or nil end,
+                        stage = function() if CA then return CA.StagePoint() end end,
+                        cfg = type(K.REZ_BROKER) == "table" and K.REZ_BROKER or nil } end
     EG = EI and Load("endgame")
     if EG then EG.Init{ EI = EI, MM = MM, UQ = UQ, ARMY = ARMY, TM = TM, teamID = myTeamID, cfg = K.ENDGAME } end
     LF = nil

@@ -29,11 +29,13 @@ M.SCHEMA = {
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
         armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number", squadHave = "number", squadWant = "number", squadMade = "number", garrisonHave = "number", garrisonWant = "number", garrisonMade = "number", avOwnRate = "number", avEnemyRate = "number", avProjRatio = "number",
         trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", pushMode = "string", blobs = "table",
+        rez = "table",         -- rez_broker.Demand(): { want, reclaim, repair, bots, frame } rez bots the work wants (lab_rules' rez floor)
         support = "table",     -- army_groups.lua: { [element] = { want, have, made } } support units the labs still owe (lab_rules "group-support")
     } },
     Strategy    = { kind = "table", open = true },                  -- strategy.lua object: Name / Plan / Assign / Pick / Note
     Spine       = { kind = "table", open = true },                  -- spine / slot_spine API
     TileLabHold = { kind = "function" },                            -- function(labID) -> boolean
+    StarterLab  = { kind = "function" },                            -- function() -> starter bot lab id | nil, con order open (macro_runtime; lab_rules "rez-starter")
     BombPlan    = { kind = "table", open = true },                  -- phase_plan.View
     AntiNuke    = { kind = "table", fields = { saviorWant = "number", points = "number" } },
     UQSnap      = { kind = "table", open = true },                  -- { [teamID] = per-frame unit snapshot } (unit_query.lua, C5)

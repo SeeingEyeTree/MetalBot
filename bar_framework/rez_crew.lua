@@ -136,10 +136,11 @@ end
 
 -- The most worthwhile damaged friend near (x, z): mobile units before structures,
 -- then by missing value.
-local function DamagedFriend(uid, x, z)
+-- accept(fid) (optional): only friends it returns true for (rez_broker: no chasing a moving unit).
+local function DamagedFriend(uid, x, z, accept)
     local best, bestScore = nil, 0
     for _, fid in ipairs(Spring.GetUnitsInCylinder(x, z, M.REPAIR_RADIUS, myTeamID) or {}) do
-        if fid ~= uid and not Spring.GetUnitIsBeingBuilt(fid) then
+        if fid ~= uid and not Spring.GetUnitIsBeingBuilt(fid) and (not accept or accept(fid)) then
             local hp, maxHP = Spring.GetUnitHealth(fid)
             local defID = Spring.GetUnitDefID(fid)
             if hp and maxHP and maxHP > 0 and hp / maxHP < M.REPAIR_BELOW
@@ -158,6 +159,45 @@ end
 -- The first candidate (best first) that is not under a known enemy gun.  The safety
 -- test walks the whole intel memory, so it is only run on the few best candidates
 -- rather than on every wreck of a big fight.
+-- A wreck (a unit's *_dead / *_heap feature), not a tree or a rock (user 2026-10-31: rez bots reclaim wrecks only).
+local wreckDef = {}
+function M.IsWreck(fid)
+    local fd = Spring.GetFeatureDefID and Spring.GetFeatureDefID(fid)
+    if not fd then return true end            -- no def lookup (tests): treat as a wreck
+    local w = wreckDef[fd]
+    if w == nil then
+        local d = FeatureDefs and FeatureDefs[fd]
+        local n = (d and d.name) or ""
+        w = n:find("_dead$") ~= nil or n:find("_heap$") ~= nil
+        wreckDef[fd] = w
+    end
+    return w
+end
+
+-- Is this wreck an armed mobile unit worth resurrecting?
+local function RezWorthy(fid)
+    local name = Spring.GetFeatureResurrect and Spring.GetFeatureResurrect(fid)
+    local ud = name and name ~= "" and UnitDefNames and UnitDefNames[name]
+    if ud and UQ.has_weapons(ud.id) and UQ.is_mobile(ud.id) and (ud.metalCost or 0) >= M.REZ_MIN_COST then return ud.metalCost end
+    return nil
+end
+
+-- Every wreck we can see with at least minMetal left: { {fid, x, z, metal, rez}... } (rez_broker's zone-wide search).
+function M.Wrecks(minMetal)
+    local out = {}
+    if not Spring.GetAllFeatures then return out end
+    for _, fid in ipairs(Spring.GetAllFeatures() or {}) do
+        if M.IsWreck(fid) then
+            local metal = Spring.GetFeatureResources(fid) or 0
+            if metal >= (minMetal or M.RECLAIM_MIN) then
+                local fx, _, fz = Spring.GetFeaturePosition(fid)
+                if fx then out[#out + 1] = { fid = fid, x = fx, z = fz, metal = metal, rez = RezWorthy(fid) ~= nil } end
+            end
+        end
+    end
+    return out
+end
+
 local function FirstSafe(frame, list)
     table.sort(list, function(a, b) return a.v > b.v end)
     for i = 1, math.min(#list, M.SAFETY_CHECKS) do
@@ -174,14 +214,11 @@ local function BestWreck(frame, uid, x, z, busy, noResurrect)
     busy = busy or busyWreck
     local rez, rec = {}, {}
     for _, fid in ipairs(Spring.GetFeaturesInCylinder(x, z, M.WRECK_RADIUS) or {}) do
-        if not busy[fid] or busy[fid] == uid then
+        if (not busy[fid] or busy[fid] == uid) and M.IsWreck(fid) then
             local fx, _, fz = Spring.GetFeaturePosition(fid)
             if fx then
-                local name = Spring.GetFeatureResurrect and Spring.GetFeatureResurrect(fid)
-                local ud = name and name ~= "" and UnitDefNames and UnitDefNames[name]
-                local cost = ud and ud.metalCost or 0
-                if ud and UQ.has_weapons(ud.id) and UQ.is_mobile(ud.id)
-                   and cost >= M.REZ_MIN_COST then
+                local cost = RezWorthy(fid)
+                if cost then
                     rez[#rez + 1] = { fid = fid, v = cost, x = fx, z = fz }
                 end
                 local metal = Spring.GetFeatureResources(fid) or 0
@@ -213,7 +250,7 @@ function M.Members()
     return ids
 end
 function M.RefreshNanos(frame) RefreshNanos(frame) end
-function M.DamagedFriend(uid, x, z) return DamagedFriend(uid, x, z) end
+function M.DamagedFriend(uid, x, z, accept) return DamagedFriend(uid, x, z, accept) end
 function M.BestWreck(frame, uid, x, z, busy, noResurrect) return BestWreck(frame, uid, x, z, busy, noResurrect) end
 
 -- One pass.  (frontX, frontZ) is where the army's front is; nil means stay home.
