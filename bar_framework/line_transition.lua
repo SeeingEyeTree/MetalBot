@@ -325,6 +325,14 @@ LT.CFG = {
     SCOUT_LAB_URGENT  = true,          -- the air lab's lane builder drops its slot and builds it at once ...
     SCOUT_LAB_GND_URGENT = true,       -- ... and the vehicle lab's (false: it waits behind the lane's slots -- in a real game it never came)
     SCOUT_LAB_REBUILD_S = 60,          -- seconds after a scout lab dies before it is queued again
+    RADAR_RING        = false,         -- RADAR RING (user 2026-10-31): two T1 bot cons from the line's bot lab at RADAR_RING_FRAME build radar towers
+                                       -- round the base and rebuild lost ones (line_transition/radar_ring.lua)
+    RADAR_RING_FRAME  = 5 * 60 * 30,
+    RADAR_RING_CONS   = 2,
+    RADAR_RING_N      = 6,             -- towers on the ring, the first toward the enemy
+    RADAR_RING_OUT    = 900,           -- elmos outside our structures (90th-percentile radius round their centre)
+    RADAR_RING_COVER  = 700,           -- a site with a tower of ours this close is done
+    RADAR_RING_RETRY  = 3600,          -- frames before two new cons are ordered once both are dead
     SCOUT_LAB_HIGH    = true,          -- the labs and their nanos on HIGH builder priority (BAR GameCMD.PRIORITY): every builder but the commander is low,
                                        -- so in a metal stall the lab got nothing (eco_sim 2026-10-30: one Finch took 3 min); a scout is 51 metal
     T2BOT_LANES       = { 3, 4 },      -- outer lanes tried for the site, in order (3 first: the lab faces out of the line there; 4 faced into it)
@@ -415,7 +423,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 -- a module reading an export that no earlier module made is an install-order mistake: fail at load, not 20 minutes into a game
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
-                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "scout_lab", "line_decoy", "radar_posts", "spine_cons", "spine2",
+                        "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "scout_lab", "radar_ring", "line_decoy", "radar_posts", "spine_cons", "spine2",
                         "nano_cols/nanos", "nano_cols/ferry", "nano_cols/fronts", "nano_cols/recovery" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
@@ -796,6 +804,7 @@ local function UpdateGrids(T, frame, res)
     UpdateRezLab(T, frame, res)
     X.UpdateSpamLab(T, frame, res)
     X.UpdateScoutLabs(T, frame, res)
+    X.UpdateRadarRing(T, frame, res)
     UpdateLineDecoy(T, frame, res)
     if NC then X.UpdateNanoCols(T, frame, res) end
     if not NC then UpdateEligibility(T, frame) end
@@ -1417,12 +1426,14 @@ end
 function LT.OnLaneDone(T, laneID, conID) X.Spine2LaneDone(T, laneID, conID) end
 
 function LT.OnUnitCreated(T, unitID, defID, builderID)
+    X.RadarRingCreated(T, unitID, defID, builderID)
     if T.spineOn then T.spineMod.OnUnitCreated(unitID, defID, builderID) end
     if T.spine2On then T.spine2Mod.OnUnitCreated(unitID, defID, builderID) end
 end
 
 function LT.OnUnitFinished(T, unitID, defID, x, z)
     local d = UnitDefs[defID]
+    X.RadarRingFinished(T, unitID)
     if T.sg then T.sgMod.OnUnitFinished(T.sg, unitID, defID) end
     -- A finished advanced air lab orders no T2 cons itself unless T2_CONS_UP_FRONT: they are built only when a job wants one
     -- (UpdateRetrofitCons / MakeEnergyT2Con).  Up front is what kept the old STANCE_BOT's retrofits and fusions supplied.
@@ -1474,6 +1485,9 @@ end
 -- those systems (owner "line" / "spine" / "rez"), so defense_crew and the jobs leave them alone; one from any other factory is a
 -- free ground con that a job with kind = "ground" (or `defs`) may take.  owner = nil: free.
 local function IsGroundCon(d) return BT.IsGroundCon(d) end
+
+-- a T1 bot con the radar ring ordered (line_transition/radar_ring.lua): macro_runtime does not count it as a line con
+function LT.RadarRingOwns(T, unitID) return X.RadarRingOwns(T, unitID) end
 
 function LT.AdoptCon(T, unitID, owner)
     local defID = Spring.GetUnitDefID(unitID)

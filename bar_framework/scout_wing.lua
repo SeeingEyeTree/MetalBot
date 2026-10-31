@@ -14,6 +14,8 @@
 --              zone (enemy band 3, home band 2, map 1) x staleness x (1 + bonus where an enemy group was last seen) / (1 + danger) / distance.
 --   * GROUND SCOUTS hold POSTS (hold fire, hold position): the middle of the base -> enemy axis and its flanks, the approaches to our base,
 --     then 0.3 / 0.7 of the way.  A post where a scout died steps back POST_BACK toward home for POST_COOLDOWN_S.
+--     (2026-10-31: the posts are on POST_BEARINGS round the base, POST_RADAR_MARGIN past where our radar towers' cover ends, and the
+--     middle of the map where radar does not reach: a ground scout inside radar cover adds nothing.)
 -- Orders go through army_broker at PRIO.SCOUT (role "WING").  Log rows: [SW].
 --
 -- USAGE (unit_runtime SCOUT_WING): SW.Init{ MM, ARMY, EI, WG, allyID, teamID, cfg }; SW.NoteCreated(uid, defID, builderID) in UnitCreated;
@@ -49,7 +51,13 @@ M.CFG = {
     DANGER_PERIOD = 150,       -- frames between danger refreshes (enemy_intel ThreatAt per cell)
     POST_COOLDOWN_S = 90,      -- a post where a ground scout died is held back this long ...
     POST_BACK = 500,           -- ... this many elmos toward home
-    HOME_POST_MARGIN = 1200,   -- the home-approach posts this far outside our footprint radius
+    HOME_POST_MARGIN = 1200,   -- (unused since 2026-10-31: the posts are placed past our radar instead)
+    POST_BEARINGS = { 0, -25, 25, -50, 50, -75, 75, -100, 100 },   -- degrees from the base -> enemy axis, in priority order
+    POST_RADAR_MARGIN = 400,   -- a post stands this far past our radar towers' cover (user 2026-10-31: "if they are in radar range they are
+                               -- not doing anything")
+    POST_STEP = 200,           -- elmos per step when walking out from the base to find the edge of our radar
+    POST_MAX_FWD = 0.55,       -- ... never past this share of the way to the enemy
+    RADAR_MIN = 1500,          -- a static unit with at least this radar radius counts as radar cover
     LOG_PERIOD = 900,
 }
 
@@ -311,25 +319,48 @@ local function BuildPosts(frame)
         p.x, p.z = x, z
         list[#list + 1] = p
     end
-    local W = 0.35 * Dd
-    add("mid", MM.PointAt(0.5 * Dd, 0))
-    add("midL", MM.PointAt(0.5 * Dd, -W))
-    add("midR", MM.PointAt(0.5 * Dd, W))
-    -- the approaches to our base: our footprint radius + HOME_POST_MARGIN, straight at the enemy and 40 degrees either side
-    local bx, bz = MM.Base()
-    local ax, az = MM.Axis()
-    if bx and ax then
-        local r = (MM.BaseRadius() or 0) + C.HOME_POST_MARGIN
-        for _, deg in ipairs({ 0, -40, 40 }) do
-            local a = math.rad(deg)
-            local dx, dz = ax * math.cos(a) - az * math.sin(a), ax * math.sin(a) + az * math.cos(a)
-            add("home" .. deg, bx + dx * r, bz + dz * r)
+    -- our radar towers: a post inside their cover sees nothing radar does not (user 2026-10-31)
+    local radars = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(D.teamID) or {}) do
+        local d = UnitDefs[spGetUnitDefID(uid) or -1]
+        local rr = d and (d.radarRadius or d.radarDistance or 0) or 0
+        if d and not d.canMove and rr >= C.RADAR_MIN then
+            local x, _, z = spGetUnitPosition(uid)
+            if x then radars[#radars + 1] = { x = x, z = z, r = rr } end
         end
     end
-    add("near", MM.PointAt(0.3 * Dd, 0))
-    add("far", MM.PointAt(0.7 * Dd, 0))
-    add("nearL", MM.PointAt(0.3 * Dd, -W)); add("nearR", MM.PointAt(0.3 * Dd, W))
-    add("farL", MM.PointAt(0.7 * Dd, -W));  add("farR", MM.PointAt(0.7 * Dd, W))
+    local function Covered(x, z)
+        for _, r in ipairs(radars) do if Dist(x, z, r.x, r.z) <= r.r then return true end end
+        return false
+    end
+    -- on each bearing round the base, walk out from the base's edge to where our radar ends, then POST_RADAR_MARGIN further
+    local bx, bz = MM.Base()
+    local ax, az = MM.Axis()
+    local mx, mz = MM.MapSize()
+    if bx and ax then
+        local r0 = (MM.BaseRadius() or 0) + 300
+        for _, deg in ipairs(C.POST_BEARINGS) do
+            local a = math.rad(deg)
+            local dx, dz = ax * math.cos(a) - az * math.sin(a), ax * math.sin(a) + az * math.cos(a)
+            local r, ok = r0, false
+            while true do
+                local x, z = bx + dx * r, bz + dz * r
+                if x < 100 or z < 100 or x > mx - 100 or z > mz - 100 or MM.Forward(x, z) > C.POST_MAX_FWD * Dd then break end
+                if not Covered(x, z) then ok = true; break end
+                r = r + C.POST_STEP
+            end
+            if ok then
+                local x, z = bx + dx * (r + C.POST_RADAR_MARGIN), bz + dz * (r + C.POST_RADAR_MARGIN)
+                if x >= 100 and z >= 100 and x <= mx - 100 and z <= mz - 100 then add("b" .. deg, x, z) end
+            end
+        end
+    end
+    -- the middle of the map, where it is outside our radar too
+    local W = 0.35 * Dd
+    for _, k in ipairs({ { "mid", 0 }, { "midL", -W }, { "midR", W } }) do
+        local x, z = MM.PointAt(0.5 * Dd, k[2])
+        if x and not Covered(x, z) then add(k[1], x, z) end
+    end
     for key, p in pairs(old) do                     -- a post that is gone frees its scout
         local keep = false
         for _, q in ipairs(list) do if q == p then keep = true; break end end

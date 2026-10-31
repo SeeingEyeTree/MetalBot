@@ -920,7 +920,7 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
         end
         return
     end
-    if builderID and builderID == TS.botLabID and unitDefID == TS.conDefID then
+    if builderID and builderID == TS.botLabID and unitDefID == TS.conDefID and not (trans and LT.RadarRingOwns(trans, unitID)) then   -- (a radar-ring con is not a line con)
         TS.pendingCons[unitID] = true
     end
 end
