@@ -16,6 +16,9 @@
 --   [TRK] intel  visible enemies (air/ground/nuke/lrpc), radar-only blips (moving, decodable),
 --                map LOS/radar/explored
 --   [TRK] combat losses (lost_* = all, incl. our own reclaims; lost_enemy_* = enemy-attributed),
+--         *_eco = mexes, energy, labs, nanos, constructors, storage (2026-10-31: scouts, transports and turrets are not eco any more),
+--         and a unit killed while still being built counts at its build progress x cost, not its full cost (frames of rebuilt
+--         nanos counted in full had made lost_enemy_eco several times what was really lost),
 --                what killed us (killers=name:count,...), damage, kills seen
 --   [TRK] reach  every 15 s: share of army-unit life spent within 15 s / 15-30 s / 30 s of move
 --                time (range-adjusted) of enemy units it can hit; see snapshotReach
@@ -171,6 +174,9 @@ end
 
 -- Role of a unit definition. Order matters: the first match wins.  Builders are decided
 -- BEFORE the energy test: a mobile builder must never be mistaken for a generator.
+-- roles whose losses count as economy lost (lost_eco_*, lost_enemy_eco_*); "other" = storage, radar, converters ...
+local ECO_ROLES = { mex = true, factory = true, nano = true, con = true, energy = true, other = true }
+
 local function roleOf(defID)
     local r = defRole[defID]
     if r then return r end
@@ -535,6 +541,10 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
     if teamID == myTeam then
         born[unitID] = nil
         local role, mv = roleOf(unitDefID), cost(unitDefID)
+        -- a frame still being built is worth what was put into it (2026-10-31)
+        local _, _, _, _, buildProgress = Spring.GetUnitHealth(unitID)
+        if buildProgress and buildProgress < 1 then mv = mv * math.max(0, buildProgress) end
+        local isEco = ECO_ROLES[role] == true
         if role == "commander" then
             event(f, "commander_lost", "killer=" .. name(attackerDefID)
                   .. (attackerTeamID and (" by_team=" .. tostring(attackerTeamID)) or ""))
@@ -544,7 +554,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
         lost.n, lost.mv = lost.n + 1, lost.mv + mv
         if role == "army" then
             lost.army_n, lost.army_mv = lost.army_n + 1, lost.army_mv + mv
-        else
+        elseif isEco then
             lost.eco_n, lost.eco_mv = lost.eco_n + 1, lost.eco_mv + mv
         end
         local byEnemy = attackerTeamID ~= nil and attackerTeamID ~= myTeam
@@ -553,7 +563,7 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDef
             lost.enemy_n, lost.enemy_mv = lost.enemy_n + 1, lost.enemy_mv + mv
             if role == "army" then
                 lost.enemy_army_n, lost.enemy_army_mv = lost.enemy_army_n + 1, lost.enemy_army_mv + mv
-            else
+            elseif isEco then
                 lost.enemy_eco_n, lost.enemy_eco_mv = lost.enemy_eco_n + 1, lost.enemy_eco_mv + mv
             end
             -- Surprise: the killer was not in sight in the last SEEN_RECENT frames.

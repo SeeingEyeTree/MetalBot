@@ -52,6 +52,7 @@ Published by `unit_controller.PublishState` unless noted. All are plain values o
 | `airLosses` | own air units shot down by enemy fighters in the last 30 s (`raid_response.Publish`) | `lab_controller` |
 | `intel` | `enemy_intel.Summary`: what we know of the enemy (`airValue`, `groundValue`, `airLabs`, `t2AirLabs`, `silos`, ...) | `lab_controller`, `strategy_hooks`, `game_state` |
 | `scoutWant` | scouts the labs should keep | `lab_controller` |
+| `cover` | `cover_defence.lua` (raid_response `COVER`): `{ frame, threats, uncovered, uncoveredValue, covered }` -- enemy ground groups on our side and how many lack defenders worth 1.2x them | unit_runtime `holdHome` (no raid launch while `uncovered > 0`) |
 | `scoutWing` | `scout_wing.lua` (unit_runtime `SCOUT_WING`): `{ air, ground, airHave, groundHave, airBuilding, groundBuilding, airShort, groundShort }` -- the wing's want, alive, in production and short per kind (its scouts are NOT in `scoutWant`'s count) | `lab_rules` (`scout-lab`) |
 | `ringRadarWant` | ring radar units the T2 labs should trickle | `lab_controller` |
 | `callScouts` | Hawks the attack groups have called | `lab_controller` |
