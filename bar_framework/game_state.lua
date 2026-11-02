@@ -89,7 +89,10 @@ function M.Collect(frame, o)
     s.foeDist = mb.foeDist
     s.airKills, s.airLost = mb.airKills, mb.airLost
     s.avOwnRate, s.avEnemyRate, s.avProjRatio = mb.avOwnRate, mb.avEnemyRate, mb.avProjRatio   -- av_rates (unit_runtime): army-value derivatives, nil until ~25 s of samples
-    s.airRaid, s.pushMode = mb.airRaid, mb.pushMode      -- bombers in our half (unit_runtime AIRDEF); army mode defend | push | raid
+    s.raidAir = mb.raidAir      -- enemy air-to-ground units near a raid group { active, near, lastF } (click_army AIR_PRESSURE)
+    s.cover = mb.cover          -- cover_defence: { frame, threats, uncovered, ..., lastThreatF, lastHardF } (enemy ground groups on our side)
+    s.raidHardF = mb.raidHardF  -- raid_response: the last frame a raid near the eco was more than the answer (HARD_*: 20 s of 20% of income)
+    s.airRaid, s.pushMode = mb.airRaid, mb.pushMode     -- bombers in our half (unit_runtime AIRDEF); army mode defend | push | raid
     s.armyEffValue, s.armyIdleFrac, s.armyWasted = mb.armyEffValue, mb.armyIdleFrac, mb.armyWasted   -- idle_value (unit_runtime NET.iv)
     if s.armyAir then
         s.airSuperior = s.armyAir > 0 and s.armyAir >= 1.5 * s.enemyAir and (s.airKills or 0) >= (s.airLost or 0)

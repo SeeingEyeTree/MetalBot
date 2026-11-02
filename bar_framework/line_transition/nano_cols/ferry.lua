@@ -96,6 +96,7 @@ function M.Install(X)
         local td = TransportDef()
         if not fe or not td or defID ~= td.id or #fe.tids >= (T.CFG.NC_FERRY_TRANSPORTS or 1) then return end
         fe.tids[#fe.tids + 1] = unitID
+        if T.WG then T.WG.NcFerryTids = fe.tids end       -- air_lift.lua leaves these to the ferry
         fe.ordered = math.max(0, fe.ordered - 1)
         Spring.GiveOrderToUnit(unitID, AT.CMD_STOP, {}, {})
         Echo(T, "transport %d ready", unitID)
@@ -158,6 +159,7 @@ function M.Install(X)
         end
         if alldone then
             fe.done = true
+            if T.WG then T.WG.NcFerryTids = nil end           -- its transports are free for air_lift.lua
             Echo(T, "done (the nanos are back on the line)")
             return
         end

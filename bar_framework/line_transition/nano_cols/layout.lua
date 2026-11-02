@@ -6,7 +6,7 @@
 --   c  across the columns, 0 at the edge next to the line and growing away from it, world = v * c
 -- Sizes (elmos, from the unit defs): building column 320 wide = 5 mexes (64) = 4 fusions (80); 6 winds (288) or 3 AFUS (288) sit
 -- centred in it.  Nano column 144 = 3 nanos (48).  A BLOCK is one 192-tall cell of a building column: 6x4 winds, 5x3 mexes / mohos,
--- 4x2 fusions (160 tall), 3x2 AFUS, or one T2 air lab (144x144).  Block row r spans a = 192 r +- 96; nano row q (48 tall) sits at
+-- 4x2 fusions (160 tall), 3x2 AFUS, or two T2 air labs (144x144 each).  Block row r spans a = 192 r +- 96; nano row q (48 tall) sits at
 -- a = 48 q - 72, so block row r holds nano rows 4r .. 4r + 3.  Every nano of a nano column reaches the whole width of both building
 -- columns beside it (the far mex centre is 360 from the column centre, reach 400 + 32).
 -- Offsets keep every centre on the engine's build grid (16 elmos; +8 for 48 / 80 / 144-wide footprints) when the origin is a multiple of 16.
@@ -29,11 +29,13 @@ do
     SPEC.wind = grid("wind",   { 40, 88, 136, 184, 232, 280 }, { -72, -24, 24, 72 })
     SPEC.fusion = grid("fusion", { 40, 120, 200, 280 }, { -40, 40 })
     SPEC.afus = grid("afus",   { 64, 160, 256 }, { -48, 48 })
-    SPEC.lab  = { { role = "lab_t2_air", dc = 168, da = 8 } }
+    -- two T2 air labs side by side (user 2026-10-31: 2 x 144 fit the 320 cell; one used to sit alone at dc 168).  dc 72 / 232 span 0..144 and
+    -- 160..304: both are 8 mod 16 like every 144-wide footprint
+    SPEC.lab  = { { role = "lab_t2_air", dc = 72, da = 8 }, { role = "lab_t2_air", dc = 232, da = 8 } }
     SPEC.airlab = { { role = "lab_t1_air", dc = 160, da = 0 } }     -- a T1 air lab (144 x 96) when the line's is lost (nano_cols/recovery.lua)
 end
 M.SPEC = SPEC
-M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 1, airlab = 1 }
+M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 2, airlab = 1 }
 
 -- o = { ox, oz (world point of a = 0, c = 0), ux, uz (unit vector of +a), vx, vz (unit vector of +c), nc, mapX, mapZ, margin }
 function M.New(o)

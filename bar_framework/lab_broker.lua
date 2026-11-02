@@ -51,7 +51,10 @@
 
 local LB = {}
 
-LB.CFG = { ORDER_GRACE = 120, PENDING_TIMEOUT = 600, LOG_EVERY = 3600 }
+-- PENDING_FIRST (2026-11-01, CORE_v4): an "ahead" want on a busy queue is not asked for a pick while the lab's pending gate is shut.
+-- Without it the pick ran first (its bookkeeping: room, budget, lastOrder) and the broker then dropped the unit, so group-support
+-- counted orders that were never given and stopped ordering flak trucks.  Off by default: other bots' order streams stay as they were.
+LB.CFG = { ORDER_GRACE = 120, PENDING_TIMEOUT = 600, LOG_EVERY = 3600, PENDING_FIRST = false }
 
 local CMD_OPT_ALT, CMD_OPT_CTRL, CMD_OPT_INTERNAL = 128, 64, 8
 
@@ -190,7 +193,9 @@ function LB.Service(lb, lab, frame)
         local grace = w.grace or lb.cfg.ORDER_GRACE
         local fkey = (w.mode == "flush" and len > 0 and w.flushKey) and w.flushKey(lab) or nil
         local flush = fkey ~= nil and lb.flushed[id] ~= fkey
-        if not (last and frame - last < grace) and (not w.applies or w.applies(lab))
+        local gated = lb.cfg.PENDING_FIRST and len > 0 and w.mode == "ahead" and not w.ignorePending and lb.pending[id]
+                      and frame - lb.pending[id] <= lb.cfg.PENDING_TIMEOUT
+        if not gated and not (last and frame - last < grace) and (not w.applies or w.applies(lab))
            and ((w.mode ~= "topup" and w.mode ~= "flush") or flush or len < DepthOf(lb, w, lab)) then
             local defID, why = w.pick(lab, frame, flush and 1 or len + 1)
             if defID and flush then

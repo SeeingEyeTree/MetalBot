@@ -106,10 +106,10 @@ local function RefreshNanos(frame)
     end
 end
 
--- Where should a wounded unit at (x, z) go to be healed?  Returns x, z, kind.
-function M.HealPoint(x, z, exclude)
+-- Where should a wounded unit at (x, z) go to be healed?  Returns x, z, kind.  noRez: skip the rez bots (aircraft: rez bots never repair them).
+function M.HealPoint(x, z, exclude, noRez)
     local best, bestD2, kind = nil, M.HEAL_REZ_RANGE ^ 2, nil
-    for uid in pairs(crew) do
+    for uid in pairs(noRez and {} or crew) do
         if uid ~= exclude then
             local hp, maxHP = Spring.GetUnitHealth(uid)
             if hp and maxHP and maxHP > 0 and hp / maxHP >= M.SELF_RETREAT then

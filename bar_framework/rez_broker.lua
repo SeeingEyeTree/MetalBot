@@ -150,6 +150,12 @@ local function MaxUnits() return Game and Game.maxUnits or 32000 end
 local function Forward(x, z) return (MM.Forward and MM.Forward(x, z)) or 0 end
 
 -- a unit standing still (or a structure): repairable without a chase
+-- user 2026-10-31: rez bots never repair an aircraft (it flies off; patients, the repair job and its queued next all check this)
+local function IsAir(uid)
+    local d = UnitDefs and UnitDefs[Spring.GetUnitDefID(uid) or -1]
+    return d ~= nil and d.canFly == true
+end
+
 local function Still(uid)
     if not Spring.GetUnitVelocity then return true end
     local vx, _, vz = Spring.GetUnitVelocity(uid)
@@ -329,13 +335,13 @@ local WRECK = {
 
 -- a friend worth repairing from this bot: not air (rez_crew), not chased, where a rez bot may go
 local function Repairable(fid)
-    if not Still(fid) then return false end
+    if IsAir(fid) or not Still(fid) then return false end
     local x, _, z = Spring.GetUnitPosition(fid)
     return x ~= nil and Allowed(x, z)
 end
 
 local function FriendValid(bot, fid)
-    if not Spring.GetUnitDefID(fid) then return false end
+    if not Spring.GetUnitDefID(fid) or IsAir(fid) then return false end
     local h = Hp(fid)
     if not h or h >= Cfg("REPAIR_STOP") then return false end
     local fx, _, fz = Spring.GetUnitPosition(fid)
@@ -390,7 +396,7 @@ local PATIENT = {
     name = "patient", prio = 65, urgent = true,
     find = function(bot)
         local fid = patientFor[bot.uid]
-        if fid then return { fid = fid } end
+        if fid and not IsAir(fid) then return { fid = fid } end
     end,
     valid = function(bot, st)
         local fid = st.target.fid
@@ -543,7 +549,10 @@ end
 
 -- ── patients ──────────────────────────────────────────────────────────────────
 
-function M.SetPatients(set) patients = set or {} end
+function M.SetPatients(set)
+    patients = {}
+    for uid in pairs(set or {}) do if not IsAir(uid) then patients[uid] = true end end    -- aircraft heal at nanos / home, never at a rez bot
+end
 
 -- each patient goes to the nearest bot that has none yet (a bot keeps the patient it has)
 local function AssignPatients(bots)

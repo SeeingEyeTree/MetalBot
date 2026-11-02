@@ -86,6 +86,7 @@ M.list = {
     { "air_raid",        "bool",   "enemy bombers seen in our half of the map", "", function(s) local r = Raid(s); return r ~= nil and (r.n or 0) > 0 end },
     { "air_raid_rush",   "bool",   "a LARGE air raid is on (built-in rule: labs flush queues for AA, share 1.0)", "", function(s) local r = Raid(s); return r ~= nil and r.rush == true end },
     { "air_raid_bombers","number", "bombers counted in the current air raid", "", function(s) local r = Raid(s); return r and r.n or 0 end },
+    { "raid_air",        "bool",   "enemy air-to-ground units (Shurikens, Wasps, bombers) are near one of our raid groups (click_army AIR_PRESSURE; held 240 s)", "", function(s) return s.raidAir ~= nil and s.raidAir.active == true end },
     { "air_lost",        "number", "own air value lost, last 120 s", "metal", function(s) return s.airLost end },
     { "air_kills",       "number", "enemy air value killed, last 120 s", "metal", function(s) return s.airKills end },
     -- attacks on us (raid_response's intruder groups inside our territory, held 10 s).  With raid_response THREAT_HOME the value is the record's `home`:
@@ -99,6 +100,20 @@ M.list = {
     { "raid_value",      "number", "value of the raid at the base", "metal", function(s) return s.raid and s.raid.value or 0 end },
     { "urgency",         "string", "production urgency: none | build | rush", "", function(s) return s.urgency end },
     { "threats",         "number", "intruder clusters in our territory", "", function(s) return s.threats and #s.threats or 0 end },
+    -- user 2026-11-01 ("if most of the fighting is on the other side of the map it can lower army spending for a bit"), 2026-11-02 ("only trigger on raids
+    -- it cannot easily handle"; "size it for the bot's eco": 20 s of 20% of metal income, 4000 at 1k m/s): seconds since the last HARD threat on our
+    -- side -- uncovered enemy ground worth that much (cover_defence HARD_*), a raid near the eco worth that much that the answer has not matched
+    -- (raid_response HARD_*; scouts count 0.1), or a large bomber raid
+    -- (airRaid.rush).  A lone scout or fighter does not reset it.  The game time while there never was one.
+    { "home_quiet_s",    "number", "seconds since the last raid on our side we could not easily handle", "s",
+      function(s)
+          local last = 0
+          if s.cover and s.cover.lastHardF then last = math.max(last, s.cover.lastHardF) end
+          if s.raidHardF then last = math.max(last, s.raidHardF) end
+          local ar = s.airRaid
+          if ar and ar.rush and ar.frame then last = math.max(last, ar.frame) end
+          return ((s.frame or 0) - last) / 30
+      end },
     { "hunt",            "bool",   "the game is won; bombers hunt the commander", "", function(s) return s.hunt end },
     -- army mode (unit_runtime ArmyMode, published as mb.pushMode)
     { "push_mode",       "string", "army mode of a defend plan: defend | push | raid", "", function(s) return s.pushMode end },

@@ -28,7 +28,7 @@ M.SCHEMA = {
         foeDist = "number", threats = "table", raid = "table", airLosses = "number", intel = "table",
         scoutWant = "number", ringRadarWant = "number", callScouts = "number",
         armyCount = "number", armyValue = "number", armyGround = "number", armyAir = "number", squadHave = "number", squadWant = "number", squadMade = "number", garrisonHave = "number", garrisonWant = "number", garrisonMade = "number", avOwnRate = "number", avEnemyRate = "number", avProjRatio = "number",
-        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", pushMode = "string", blobs = "table",
+        trade = "table", airKills = "number", airLost = "number", hunt = "boolean", airAlarm = "table", airRaid = "table", raidAir = "table", supportHold = "table", pushMode = "string", blobs = "table",
         rez = "table",         -- rez_broker.Demand(): { want, reclaim, repair, bots, frame } rez bots the work wants (lab_rules' rez floor)
         support = "table",     -- army_groups.lua: { [element] = { want, have, made } } support units the labs still owe (lab_rules "group-support")
     } },

@@ -59,6 +59,9 @@ local RR = {}
 
 RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIUS = 700, KEEP = 1500,
            KEEP_MULT = nil, CHANNEL_VALUE = false, REASSIGN_STANCE = false, HOME_R = nil, HOME_SLACK = 150, OUR_HALF = false,
+           -- mb.raidHardF (signal home_quiet_s): a raid near the eco (threat: scouts at SCOUT_WEIGHT) the answer has not matched, worth at least
+           -- HARD_SHARE x metal income x HARD_S (user 2026-11-02: "20 seconds of 20% army spend": 4000 at 1k m/s), never under HARD_FLOOR
+           HARD_SHARE = 0.2, HARD_S = 20, HARD_FLOOR = 150,
            THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1, REINFORCE_PULL = nil, SQUAD_MIN = nil, SQUAD_WAIT = 20, SQUAD_RALLY = 0.4,
            CONTACTS = nil, COVER = nil }
 RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN", "CONTACTS", "COVER" }
@@ -712,12 +715,26 @@ function RR.New(o)
                     if MM.BaseDist(g.x, g.z) <= C.THREAT_HOME_R then home = home + (g.threat or g.cost or 0) end
                 end
             end
+            -- a HARD raid (user 2026-11-02: "only trigger on raids that it cannot easily handle"; a lone scout or fighter on our side held off every eco
+            -- burst in the DEFENCE_BOT game): threat near the eco (scouts count SCOUT_WEIGHT) >= 20 s of 20% of income and fewer defenders answering than it needs
+            local nearV = 0
+            for _, g in ipairs(raidGroups) do
+                local r = C.THREAT_HOME_R or C.HOME_R
+                if not (r and MM and MM.BaseDist and MM.BaseDist(g.x, g.z) > r) then nearV = nearV + (g.threat or g.cost or 0) end
+            end
+            local _, _, _, inc = Spring.GetTeamResources(Spring.GetMyTeamID(), "metal")
+            local hardMin = math.max(C.HARD_FLOOR or 150, (C.HARD_SHARE or 0.2) * (inc or 0) * (C.HARD_S or 20))
+            if nearV >= hardMin and committed < need then ICPT.hardF = frame end
             if #raidGroups > 0 then
+                local at = {}            -- where they are (lab_orders: a threat to the spine pauses the high tier)
+                for _, g in ipairs(raidGroups) do at[#at + 1] = { x = g.x, z = g.z, value = g.threat or g.cost or 0 } end
                 ICPT.raid = { frame = frame, value = v, ground = gnd, air = air, speed = spd, moving = moving,
-                              channel = (air > gnd) and "air" or "ground", n = #raidGroups, need = need, committed = committed, home = home }
+                              channel = (air > gnd) and "air" or "ground", n = #raidGroups, need = need, committed = committed, home = home,
+                              groups = at }
             end
         end
         mb.raid = ICPT.raid
+        mb.raidHardF = ICPT.hardF            -- the last frame a hard raid was on (above); nil while none ever was
         local nl, keep = 0, {}
         for _, f in ipairs(ICPT.airLoss) do
             if frame - f <= 900 then keep[#keep + 1] = f end

@@ -25,9 +25,16 @@ UNIT.Install(widget, WG, {
                       COVER = {} },   -- COVER (user 2026-10-30, game review A-D; bar_framework/cover_defence.lua): every enemy ground group on our side, radar dots too, gets defenders worth 1.2x it on a line in front of the eco it can reach (pushed out while it does not attack, cutting it off when it dives); no raid launches while one is uncovered. Replaces CONTACTS. Otherwise CORE_ROWS_ECO's army settings
       -- THREAT_HOME (user 2026-10-29): under_attack / the con hold count only threats near the eco, scouts at 0.1   -- OUR_HALF (user 2026-10-28): an enemy seen on our side of the map is an intruder; HOME_R is from the eco footprint
     HOME_DEFENCE = { R = 700, SLACK = 150, POST_R = 550, LEASH = 250, GROUP_UNDER = 6, EARLY_UNTIL = 0, EARLY_MAX = 0 },
-    MECH = { HOME_GROUND_AFTER = 3, HOME_GROUND_MIN = 0, HOME_GROUND_SHARE = 0.15, HOME_GROUND_MAX = 4, FIND_SCOUTS = 6 },
+    -- HOME_FIGHTER_SHARE / MIN (user 2026-10-31): fighters were half at home guard, the rest at the stage 12% out -- a quarter (at least 2) stays home, the rest wait forward (CLICK_ARMY FIGHTER_*)
+    MECH = { HOME_GROUND_AFTER = 3, HOME_GROUND_MIN = 0, HOME_GROUND_SHARE = 0.15, HOME_GROUND_MAX = 4, FIND_SCOUTS = 6, HOME_FIGHTER_SHARE = 0.25, HOME_FIGHTER_MIN = 2 },
     CLICK_ARMY = { EARLY_LAUNCH = { f0 = 7200, av0 = 130, f1 = 25200, av1 = 1800 }, LAUNCH_RATIO_EARLY = 0, MIN_GROUP_UNITS = 1, STAGE_FRAC = 0.12, MAX_GROUPS = 2, UNSEEN_FIRST = true,
-                   LEG_LEAD = 600 },   -- LEG_LEAD (user 2026-10-29): each move ends 600 past the front-most unit, so units do not slow down between legs
+                   LEG_LEAD = 600, AIR_PRESSURE = true,
+                   -- user 2026-10-31: fighters wait on the enemy's side (half way to the foe with no group out, 1500 behind the biggest group otherwise; both stepped back out of enemy AA)
+                   -- and go to a raid group the moment enemy air-to-ground units are near it (split over the threatened groups).  POST_BACK 500 was too close (user)
+                   FIGHTER_IDLE_FRAC = 0.5, FIGHTER_POST_BACK = 1500, FIGHTER_RESPOND = true,
+                   -- user 2026-11-01: a group with its Quakers screens them (ESCORT) instead of raiding; one whose support is on the way stays out but never dives
+                   -- (RESERVE); under air pressure a raid group does not outrun its AA (AA_PACE).  army_groups feeds each group's support every tick.
+                   ESCORT = true, RESERVE = true, AA_PACE = true },   -- LEG_LEAD (user 2026-10-29): each move ends 600 past the front-most unit, so units do not slow down between legs
     HOLD_HOME = { VALUE = 300 },
     FAST_RAIDERS = true,        -- user 2026-10-27: raiders and raid defenders with an enemy near get orders at 3 Hz (unit_clock FAST tier)
     RAID_SQUAD = { N = 5 },     -- user 2026-10-27: five gators keep raiding (survive-first) while the army holds, refilled from the blobs
@@ -38,5 +45,21 @@ UNIT.Install(widget, WG, {
     -- on the axis, its flanks and our approaches.  Want 6 air + 4 ground, more with income (16 / 10 at most); every loss is rebuilt at once.  { } = its defaults.
     SCOUT_WING = {},
     RAID_CARRY = true,          -- user 2026-10-29 (BM_akumar6 game): a stance flip to hold never recalls a raid; every attacking unit keeps going until it dies
-    -- SUPPORT off (user 2026-10-30: CORE_v4 uses CORE_ROWS_ECO's army, which has no support elements)
+    -- SUPPORT (user 2026-10-31): the AA element while enemy air-to-ground units are near a raid group (mb.raidAir, CLICK_ARMY AIR_PRESSURE; vs DEFENCE_BOT's air
+    -- raids died to Shurikens / Wasps): 12 Lashers (T1) or 6 flak trucks (T2) per raid group.  The three standing AA (lab AA_STANDING) stay at home.
+    -- user 2026-11-01: from 300 m/s income (held 20 s, then for good) an ARTY element -- 5 Quakers for each of 3 raid groups (support/arty.lua) -- and every raid
+    -- group gets 2 flak trucks, 6 while raidAir is on (aa n_arty / n_arty_air).  No launch hold any more (min_frac removed: "units at home when we don't need to
+    -- defend are a waste"): groups go out, their support is flown to them (AIR_LIFT, bar_framework/air_lift.lua: Quakers / flak trucks far from their group
+    -- go by air transport to 800 behind it).  SUPPORT_FIRST: a new AA unit goes to the elements once the base screen has 2, short elements take the old
+    -- GROUND_AA escorts, element AA gets no range_kite (MOVE only, air targets first).  SUPPORT_OFF_GRACE_S: an element switched off keeps its units 2 min.
+    SUPPORT = { raid = { aa = { when_air = true, n_t1 = 12, n_t2 = 6, n_arty = 2, n_arty_air = 6, MOVE = true },
+                         -- user 2026-11-02 ("the quakers did exactly what I wanted ... they just might not be the right unit"): "stopping power" -- 2 Tzars per
+                         -- group (support/stop.lua: support/arty.lua's behaviour, SET_TARGET on the densest clump in range; heavy transports lift them).
+                         -- The Quaker element is kept: arty = { n = 5, groups = 3, from_income = 300 } in place of stop brings it back.
+                         stop = { n = 2, groups = 3, from_income = 300 } },
+                -- user 2026-11-02 (vs CORE_ROWS_ECO, raided all game): T1 stopping power -- up to 3 home groups of 12 Pounders that hold a sector of the base
+                -- (support/t1stop.lua), added slowly (one Pounder per 20 s, the "normal" lab tier) as raid pressure rises; a defending group gets its 2 Tzars
+                -- first (home records come first in the hand-out)
+                home = { t1stop = { n = 12 }, stop = { n = 2 } } },
+    SUPPORT_FIRST = true, AIR_LIFT = true, SUPPORT_OFF_GRACE_S = 120,
 })

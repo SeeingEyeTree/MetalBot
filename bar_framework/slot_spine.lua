@@ -105,6 +105,7 @@ M.CFG = {
     REBUILD_DELAY   = 900,    -- frames after the loss before the nano is re-queued ...
     REBUILD_SAFE_R  = 1200,   -- ... and only while no threat (env.Safe) is this close to its spot
     GATE_COST       = 1000,   -- labs this expensive wait for army value (below)
+    REQUIRED_SHARE  = 0.05,   -- the plan share given to a lab only lab_orders' requests need (SetRequired); counts once, ranks under the comp's labs
     GATE_MARGIN     = 1.0,    -- ground army value must reach margin x lab cost (env.ArmyValue); floating overrides
     LOG_EVERY       = 1800,
     CON_ORDER_TTL   = 1800,
@@ -338,6 +339,8 @@ function M.SetNanoFloor(f) if S then S.nanoFloor = f or 0 end end
 -- PAINTKID_BOT: asked for ahead of its gator stream; 0 / unset changes nothing for the other bots.
 function M.SetSpendFloor(mps) if S then S.spendFloor = mps or 0 end end
 function M.Share() return S and S.share or 0 end
+-- { [unitName] = true }: units other systems ask the labs for (lab_rules passes WG.LabOrders.Wanted() every tick); PlanLabs keeps a lab for each
+function M.SetRequired(names) if S then S.required = names end end
 
 -- ── Sessions (placer states for blocks and slot jobs) ────────────────────────
 
@@ -1217,6 +1220,32 @@ local function PlanLabs()
     local fresh = K.WAVE_SWAP and S.stanceChangeAt ~= nil and S.frame - S.stanceChangeAt <= K.SWAP_WINDOW
     S.swapFresh = fresh
     local plan, tab = M.Cover(S.units, standing, LabAllowed, fresh)
+    -- REQUIRED (lab_orders, 2026-11-01): a unit another system asks the labs for (WG.LabOrders.Wanted: the Quakers of the arty element) that no
+    -- planned lab builds gets the cheapest candidate lab that does, with a small share, past the army-value gate (the requester gates its timing)
+    for name in pairs(S.required or {}) do
+        local ud = UnitDefNames[name]
+        local covered = ud == nil
+        for ln in pairs(plan) do
+            local L = UnitDefNames[ln]
+            if covered or (L and BT.Options(L.id)[ud.id]) then covered = true; break end
+        end
+        if not covered then
+            local best, bestCost
+            for _, ln in ipairs(K.LAB_CANDIDATES) do
+                local L = UnitDefNames[ln]
+                if L and BT.Options(L.id)[ud.id] and (not best or (L.metalCost or 0) < bestCost) then best, bestCost = ln, L.metalCost or 0 end
+            end
+            if best then
+                plan[best] = K.REQUIRED_SHARE
+                tab[best] = tab[best] or { name = best, defID = UnitDefNames[best].id, cost = bestCost, units = {} }
+                if not (S.reqLogged or {})[best] then
+                    S.reqLogged = S.reqLogged or {}
+                    S.reqLogged[best] = true
+                    Log("required lab %s (for %s, asked by lab_orders)", best, name)
+                end
+            end
+        end
+    end
     if next(plan) then
         M.Enablers(plan, HasConSource)
         for name in pairs(plan) do

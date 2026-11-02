@@ -44,7 +44,11 @@ M.TABLE = {
         lab_t3       = "corgant",
         mex          = "cormex",    wind       = "corwin",  storage    = "corestor",
         moho         = "cormoho",   fusion     = "corfus",  afus       = "corafus",   antinuke = "corfmd",   -- the nano-column block (line_transition/nano_cols)
-        transport_air = "corvalk",     -- T1 air transport (lifts a nano turret: bar_framework/air_transport.lua)
+        transport_air = "corvalk",     -- T1 air transport (lifts a nano turret: bar_framework/air_transport.lua; air_lift.lua's slow units)
+        arty_t2_veh  = "cormart",      -- T2 vehicle artillery (Quaker): army_groups' arty element (5 x 420 alpha one-shots a Brute)
+        heavy_t2_veh = "corgol",       -- T2 heavy tank (Tzar): army_groups' stop element ("stopping power", 292 aoe); only heavy transports lift it
+        transport_heavy = "corseah",   -- T2 heavy air transport (T2 air lab): lifts a Tzar (air_lift.lua)
+        transport_heavy_t1 = "corhvytrans",   -- T1 heavy air transport: lifts a Tzar too (air_lift.lua)
     },
     arm = {},      -- Armada: fill in (armdecom, armawac, armfig ...); a missing entry falls back to the Cortex name
 }

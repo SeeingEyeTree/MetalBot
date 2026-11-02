@@ -20,9 +20,9 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "REZ_DEMAND", "REZ_INCOME_PER_BOT", "REZ_OVERFLOW", "REZ_LAB_DEPTH", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_PRESSURE_FIGHTERS", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "REZ_DEMAND", "REZ_INCOME_PER_BOT", "REZ_OVERFLOW", "REZ_LAB_DEPTH", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SUPPORT_ORDERS", "PENDING_FIRST", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
-M.TABLE_OPTIONS = { "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
+M.TABLE_OPTIONS = { "LAB_ORDERS", "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
 -- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
 -- Hawks -- 232 Shurikens killed, Wasps 84 -> 27): while the enemy's anti-air is large, no want may queue a stunner or an air raider (roles
 -- "stunner" / "raider": Shuriken, Wasp); the next want picks instead.  A live ground raid at home lifts it (the home answer keeps its stunners).
@@ -102,7 +102,10 @@ local SQUAD = { ordered = 0, made = 0, moved = 0, lastOrder = 0,   -- raiders or
                 -- of the base pays for itself).  REZ_OVERFLOW: more than this past the rez lab's queue, the T1 bot labs make rez bots too.
                 REZ_DEMAND = O("REZ_DEMAND", true), REZ_INCOME_PER_BOT = O("REZ_INCOME_PER_BOT", 8), REZ_OVERFLOW = O("REZ_OVERFLOW", 4),
                 sclBorn = {},                                                 -- [unitID] = true: started in a scout lab (the scout wing's, not counted as our scouts)
-                SUP_BUDGET = O("SUPPORT_FROM_BUDGET", true) }                 -- support orders spend the army budget (never refused by it): support is army, not extra
+                SUP_BUDGET = O("SUPPORT_FROM_BUDGET", true),                  -- support orders spend the army budget (never refused by it): support is army, not extra
+                -- SUPPORT_ORDERS (2026-11-01, CORE_v4): the support elements are ordered through bar_framework/lab_orders.lua (WG.LabOrders: army_groups
+                -- requests them at the high tier) instead of "group-support" / "support-rush", which are then off.  LAB_ORDERS = lab_orders' CFG overrides.
+                SUPPORT_ORDERS = O("SUPPORT_ORDERS", false), LO = nil }
 local GARRISON = { ordered = 0, made = 0, moved = 0, lastOrder = 0 }   -- pounders ordered / made, for the garrison want
 local GARRISON_START = O("GARRISON_START_FRAME", 4 * 60 * 30)   -- SPINE_GARRISON (unit_runtime): the unit controller posts the first N Pounders on the spine's flanks (mb.garrisonWant);
                                                                 -- from this frame the labs make them first, ahead of the other picks, until they stand
@@ -270,6 +273,7 @@ local AA_VALUE_RATIO = O("AA_VALUE_RATIO", 1.0)
 local AIRLAB_FIGHTERS = O("AIRLAB_FIGHTERS", 2)
 local T2AIRLAB_FIGHTERS = O("T2AIRLAB_FIGHTERS", 4)
 local FIGHTER_MAX = O("FIGHTER_MAX", 40)
+local AIR_PRESSURE_FIGHTERS = O("AIR_PRESSURE_FIGHTERS", 0)   -- extra fighters while raidAir.active (CORE_v4: 6)
 local AIR_ALARM_TTL = O("AIR_ALARM_TTL", 900)   -- LINE_CLICK_v16: frames an air alarm keeps the labs on fighters
 local AIR_ALARM_MIN = O("AIR_ALARM_MIN", 6)     -- fighters wanted the moment bombers head for the base
 local AIR_ALARM_PER_BOMBER = O("AIR_ALARM_PER_BOMBER", 1.5)
@@ -754,7 +758,7 @@ function widget:Initialize()
     local okL, rL = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/lab_broker.lua")
     if okL then
         LB = rL
-        lb = LB.New{ cfg = { ORDER_GRACE = LAB_ORDER_GRACE } }
+        lb = LB.New{ cfg = { ORDER_GRACE = LAB_ORDER_GRACE, PENDING_FIRST = O("PENDING_FIRST", false) } }
         RegisterWants()
         CH.Publish(WG, "LabBroker", { LB = LB, lb = lb })    -- the macro's con orders (line_transition) go through the same broker
     else Spring.Echo("[LabCtrl] ERROR loading lab_broker: " .. tostring(rL)) end
@@ -768,6 +772,7 @@ end
 function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
     if lb and builderID then LB.UnitStarted(lb, builderID) end
+    if SQUAD.LO then SQUAD.LO.UnitCreated(unitID, unitDefID, builderID) end
     if SINK_ON then SK.OnCreated(unitID, unitDefID, builderID) end
     if builderID and SQUAD.ScoutLabKind(builderID) then SQUAD.sclBorn[unitID] = true; return end   -- the scout wing counts its own (mb.scoutWing)
     local kind = KindOf(unitDefID)
@@ -784,6 +789,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     local d = UnitDefs[unitDefID]
     if not d then return end
     if SINK_ON and SK.decoys[unitID] then SK.Assign(unitID) end
+    if SQUAD.LO then SQUAD.LO.UnitDone(unitID) end
 
     if d.isFactory then
         labs[unitID] = unitDefID
@@ -827,6 +833,7 @@ function widget:UnitDestroyed(unitID)
     myGroundAA[unitID]   = nil
     building[unitID]     = nil
     if lb then LB.Forget(lb, unitID) end
+    if SQUAD.LO then SQUAD.LO.UnitDone(unitID); SQUAD.LO.ForgetLab(unitID) end
     armyFlip[unitID]     = nil
     if myScouts[unitID] then
         myScouts[unitID] = nil
@@ -896,6 +903,9 @@ local function FighterWant(frame)
         if (intel.t2AirLabs or 0) > 0 then want = want + T2AIRLAB_FIGHTERS * FIGHTER_UNIT end
         want = want + (intel.airValue or 0) * AA_VALUE_RATIO
     end
+    -- user 2026-10-31: enemy air-to-ground units near a raid group (mb.raidAir, click_army AirPressure): that many more fighters
+    local ra = WG and WG.MetalBot and WG.MetalBot.raidAir
+    if AIR_PRESSURE_FIGHTERS > 0 and ra and ra.active then want = want + AIR_PRESSURE_FIGHTERS * FIGHTER_UNIT end
     want = math.min(want, FIGHTER_MAX * FIGHTER_UNIT)
     -- LINE_CLICK_v16: bombers heading for the base (mb.airAlarm, unit controller): fighters now, ahead of
     -- everything the labs were doing, in proportion to the wing -- AIR_ALARM_PER_BOMBER each, at least AIR_ALARM_MIN.
@@ -966,6 +976,21 @@ function SQUAD.SupportRooms(sup, frame)
 end
 -- The best of `picks` (names, best first) that any lab we own can build: a T1 lab does not make a Lasher while a T2 vehicle plant could make
 -- the flak truck.
+-- A raid group is held at the stage waiting for support (unit_runtime launchGate publishes mb.supportHold = { el, have (the pool), need, frame }):
+-- { el, room } = what is still to be ordered to reach `need` (units already on order count), nil when nobody waits.
+function SQUAD.SupportHold(mb, frame)
+    local h = mb and mb.supportHold
+    if not (h and frame - (h.frame or -1e9) <= 90) then return nil end
+    local T, w = SQUAD.sup[h.el], mb.support and mb.support[h.el]
+    if not (T and w) then return nil end
+    -- orders that no unit has answered for 20 s are forgotten (a unit lost in the queue, one that went to another owner ...): the passive books wait 3
+    -- minutes for that, and a group held for its AA cannot (games A-C, 2026-10-31: the pool stood at 0-5 of 6 for over a minute with orders "pending")
+    local made = w.made or 0
+    if T.ordered > made and frame - math.max(T.moved or 0, T.lastOrder or 0) > 600 then T.ordered = made end
+    local room = (h.need - h.have) - math.max(0, T.ordered - made)
+    if room <= 0 then return nil end
+    return { el = h.el, room = room }
+end
 function SQUAD.BestPick(picks)
     for _, n in ipairs(picks or {}) do
         local ud = UnitDefNames and UnitDefNames[n]
@@ -1395,7 +1420,7 @@ RegisterWants = function()
     -- SUPPORT (army_groups.lua, user 2026-10-30): the groups' support elements up to their fixed size ("enough" -- not a share), one at a time
     -- ahead of a busy queue, just under the AA floor; each element's best pick any of our labs can build (flak truck before Lasher)
     add{ name = "group-support", prio = 96, mode = "ahead", grace = 60, why = "group-support",
-         applies = function(lab) return C.supRoom ~= nil and next(C.supRoom) ~= nil and not lab.held and not lab.isSink and not lab.isRezLab and not lab.isSpamLab end,
+         applies = function(lab) return not SQUAD.SUPPORT_ORDERS and C.supRoom ~= nil and next(C.supRoom) ~= nil and not lab.held and not lab.isSink and not lab.isRezLab and not lab.isSpamLab end,
          pick = function(lab)
              local sup = C.mb and C.mb.support
              for _, el in ipairs(SQUAD.SUP_ORDER) do
@@ -1412,6 +1437,36 @@ RegisterWants = function()
                  end
              end
          end }
+    -- SUPPORT HOLD (user 2026-10-31): a raid group is held at the stage until the pool has its support (launchGate, mb.supportHold).  The passive
+    -- "group-support" want above is one unit per lab behind a busy queue, then a pending gate and a 60-frame grace; this one forces it: top priority
+    -- (just under the air rush), every lab that can make the unit inserts one right away at position 1 (15-frame grace, no pending gate) until
+    -- what the group waits on is on order.  Counts through the same ordered / made books as "group-support".
+    add{ name = "support-rush", prio = 148, mode = "ahead", grace = 15, noPending = true, ignorePending = true, why = "support-rush",
+         applies = function(lab) return not SQUAD.SUPPORT_ORDERS and C.supHold ~= nil and C.supHold.room > 0 and not lab.held and not lab.isSink and not lab.isRezLab and not lab.isSpamLab end,
+         pick = function(lab)
+             local h = C.supHold
+             if not (h and h.room > 0) then return nil end
+             local w = C.mb and C.mb.support and C.mb.support[h.el]
+             local best = w and SQUAD.BestPick(w.picks)
+             if not (best and CanBuildSet(lab.defID)[best]) then return nil end
+             h.room = h.room - 1
+             if C.supRoom and C.supRoom[h.el] then C.supRoom[h.el] = C.supRoom[h.el] - 1 end
+             local T = SQUAD.sup[h.el]
+             T.ordered, T.lastOrder = T.ordered + 1, C.frame or 0
+             if SQUAD.SUP_BUDGET then budget.v = budget.v - ((UnitDefs[best] and UnitDefs[best].metalCost) or 0) end
+             return best, "support-rush"
+         end }
+    -- SUPPORT_ORDERS: the request layer (lab_orders.lua) -- its "lo-high" / "lo-normal" wants; the army budget is charged when a unit starts
+    if SQUAD.SUPPORT_ORDERS then
+        local okLO, rLO = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/lab_orders.lua")
+        if okLO and rLO then
+            SQUAD.LO = rLO
+            rLO.Install{ add = add, BT = BT, WG = WG, cfg = K.LAB_ORDERS,
+                         onStart = function(defID, r)
+                             if SQUAD.SUP_BUDGET then budget.v = budget.v - ((UnitDefs[defID] and UnitDefs[defID].metalCost) or 0) end
+                         end }
+        else Spring.Echo("[LabCtrl] ERROR loading lab_orders: " .. tostring(rLO)) end
+    end
     add{ name = "aa-floor", prio = 97, mode = "ahead", why = "aa-floor",
          applies = function(lab) return (C.aaFloorRoom or 0) > 0 and not lab.held and not lab.isSink end,
          pick = function(lab)
@@ -1732,6 +1787,7 @@ function widget:GameFrame(frame)
     C.scoutRoom     = ((mb and mb.scoutWant) or SCOUT_TARGET) - C.scoutsHave
     C.rezRoom       = SQUAD.RezRoom(mb, frame, metalIncome, Have("rez", frame))     -- floor / rez_broker demand (+ SUPPORT: the groups' rez bots)
     C.supRoom       = SQUAD.SupportRooms(mb and mb.support, frame)                                    -- SUPPORT: the "group-support" want's room per element
+    C.supHold       = SQUAD.SupportHold(mb, frame)                                                    -- SUPPORT: a raid group waits for these ("support-rush")
     C.airAlarm      = (mb and mb.airAlarm and frame - mb.airAlarm.frame <= AIR_ALARM_TTL) and true or false
     C.bombScoutRoom = (mb and mb.bombScoutRoom) or 0          -- air scouts the bombing runs want (bomb_run WAVE_SCOUTS_MAX)
     -- air defence (AA_FLOOR_* / AIR_RUSH above): the rush's id while a large raid is on, and how many ground AA the floor still wants
@@ -1834,6 +1890,10 @@ function widget:GameFrame(frame)
     end
 
     if C.sink then C.sink.Tick(frame, metalIncome) end
+    if SQUAD.LO then
+        SQUAD.LO.Tick(frame, labs, C.SP, mb)
+        if C.SP and C.SP.SetRequired then C.SP.SetRequired(SQUAD.LO.Wanted()) end      -- slot_spine plans a lab for a wanted unit no lab makes
+    end
     for labID, labDefID in pairs(labs) do
         LB.Service(lb, Describe(labID, labDefID, frame), frame)
     end

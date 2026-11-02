@@ -78,7 +78,7 @@ function M.ArmyMode(cur, x, o)
     return "defend", ratio
 end
 
-M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true, SCOUT_WING = true }
+M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true, AA_LAUNCH_WAIT_S = true, SCOUT_WING = true, SUPPORT_FIRST = true, AIR_LIFT = true, SUPPORT_OFF_GRACE_S = true }
 -- SCOUT_WING (user 2026-10-30; nil = off): the scout wing, bar_framework/scout_wing.lua (its M.CFG keys): it owns every scout the scout labs
 -- make (line_transition SCOUT_LAB) -- air scouts orbit outside the enemy footprint, then ours, the rest sweep the map; ground scouts hold posts.
 -- SUPPORT (user 2026-10-30; nil = off): the army groups' support elements, bar_framework/army_groups.lua (the table's shape is in its header):
@@ -1398,7 +1398,7 @@ local function UpdateRetreats(frame)
             local rx, rz = baseX, baseZ
             local ux, _, uz = spGetUnitPosition(unitID)
             if RC and ux then
-                local hx, hz = RC.HealPoint(ux, uz)
+                local hx, hz = RC.HealPoint(ux, uz, nil, UQ.is_air(combatUnits[unitID]))   -- aircraft: a nano, not a rez bot
                 if hx then rx, rz = hx, hz end
             end
             ARMY.Claim(ARMY.PRIO.RETREAT, unitID, {
@@ -1800,6 +1800,7 @@ local function PublishState(frame)
     mb.hunt = (EG and EG.Hunting()) or false
     mb.airAlarm = airAlarm
     mb.airRaid = AIRDEF.raid     -- unit_runtime: enemy bombers in our half; rush = a large raid (AIRDEF)
+    mb.raidAir = CA and CA.AirPressure and CA.CFG and CA.CFG.AIR_PRESSURE and CA.AirPressure() or nil   -- enemy air-to-ground units near a raid group (click_army AIR_PRESSURE): { active, near, lastF }
     -- raid state for the labs (mb.raid, mb.airLosses): raid_response.lua
     if RESP then RESP.Publish(frame, mb) end
 end
@@ -1924,6 +1925,31 @@ function widget:Initialize()
                      return r ~= nil and Spring.GetGameFrame() - (r.frame or -1e9) <= 90 and (r.ground or 0) >= (K.HOLD_HOME.VALUE or 300)
                             and (r.need or math.huge) > 0 and (r.committed or 0) < (r.need or math.huge)
                  end or nil,
+                 -- SUPPORT aa with min_frac (user 2026-10-31): while enemy air is near a raid (mb.raidAir) the next raid group waits until the pool holds that
+                 -- share of the group's AA (half a complement), at most K.AA_LAUNCH_WAIT_S (150) seconds so a missing lab cannot stall the raids
+                 launchGate = function(frame, nStaged)
+                     local ag, ra = NET.ag, WG and WG.MetalBot and WG.MetalBot.raidAir
+                     local mbx = WG and WG.MetalBot
+                     if frame < (NET.aaPassUntil or -1) then return false end
+                     local name, have, need, deficit
+                     if ag and ra and ra.active then name, have, need, deficit = ag.PoolShort("raid") end
+                     if not name then NET.aaWaitF = nil; if mbx then mbx.supportHold = nil end; return false end
+                     NET.aaWaitF = NET.aaWaitF or frame
+                     local clock = string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60)
+                     if frame - NET.aaWaitF > (K.AA_LAUNCH_WAIT_S or 150) * 30 then
+                         Spring.Echo(string.format("[SUP] %s raid group leaves with %d / %d %s after waiting %ds", clock, have, need, name, K.AA_LAUNCH_WAIT_S or 150))
+                         NET.aaWaitF, NET.aaPassUntil = nil, frame + 60
+                         if mbx then mbx.supportHold = nil end
+                         return false
+                     end
+                     -- what the held group waits on, for the labs (lab_rules "support-rush": every lab that can make it inserts one at once)
+                     if mbx then mbx.supportHold = { el = name, have = have, need = need + (deficit or 0), frame = frame } end   -- the groups out are filled first
+                     if frame - (NET.aaHoldLogF or -1e9) >= 450 then
+                         NET.aaHoldLogF = frame
+                         Spring.Echo(string.format("[SUP] %s launch held for AA: %d / %d %s in the pool (%d units staged; the groups out lack %d more)", clock, have, need, name, nStaged or 0, deficit or 0))
+                     end
+                     return true
+                 end,
                  MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards,
                  muster = musterPool, scouts = scoutUnits, responding = responding, bombers = bombers,
                  isHunting = function() return EG and EG.Hunting() or false end,
@@ -2012,10 +2038,32 @@ function widget:Initialize()
     end
     -- SUPPORT (user 2026-10-30): the army-group records and the support elements they opt into (bar_framework/army_groups.lua).  Loaded after the
     -- behaviour host (its claims leave a unit a behaviour is stepping alone).  giveBack: an element nobody wants any more returns its units here.
+    -- AIR_LIFT (2026-11-01; nil = off, true or a cfg table): slow support units go by air transport (bar_framework/air_lift.lua)
+    if K.AIR_LIFT and ARMY then
+        NET.lift = Load("air_lift")
+        if NET.lift then NET.lift.Init{ WG = WG, EI = EI, MM = MM, ARMY = ARMY, cfg = type(K.AIR_LIFT) == "table" and K.AIR_LIFT or nil } end
+    end
     if K.SUPPORT and CA and ARMY then
         NET.ag = Load("army_groups")
         if NET.ag then
             NET.ag.Init{ ARMY = ARMY, CA = CA, MM = MM, EI = EI, SN = SN, RB = RB, RC = RC, UQ = UQ, HOST = HOST, WG = WG, cfg = K.SUPPORT,
+                LIFT = NET.lift, offGrace = (K.SUPPORT_OFF_GRACE_S or 0) * 30,
+                -- SUPPORT_FIRST: a short aa element takes GROUND_AA escorts (never the base screen); accept(defID) = the element takes that type
+                takeEscortAA = K.SUPPORT_FIRST and function(n, accept)
+                    local out = {}
+                    for uid, role in pairs(GROUND_AA.units) do
+                        if #out >= n then break end
+                        local d = spGetUnitDefID(uid)
+                        if role == "escort" and d and accept(d) then out[#out + 1] = uid end
+                    end
+                    for _, uid in ipairs(out) do
+                        GROUND_AA.units[uid] = nil
+                        if ARMY.RoleOf(uid) then ARMY.Release(uid) end
+                        if HOST and HOST.Remove then HOST:Remove(uid) end            -- no range_kite: support AA gets MOVE orders only
+                    end
+                    if #out > 0 then Spring.Echo(string.format("[SUP] %d GROUND_AA escort(s) join the aa element", #out)) end
+                    return out
+                end or nil,
                 plan = function() return WG and WG.Strategy and WG.Strategy.Plan and WG.Strategy:Plan() end,
                 giveBack = function(uid, defID, el)
                     if el == "aa" then GROUND_AA.units[uid] = "escort"                       -- back to the AA escorts / screen
@@ -2147,6 +2195,9 @@ local function ApplyCAPush(plan)
     push.caGroups = push.caGroups or CA.CFG.MAX_GROUPS
     local pushing = DefendPlan(plan) and push.mode == "push"
     CA.CFG.MAX_GROUPS = pushing and ((plan.push and plan.push.raid_groups) or 2) or (raidPlan and plan.raid_groups) or push.caGroups
+    -- SUPPORT arty (2026-11-01): while the arty element is on, at least its `groups` raid groups (the stance's own count may be lower)
+    local minG = NET.ag and NET.ag.MinGroups and NET.ag.MinGroups() or 0
+    if minG > 0 then CA.CFG.MAX_GROUPS = math.max(CA.CFG.MAX_GROUPS or 0, minG) end
     CA.CFG.SIDE_R = pushing and ((plan.push and plan.push.side_r) or 2500) or nil
     -- out (push / raid): a group launches with at least prod_s seconds of army production, and reinforcements gather and go in batches of
     -- that size (user 2026-10-25: "it never waited to group up ... most alive units were reinforcing")
@@ -2717,10 +2768,17 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
         end
         local want = math.min(GROUND_AA.SCREEN_MAX, math.max(GROUND_AA.SCREEN_MIN, math.ceil((n + 1) * GROUND_AA.SCREEN_FRAC)))
         -- SUPPORT aa: once the base screen has its share, the groups' AA elements are filled before the shared escort
-        if screen >= want and NET.ag and NET.ag.Offer(unitID, unitDefID) then
-            if HOST and WG and WG.Strategy then WG.Strategy:Assign(HOST, unitID, unitDefID) end
+        -- a raid group held for its AA (mb.supportHold, launchGate): the element takes the unit before the base screen does
+        local hold = WG and WG.MetalBot and WG.MetalBot.supportHold
+        local holding = hold ~= nil and Spring.GetGameFrame() - (hold.frame or -1e9) <= 150
+        -- SUPPORT_FIRST (2026-11-01): the elements before the base screen once the screen has its minimum, and no stance behaviour (range_kite) for an
+        -- element's AA: it gets MOVE orders and air targets only ("Whistlers should always move commands not fight")
+        local first = K.SUPPORT_FIRST and screen >= GROUND_AA.SCREEN_MIN
+        if (screen >= want or holding or first) and NET.ag and NET.ag.Offer(unitID, unitDefID) then
+            if HOST and WG and WG.Strategy and not K.SUPPORT_FIRST then WG.Strategy:Assign(HOST, unitID, unitDefID) end
             return
         end
+        if NET.ag and NET.ag.NoteBypass then NET.ag.NoteBypass(unitDefID) end
         GROUND_AA.units[unitID] = (screen < want) and "screen" or "escort"
         -- user 2026-10-28: the stance's behaviours for a Lasher too (range_kite: "they just sit in the base doing nothing"); the AA post
         -- keeps its claim, the behaviour steps the unit back when a ground enemy is inside its range and holds it for the step
@@ -3040,6 +3098,7 @@ function widget:GameFrame(frame)
         end
         -- SUPPORT: the group records follow click_army's groups as they stand after this tick, then the elements give their orders
         if NET.ag then NET.ag.Sync(frame); NET.ag.Update(frame) end
+        if NET.lift then NET.lift.Update(frame) end       -- AIR_LIFT: after the elements asked for their lifts
         if SF and not HUMAN_SLOW then SF.Update(frame) end
     end
 

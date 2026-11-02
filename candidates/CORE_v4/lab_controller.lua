@@ -28,6 +28,10 @@ LAB.Install(widget, WG, {
     BUDGET_FREE_BANK = 800,       -- a metal bank over 800 lifts the army budget (labs were idle with a 2k bank)
     AA_STANDING = 3, AA_STANDING_FRAME = 5 * 60 * 30,   -- user 2026-10-30: three ground AA at home from 5:00 (all labs were uncovered at 8:00); army groups opt in to AA through unit_controller SUPPORT
     SCOUT_LAB_DEPTH = 2,          -- SCOUT WING: each scout lab keeps two scouts queued while the wing is short (lab_rules "scout-lab")
+    AIR_PRESSURE_FIGHTERS = 6,    -- user 2026-10-31: 6 more fighters while enemy air-to-ground units are near a raid group (mb.raidAir, click_army AirPressure; DEFENCE_BOT's air)
+    -- user 2026-11-01 (the "spine API"): support elements are ordered through bar_framework/lab_orders.lua at the high tier (ahead of the stance loop, paused while a raid
+    -- group is at the spine) instead of group-support / support-rush; PENDING_FIRST: an "ahead" want is not asked for a pick while its lab's pending gate is shut
+    SUPPORT_ORDERS = true, PENDING_FIRST = true,
     SINK = true,     -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
     AIR_AA_GATE = { MIN = 2000, RATIO = 1.0, STATIC_W = 0.25 },   -- user 2026-10-29 (BM_akumar6 game: 24% of metal into Shurikens / Wasps that died to flak + Hawks): none while the enemy AA is large
 })

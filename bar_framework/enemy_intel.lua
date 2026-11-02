@@ -358,6 +358,20 @@ function M.Labs()
     return out
 end
 
+-- Value of the enemy air units that can hit the ground (Shurikens, Wasps, bombers, gunships; not fighters that only shoot air) last seen
+-- within `radius` of (x, z) and no more than `maxAge` frames ago (user 2026-10-31: the raids' air-pressure signal, click_army AirPressure).
+function M.AirGroundNear(frame, x, z, radius, maxAge)
+    local total, r2 = 0, radius * radius
+    for _, rec in pairs(seen) do
+        local c = rec.c
+        if c.air and c.armed and c.hitsGnd and not c.scout and frame - rec.frame <= maxAge then
+            local dx, dz = rec.x - x, rec.z - z
+            if dx * dx + dz * dz <= r2 then total = total + c.value end
+        end
+    end
+    return total
+end
+
 -- How dangerous is this spot, in value, for a unit of the given channel?  Turrets
 -- count within their weapon range; mobile units only if seen recently, since their
 -- remembered position goes stale fast.

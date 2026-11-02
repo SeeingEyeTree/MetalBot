@@ -109,8 +109,11 @@ local function NeedsOrder(d, spec, unitID, frame)
     -- Comparing against the desired target lost every repositioning that arrived
     -- while the rate limit was active: the desired target updated, so the next tick
     -- saw no difference and the order was never sent at all.
+    -- spec.eps (2026-11-01): a paced unit's goal moves a little every tick (click_army escort / army_groups support: fast units held to the slow
+    -- units' speed by a goal that leads them); the default 250 turned that into stop-and-go
+    local eps = spec.eps or M.ORDER_MOVE_EPS
     if spec.x and d.issuedX and Dist2(spec.x, spec.z, d.issuedX, d.issuedZ)
-       > M.ORDER_MOVE_EPS * M.ORDER_MOVE_EPS then
+       > eps * eps then
         return true
     end
     if frame - d.lastOrderFrame > M.ORDER_HEARTBEAT then return true end

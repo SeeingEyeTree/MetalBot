@@ -28,6 +28,9 @@ local M = {}
 
 M.CFG = {
     TTL         = 450,    -- frames a sighting is acted on once out of sight
+    -- uncovered enemy value on our side that counts as a raid we cannot easily handle (pub.lastHardF -> signal home_quiet_s): HARD_SHARE x metal
+    -- income x HARD_S (user 2026-11-02: "20 seconds of 20% army spend", 4000 at 1k m/s), never under HARD_FLOOR
+    HARD_SHARE  = 0.2, HARD_S = 20, HARD_FLOOR = 150,
     CLUSTER_R   = 700,    -- contacts this close are one threat
     TRACK_R     = 1000,   -- a threat this close to last tick's is the same one (keeps its line / push state and its defenders)
     SIDE_R      = 3000,   -- a threat on our half of the map, or this close to the eco, is ours to answer
@@ -493,7 +496,12 @@ function M.New(o)
             end
         end
         cv.threats, cv.fight = threats, fight
-        cv.pub = { frame = frame, threats = #threats, uncovered = unc, uncoveredValue = uncV, covered = cov }
+        if #threats > 0 then cv.lastThreatF = frame end
+        -- signal home_quiet_s: the last frame uncovered enemy ground on our side (no defenders worth 1.2x it) was worth 20 s of 20% of our income
+        local _, _, _, inc = Spring.GetTeamResources(Spring.GetMyTeamID(), "metal")
+        if uncV >= math.max(C.HARD_FLOOR, C.HARD_SHARE * (inc or 0) * C.HARD_S) then cv.lastHardF = frame end
+        cv.pub = { frame = frame, threats = #threats, uncovered = unc, uncoveredValue = uncV, covered = cov, lastThreatF = cv.lastThreatF,
+                   lastHardF = cv.lastHardF }
 
         if frame - cv.logF >= C.LOG_EVERY and #threats > 0 then
             cv.logF = frame

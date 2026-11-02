@@ -37,6 +37,8 @@
 
 local M = {}
 local unseenFn, holdHomeFn          -- Init hooks (UNSEEN_FIRST, holdHome)
+local launchGateFn                  -- Init hook launchGate(frame, nStaged): true holds the next raid group's launch (unit_runtime: AA support), reinforcements still go
+local airP = { active = false, near = 0, lastF = -1e9, checkF = -1e9 }   -- AIR_PRESSURE state, see M.AirPressure
 local onlySet                       -- SetOnly: when set, only these units are commanded (the small raid squad that raids while the army holds)
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
 
@@ -198,6 +200,30 @@ local CFG = {
     -- enemy building inside its own weapon range, so it does eco damage while running.  A defender that stops to catch it
     -- is outrun; one that keeps following is pulled off the base.  Needs BAR's unit_target_on_the_move gadget.
     SET_TARGET        = false,
+    -- ESCORT / RESERVE / AA_PACE (user 2026-11-01; army_groups feeds each group's support with M.SetSupport every tick; all off by default):
+    --   ESCORT: a group with >= ESCORT_MIN landed Quakers (support/arty.lua) does not raid -- its core stands as a screen ESCORT_SCREEN_AHEAD in front
+    --     of the Quakers' line, FIGHTs what comes within ESCORT_COVER_R of the screen (never past ESCORT_LEASH from the Quakers), falls back onto
+    --     them when the threat near them is > ESCORT_PULL x the core; its target is the nearest worthwhile one (ESCORT_DIST_SCALE in PickTarget);
+    --     g.screenOk (the screen is in front of the Quakers, within ESCORT_OK_R) lets the Quakers advance.  "The goal of a group with arty support is
+    --     not to raid but to always keep the quakers alive and shooting."
+    --   RESERVE: a group whose support is on the way (Quakers in the air, AA short under air pressure) stays out on the map but never dives: the
+    --     SURVIVE skirmish / orbit at its target, whatever its defence ("units at home when we don't need to defend are a waste").
+    --   AA_PACE: under air pressure, a raid group whose AA is more than PACE_GAP behind its core holds PACE_HOLD ahead of the AA until it closes up.
+    ESCORT = false, ESCORT_MIN = 2, ESCORT_SCREEN_AHEAD = 350, ESCORT_COVER_R = 500, ESCORT_LEASH = 800, ESCORT_OK_R = 600, ESCORT_PULL = 1.3,
+    ESCORT_DIST_SCALE = 1200, ESCORT_REACH = 3500, ESCORT_SPACING = 70,
+    ESCORT_JOIN_R = 1500,     -- escort mode once the Quakers have caught up (this close to the group's core); until then the group moves on as a reserve
+                              -- (no dives) and its Quakers are flown / walk after it (game 3, 2026-11-01: a target-distance rule never let a group escort)
+    RESERVE = false,
+    AA_PACE = false, PACE_GAP = 500, PACE_HOLD = 250,
+    -- pacing (user 2026-11-01, replay: "flip flopping in direction and not moving continually"): a paced goal leads the slow units by their velocity x
+    -- PACE_LEAD_S and is re-sent once it moved PACE_EPS (army_broker spec.eps, urgent 1 Hz), so the front units keep moving at the slow units' speed;
+    -- units far behind (reinforcements) walk to the core at full speed.  ESCORT_LEAVE_R: escort mode ends only past this (it starts at ESCORT_JOIN_R).
+    PACE_LEAD_S = 3, PACE_EPS = 60, ESCORT_LEAVE_R = 3000,
+    -- one retreat decision per escorting group (user 2026-11-02: "the screen was pulling all the way back but the aa and quaker were still trying to
+    -- fight ... take steps back to avoid fights instead of completely disengaging"): g.posture "back" from threat > ESCORT_PULL x core, "advance" again
+    -- under ESCORT_PULL_OFF x core; the screen, the escorted units (rec.posture) and the AA all step back BACK_STEP at a time.  A group that escorts
+    -- landed units is not ended as "spent" (its units step back with them and reinforcements join it) unless its core is gone.
+    ESCORT_PULL_OFF = 1.0, BACK_STEP = 300,
     SET_TARGET_BEYOND = 900,   -- elmos the MOVE runs past the target
     SET_TARGET_EVERY  = 30,    -- frames between target refreshes per group
     SET_TARGET_SCAN   = 1600,  -- candidate buildings this close to the group
@@ -217,6 +243,16 @@ local CFG = {
     LAUNCH_RATIO_EARLY = nil,
     BLIND_LAUNCH       = false,   -- launch while the foe is still the mirror guess (the no-target branch scouts it)
     MIN_GROUP_UNITS    = 1,       -- a group needs this many units (3: no lone-Demon groups)
+    -- Air pressure (user 2026-10-31; M.AirPressure, published as mb.raidAir): an attacking group is "air threatened" while the remembered enemy air units that
+    -- can hit the ground (Shurikens, Wasps, bombers: EI.AirGroundNear) within AIR_NEAR_R of it, seen in the last AIR_NEAR_AGE frames, are worth at least
+    -- max(AIR_NEAR_MIN, AIR_NEAR_FRAC x the group's value).  Active while one is and AIR_HOLD_S seconds after (the group may be gone by then).
+    -- Kills are not the signal: a Shuriken stuns, a Wasp may not get the kill.
+    AIR_PRESSURE       = false,
+    AIR_NEAR_R         = 900,
+    AIR_NEAR_AGE       = 150,
+    AIR_NEAR_MIN       = 400,
+    AIR_NEAR_FRAC      = 0.15,
+    AIR_HOLD_S         = 240,
     -- Fresh enemy units leaving a factory do not steer the legs: armed mobile enemies within LAB_EXIT_R of a known
     -- enemy factory count LAB_EXIT_W of their value in LegPoint (they still count for ENGAGE).
     LAB_EXIT_R         = 0,
@@ -266,6 +302,11 @@ local CFG = {
     FIGHTER_POST_STEP  = 300,
     FIGHTER_POST_STEPS = 15,
     FIGHTER_POST_AA    = 150,     -- air threat value (enemy_intel.ThreatAt "air") allowed at the post
+    -- user 2026-10-31 (fighters sat at home and flew across the map to answer enemy air):
+    -- FIGHTER_IDLE_FRAC: with no group out the post is this share of the way to the foe (nil = the stage, 12% out), still stepped back out of enemy AA;
+    -- FIGHTER_RESPOND: fighters FIGHT at the centre of an attacking group that AIR_PRESSURE finds air-threatened (split over them, worst first)
+    FIGHTER_IDLE_FRAC  = nil,
+    FIGHTER_RESPOND    = false,
     -- SCOUT_ROUTE (user 2026-10-13: raid groups call scouts "to go down the path they want to attack"): a group's scout
     -- requests are a point SCOUT_AHEAD along the way it is actually going (toward its hole / flank waypoint, not straight
     -- at the target), the target itself, and the unseen ring points round it (HOLE_FIND).
@@ -365,7 +406,7 @@ local function Log(frame, fmtStr, ...)
     Spring.Echo(string.format("[CK] %d:%02d " .. fmtStr, math.floor(sec / 60), sec % 60, ...))
 end
 
-M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY", "LAUNCH_PROD_S", "SIDE_R", "LEG_LEAD" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
+M.NIL_OPTIONS = { "EARLY_LAUNCH", "LAUNCH_RATIO_EARLY", "LAUNCH_PROD_S", "SIDE_R", "LEG_LEAD", "FIGHTER_IDLE_FRAC" }   -- options whose default is nil on purpose (bot_config.lua does not warn about them)
 function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     BC.Apply("click_army", CFG, o.cfg, o.label, M.NIL_OPTIONS)    -- caller overrides (LINE_CLICK: no automatic slow group)
@@ -373,6 +414,8 @@ function M.Init(o)
     scouts, responding, bombers = o.scouts, o.responding, o.bombers
     if o.isHunting then isHunting = o.isHunting end
     unseenFn, holdHomeFn = o.unseen, o.holdHome      -- scout_lanes' NextUnseen(x, z, frame); unit_runtime's 'a ground raid is on the base' test
+    launchGateFn = o.launchGate
+    airP = { active = false, near = 0, lastF = -1e9, checkF = -1e9 }
     isHeld = o.isHeld or NotHeld
     groups, byId, unitGroup, squad, slowCache = {}, {}, {}, {}, {}
     nextId, lastBombF, lastWaitLog = 1, -99999, -99999
@@ -446,6 +489,35 @@ function M.IsSquadRetreating(uid) return squad[uid] ~= nil end
 function M.StagePoint() return stageX, stageZ end
 function M.Totals() return totals end
 function M.Groups() return groups end
+
+-- AIR_PRESSURE: { active, near (value of the air near the worst group at the last sighting), lastF (frame of that sighting) }
+function M.AirPressure() return airP end
+
+local function UpdateAirPressure(frame)
+    if not CFG.AIR_PRESSURE or not EI.AirGroundNear or frame - airP.checkF < 30 then return end
+    airP.checkF = frame
+    local best, bestG = 0, nil
+    for _, g in ipairs(groups) do
+        if g.state == "attack" and g.cx then
+            local near = EI.AirGroundNear(frame, g.cx, g.cz, CFG.AIR_NEAR_R, CFG.AIR_NEAR_AGE)
+            g.airNear = near
+            g.airThreat = near >= math.max(CFG.AIR_NEAR_MIN, CFG.AIR_NEAR_FRAC * (g.value or 0))     -- FIGHTER_RESPOND
+            if g.airThreat and near > best then best, bestG = near, g end
+        end
+    end
+    if bestG then
+        airP.lastF, airP.near = frame, best
+        if not airP.active then
+            Spring.Echo(string.format("[RAIDAIR] %d:%02d ON: enemy air-to-ground worth %.0f near group %d (%s, value %.0f)",
+                math.floor(frame / 1800), math.floor(frame / 30) % 60, best, bestG.id, bestG.slow and "slow" or "raid", bestG.value or 0))
+        end
+    end
+    local active = frame - airP.lastF <= CFG.AIR_HOLD_S * 30
+    if not active and airP.active then
+        Spring.Echo(string.format("[RAIDAIR] %d:%02d off (no enemy air near a raid for %ds)", math.floor(frame / 1800), math.floor(frame / 30) % 60, CFG.AIR_HOLD_S))
+    end
+    airP.active = active
+end
 function M.StageValues() return stageAV, reinforceAV end
 function M.GroupOf(uid) return byId[unitGroup[uid]] end
 -- Is this unit committed to an attack group?  Units that are not (new units, reinforcements waiting at the
@@ -494,7 +566,11 @@ function M.FighterPost(frame)
         for _, g in ipairs(groups) do
             if g.state == "attack" and g.cx and (not best or g.value > best.value) then best = g end
         end
-        if best then fx, fz = best.cx, best.cz end
+        if best then fx, fz = best.cx, best.cz
+        elseif CFG.FIGHTER_IDLE_FRAC and MM.PointAt then     -- no group out: wait on the enemy's side of the map, not at the stage
+            fx, fz = MM.PointAt(CFG.FIGHTER_IDLE_FRAC * MM.Dist(), 0)
+            fx, fz = MM.Clamp(fx, fz, CFG.MARGIN)
+        end
     end
     local hx, hz = MM.Home()
     local dx, dz = hx - fx, hz - fz
@@ -644,7 +720,7 @@ end
 -- spread over the base instead of piling onto the same nano.
 local function PickTarget(frame, g, groupValue)
     local best, bestScore
-    local scale = g.slow and CFG.SLOW_DIST_SCALE or CFG.DIST_SCALE
+    local scale = g.escortScale or (g.slow and CFG.SLOW_DIST_SCALE or CFG.DIST_SCALE)     -- ESCORT: the nearest worthwhile target
     local defMax = CFG.TARGET_DEF_MAX * (g.slow and CFG.SLOW_DEF_MAX or 1)
     for _, t in ipairs(EI.RaidTargets(frame)) do
         local score = DamageValue(t) / (1 + Dist(g.cx, g.cz, t.x, t.z) / scale)
@@ -1513,6 +1589,62 @@ local function Engage(frame, g, list, cx, cz, fightV)
     return nil
 end
 
+-- ESCORT / RESERVE / AA_PACE (CFG): army_groups' per-group support, and the escort mode.  In a table (UpdateAttack has few upvalue slots left).
+local ESC = { sup = {} }
+function M.SetSupport(id, info)
+    if info then info.f = Spring.GetGameFrame() end
+    ESC.sup[id] = info
+end
+function ESC.Of(g, frame)
+    local s = ESC.sup[g.id]
+    if s and frame - (s.f or -1e9) <= 90 then return s end
+    return nil
+end
+function ESC.Claim(frame, uid, cmd, x, z)
+    if isHeld(uid, frame) then return end
+    ARMY.Claim(ARMY.PRIO.LINE, uid, { role = "BLOB", cmd = cmd, x = x, z = z, eps = CFG.PACE_EPS, urgent = true }, frame)
+end
+-- the core screens the landed Quakers (a = { cx, cz, vx, vz, n }); returns nothing (the group's orders are given)
+function ESC.Update(frame, g, core, cx, cz, tx, tz, fightV, a)
+    local dx, dz = tx - a.cx, tz - a.cz
+    local d = math.sqrt(dx * dx + dz * dz)
+    if d < 1 then dx, dz = MM.Axis() else dx, dz = dx / d, dz / d end
+    local px, pz = -dz, dx
+    local ahead = CFG.ESCORT_SCREEN_AHEAD
+    local threat = ArmedValueNear(frame, a.cx, a.cz, CFG.ESCORT_LEASH)
+    -- the group's one decision, with hysteresis: back above ESCORT_PULL x the core, advance again under ESCORT_PULL_OFF x
+    local was = g.posture == "back"
+    local pulled = threat > (was and CFG.ESCORT_PULL_OFF or CFG.ESCORT_PULL) * math.max(1, fightV)
+    g.posture = pulled and "back" or "advance"
+    if pulled ~= was then Log(frame, "group #%d %s: threat %d vs core %d", g.id, pulled and "steps BACK with its support" or "advances again", threat, fightV) end
+    -- stepping back: the screen stays in front of the escorted units, BACK_STEP behind where they stand (they step back the same each tick)
+    if pulled then ahead = 100 - CFG.BACK_STEP end
+    -- the screen line leads the Quakers by their velocity: the screen moves at their pace and never stops while they move
+    local lead = CFG.PACE_LEAD_S
+    local sx, sz = MM.Clamp(a.cx + dx * ahead + (a.vx or 0) * lead, a.cz + dz * ahead + (a.vz or 0) * lead, CFG.MARGIN)
+    local along = (cx - a.cx) * dx + (cz - a.cz) * dz
+    g.screenOk = not pulled and along > 0 and Dist(cx, cz, a.cx, a.cz) <= CFG.ESCORT_OK_R
+    local foe = not pulled and NearestEnemy(frame, sx, sz, CFG.ESCORT_COVER_R)
+    local n = #core
+    for i, u in ipairs(core) do
+        if foe then
+            local fx, fz = foe.x, foe.z
+            local fd = Dist(fx, fz, a.cx, a.cz)
+            if fd > CFG.ESCORT_LEASH then fx, fz = a.cx + (fx - a.cx) / fd * CFG.ESCORT_LEASH, a.cz + (fz - a.cz) / fd * CFG.ESCORT_LEASH end
+            Claim(frame, u.uid, CMD_FIGHT, fx, fz)
+        else
+            local off = (i - (n + 1) / 2) * CFG.ESCORT_SPACING
+            local x, z = MM.Clamp(sx + px * off, sz + pz * off, CFG.MARGIN)
+            ESC.Claim(frame, u.uid, CMD_MOVE, x, z)
+        end
+    end
+    if frame - (g.escLogF or -99999) >= 450 then
+        g.escLogF = frame
+        Log(frame, "group #%d escorts %d Quaker(s) at (%d,%d): screen %s, threat %d vs core %d%s", g.id, a.n, a.cx, a.cz,
+            g.screenOk and "in front" or "forming", threat, fightV, pulled and " -- falls back on them" or (foe and " -- covers" or ""))
+    end
+end
+
 local function UpdateAttack(frame, g, list)
     -- SURVIVE: a badly hurt unit with an armed enemy near leaves for the hurt-squad retreat (UpdateSquads moves it home and releases it at SQUAD_RELEASE hp / calm)
     if CFG.SURVIVE and not g.slow then
@@ -1531,7 +1663,9 @@ local function UpdateAttack(frame, g, list)
     end
     local n = #list
     if n > g.peakN then g.peakN = n end
-    if n == 0 or n < math.max(1, math.floor(g.peakN * CFG.FALL_FRAC)) then
+    -- ESCORT: a group with landed escorted units steps back with them instead of going home (it is reinforced where it stands)
+    local escorting = g.escortOn and ESC.Of(g, frame) and ESC.Of(g, frame).arty and (ESC.Of(g, frame).arty.n or 0) > 0
+    if n == 0 or (not escorting and n < math.max(1, math.floor(g.peakN * CFG.FALL_FRAC))) then
         return EndGroup(frame, g, "group spent", n)
     end
     if g.slow then return UpdateSlow(frame, g, list) end
@@ -1575,6 +1709,18 @@ local function UpdateAttack(frame, g, list)
     elseif g.target and g.target.commander then
         g.target = nil
         Log(frame, "group #%d: the commander is no longer open, picking another target", g.id)
+    end
+
+    -- ESCORT / RESERVE / AA_PACE: what army_groups says about this group's support
+    local sup = (CFG.ESCORT or CFG.RESERVE or CFG.AA_PACE) and ESC.Of(g, frame) or nil
+    local esc = CFG.ESCORT and sup and sup.arty and (sup.arty.n or 0) >= CFG.ESCORT_MIN and not sup.arty.home and sup.arty or nil
+    local reserve = CFG.RESERVE and sup and sup.reserve and not esc
+    g.escortScale = esc and CFG.ESCORT_DIST_SCALE or nil
+    if not esc then g.screenOk = nil end
+    if esc and g.target and not g.target.commander and Dist(esc.cx, esc.cz, g.target.x, g.target.z) > CFG.ESCORT_REACH then g.target = nil end
+    if reserve and frame - (g.resLogF or -99999) >= 900 then
+        g.resLogF = frame
+        Log(frame, "group #%d is a reserve (waits for its %s): out on the map, no dives", g.id, tostring(sup.reserve))
     end
 
     -- keep or pick a target
@@ -1630,6 +1776,15 @@ local function UpdateAttack(frame, g, list)
         end
     end
 
+    -- escort on once the Quakers caught up (JOIN_R), off only when they are LEAVE_R away (no flip-flop between going to the target and back to them)
+    if esc and Dist(esc.cx, esc.cz, cx, cz) > (g.escortOn and CFG.ESCORT_LEAVE_R or CFG.ESCORT_JOIN_R) then esc, reserve = nil, CFG.RESERVE end
+    if (esc ~= nil) ~= (g.escortOn == true) then
+        g.escortOn = esc ~= nil
+        Log(frame, "group #%d escort %s", g.id, g.escortOn and "ON" or "off")
+    end
+    if not esc then g.screenOk = nil end
+    if esc then return ESC.Update(frame, g, core, cx, cz, tx, tz, fightV, esc) end
+
     if CFG.ENGAGE then
         local e = Engage(frame, g, list, cx, cz, fightV)
         if e == "done" then return EndGroup(frame, g, "escaped", n) end
@@ -1644,11 +1799,25 @@ local function UpdateAttack(frame, g, list)
             Log(frame, "group #%d set-target on %d unit(s) while moving (%d in the core)", g.id, nset, #core)
         end
     end
-    -- SURVIVE: inside ATTACK_SWITCH dive only into a big hole, otherwise skirmish (see CFG.SURVIVE)
-    if CFG.SURVIVE and g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH then
+    -- AA_PACE: under air pressure the core does not outrun its AA
+    if CFG.AA_PACE and sup and sup.air and sup.aa and Dist(cx, cz, sup.aa.cx, sup.aa.cz) > CFG.PACE_GAP then
+        local adx, adz = tx - sup.aa.cx, tz - sup.aa.cz
+        local ad = math.max(1, math.sqrt(adx * adx + adz * adz))
+        local lead = CFG.PACE_LEAD_S
+        local hx, hz = MM.Clamp(sup.aa.cx + adx / ad * CFG.PACE_HOLD + (sup.aa.vx or 0) * lead,
+                                sup.aa.cz + adz / ad * CFG.PACE_HOLD + (sup.aa.vz or 0) * lead, CFG.MARGIN)
+        for _, u in ipairs(core) do ESC.Claim(frame, u.uid, CMD_MOVE, hx, hz) end
+        if frame - (g.paceLogF or -99999) >= 450 then
+            g.paceLogF = frame
+            Log(frame, "group #%d waits for its AA (%d unit(s) %dm behind)", g.id, sup.aa.n or 0, Dist(cx, cz, sup.aa.cx, sup.aa.cz))
+        end
+        return
+    end
+    -- SURVIVE: inside ATTACK_SWITCH dive only into a big hole, otherwise skirmish (see CFG.SURVIVE); RESERVE: never a dive
+    if (CFG.SURVIVE or reserve) and g.target and Dist(cx, cz, tx, tz) <= CFG.ATTACK_SWITCH then
         local defNear = ArmedValueNear(frame, tx, tz, CFG.ENGAGE_R, nil, g.target.uid)
         local ecx, ecz, ecv = EnemyArmyCluster(frame)
-        local hole = defNear <= CFG.SURVIVE_HOLE_FRAC * fightV
+        local hole = not reserve and defNear <= CFG.SURVIVE_HOLE_FRAC * fightV
                      and not (ecx and ecv >= 0.5 * fightV and Dist(ecx, ecz, tx, tz) <= CFG.FLANK_CLEAR)
         if not hole then
             if g.holdUntil and frame < g.holdUntil then return end         -- a step back is under way
@@ -2042,6 +2211,7 @@ function M.Update(frame)
         tradeLog = keep
     end
 
+    UpdateAirPressure(frame)
     local ground, air = Members()
     if CFG.DIRECT or #CFG.BOMBER_BEHAVIORS > 0 then RunArmyBehaviors(frame, ground) end
     if CFG.DIRECT then ground = {} end       -- nothing is left for the group logic
@@ -2175,7 +2345,7 @@ function M.Update(frame)
     end
     minAV = math.max(minAV, ProdMin(1))        -- LAUNCH_PROD_S: at least that many seconds of army production
     if mode ~= "hold" and FastCount() < CFG.MAX_GROUPS and foeKnown and stageAV >= minAV
-       and #stagedFast >= CFG.MIN_GROUP_UNITS then
+       and #stagedFast >= CFG.MIN_GROUP_UNITS and not (launchGateFn and launchGateFn(frame, #stagedFast)) then
         if stageAV >= ratio * reinforceAV or stageAV >= CFG.LAUNCH_FORCE_AV then
             Launch(frame, stagedFast, false)
         elseif frame - lastWaitLog >= CFG.WAIT_LOG_EVERY then
@@ -2192,9 +2362,22 @@ function M.Update(frame)
     end
     local postX, postZ
     if CFG.FIGHTER_POST then postX, postZ = M.FighterPost(frame) end
+    -- FIGHTER_RESPOND: the attacking groups with enemy air-to-ground units near them (AIR_PRESSURE), worst first
+    local hot
+    if CFG.FIGHTER_RESPOND and CFG.AIR_PRESSURE then
+        for _, g in ipairs(groups) do
+            if g.state == "attack" and g.cx and g.airThreat and frame - airP.checkF <= 90 then hot = hot or {}; hot[#hot + 1] = g end
+        end
+        if hot then table.sort(hot, function(a, b) return (a.airNear or 0) > (b.airNear or 0) end) end
+    end
+    local nFight = 0
     for _, u in ipairs(air) do
         if UQ.is_dedicated_aa(u.defID) then
-            if postX then Claim(frame, u.uid, CMD_FIGHT, postX, postZ)
+            if hot then
+                nFight = nFight + 1
+                local g = hot[(nFight - 1) % #hot + 1]
+                Claim(frame, u.uid, CMD_FIGHT, g.cx, g.cz)
+            elseif postX then Claim(frame, u.uid, CMD_FIGHT, postX, postZ)
             elseif escort then Claim(frame, u.uid, CMD_MOVE, escort.cx, escort.cz)
             else Claim(frame, u.uid, CMD_MOVE, stageX, stageZ) end
         end

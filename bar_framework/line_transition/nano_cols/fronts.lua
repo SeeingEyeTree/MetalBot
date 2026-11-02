@@ -91,12 +91,21 @@ function M.Install(X)
 
     -- T2 air lab blocks wanted: the first at NC_T2_LAB_INCOME metal income or once the eco units fill NC_T2_LAB_CAP_FRAC of the unit budget
     -- (T1 mexes pay back in ~20 s, a moho in ~90 s: T1 first while there is room), then one more per NC_T2_LAB_STEP of income
+    -- The count is in LABS (a lab block holds 2, layout SPEC.lab; user 2026-10-31).  NC_T2_LAB_AIR_EXTRA: while WG.MetalBot.raidAir.active (enemy
+    -- air-to-ground units near a raid group, click_army AirPressure) that many more, and the first from NC_T2_LAB_AIR_INCOME_FRAC of the income;
+    -- NC_T2_LAB_FLOAT_S: one more while the metal bank holds more than that many seconds of income (a planned lab is never taken back)
     local function LabsWanted(T, nc, res)
         local K = T.CFG
         local mi = Income(res)
+        local ra = T.WG and T.WG.MetalBot and T.WG.MetalBot.raidAir
+        local air = (K.NC_T2_LAB_AIR_EXTRA or 0) > 0 and ra ~= nil and ra.active == true
+        local first = K.NC_T2_LAB_INCOME * (air and (K.NC_T2_LAB_AIR_INCOME_FRAC or 1) or 1)
         local byCap = nc.ecoUnits >= (K.NC_T2_LAB_CAP_FRAC or 2) * Budget(T)
-        if mi < K.NC_T2_LAB_INCOME and not byCap then return 0 end
-        return math.min(K.NC_T2_LABS_MAX, 1 + math.floor(math.max(0, mi - K.NC_T2_LAB_INCOME) / K.NC_T2_LAB_STEP))
+        if mi < first and not byCap then return 0 end
+        local n = 1 + math.floor(math.max(0, mi - first) / K.NC_T2_LAB_STEP)
+        if air then n = n + K.NC_T2_LAB_AIR_EXTRA end
+        if (K.NC_T2_LAB_FLOAT_S or 0) > 0 and (res.metal or 0) > K.NC_T2_LAB_FLOAT_S * math.max(1, mi) then n = n + 1 end
+        return math.min(K.NC_T2_LABS_MAX, n)
     end
     local function BudgetOK(T, nc, n) return nc.ecoUnits + nc.added + n <= Budget(T) end
 
@@ -302,13 +311,16 @@ function M.Install(X)
                 -- the block's kind
                 local kind
                 if nc.labsPlanned < LabsWanted(T, nc, res) and LabSpaced(T, nc, f.col, r) then kind = "lab"
+                elseif (T.CFG.NC_T1_AIR_LAB or 0) > 0 and not nc.t1AirPlanned and Income(res) >= T.CFG.NC_T1_AIR_LAB then
+                    kind = "airlab"                                   -- NC_T1_AIR_LAB: one T1 air lab (the lift's transports, more fighters)
+                    nc.t1AirPlanned = true
                 elseif nc.t2 and not (T.CFG.NC_WIND_UNTIL_FUSION and (nc.count.fusion or 0) + (nc.count.afus or 0) < T.CFG.NC_WIND_UNTIL_FUSION) then
                     kind = NeedEnergyFuture(T, nc, res) and "gap" or "mex"
                 else kind = NeedEnergyT1(T, nc, res) and "wind" or "mex" end
                 b = { j = f.col, r = r, kind = kind, state = "t1" }
                 nc.blocks[BlockKey(f.col, r)] = b
                 f.step = f.step + 1
-                if kind == "lab" then nc.labsPlanned = nc.labsPlanned + 1 end
+                if kind == "lab" then nc.labsPlanned = nc.labsPlanned + #LAYOUT.SPEC.lab end
                 if kind ~= "gap" then break end
                 -- an energy gap: nothing to build now (a T2 con fills it), the front moves on
                 b.state = "t1done"
