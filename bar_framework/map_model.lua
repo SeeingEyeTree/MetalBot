@@ -103,11 +103,18 @@ function M.SetHome(x, z)
         foeSource or "unknown", axisDist))
 end
 
+-- The sighted foe point was visited and holds nothing any more (base killed, commander elsewhere): searchers look
+-- map-wide until a new sighting (SetFoe) clears this.  The coordinates stay as the last known base.
+local foeLost = false
+function M.MarkFoeLost(v) foeLost = v and true or false end
+function M.FoeLost() return foeLost end
+
 -- A sighting beats a guess; a guess never overwrites a sighting.
 function M.SetFoe(x, z, source)
     if not x then return end
     if foeSource == "sighted" and source ~= "sighted" then return end
     foeX, foeZ, foeSource = x, z, source or "sighted"
+    foeLost = false
     Recompute()
     Spring.Echo(string.format("[MM] foe -> %d,%d (%s) dist %d",
         foeX, foeZ, foeSource, axisDist))

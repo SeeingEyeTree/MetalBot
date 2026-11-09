@@ -134,7 +134,7 @@ end
 -- ── lab_broker wants ──────────────────────────────────────────────────────────
 
 local function Excluded(lab, r)
-    if lab.skip or lab.isSink or lab.isRezLab or lab.isSpamLab or lab.isScoutLab then return true end
+    if lab.skip or lab.isSink or lab.isRezLab or lab.isSpamLab or lab.isScoutLab or lab.isProxyLab then return true end
     if lab.held and not r.held_ok then return true end
     if r.where and not r.where(lab) then return true end
     return false
@@ -225,7 +225,8 @@ function M.Tick(frame, labs, spine, mb)
     -- the labs that may take requests this tick
     usable = {}
     for id, ldef in pairs(labs) do
-        if Spring.GetUnitDefID(id) and not (spine and spine.IsLeaving and spine.IsLeaving(id)) then usable[id] = ldef end
+        local pb = WG and WG.ProxyBase                     -- (a proxy lab takes no requests: slot_spine still plans its own labs for them)
+        if Spring.GetUnitDefID(id) and not (spine and spine.IsLeaving and spine.IsLeaving(id)) and not (pb and pb.labs and pb.labs[id]) then usable[id] = ldef end
     end
     -- stale requests out
     for i = #keys, 1, -1 do

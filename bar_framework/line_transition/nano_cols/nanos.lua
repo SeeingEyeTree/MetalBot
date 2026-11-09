@@ -52,7 +52,9 @@ function M.Install(X)
         local a, c = nc.L.Local(x, z)
         local kind, i = nc.L.ColumnAt(c)
         if kind ~= "N" then return end
-        nc.nanos[unitID] = { x = x, z = z, a = a, c = c, i = i, q = math.floor((a + 72 + 24) / 48), reach = nc.L.BlocksInReach(a, c, REACH_ITEM) }
+        local q = math.floor((a + 72 + 24) / 48)
+        nc.nanos[unitID] = { x = x, z = z, a = a, c = c, i = i, q = q, reach = nc.L.BlocksInReach(a, c, REACH_ITEM),
+                             fill = (nc.fillRows and nc.fillRows[i .. ":" .. q]) and true or false }      -- a fill row's nano (the sink's lift takes these first)
         nc.nanoN = nc.nanoN + 1
     end
 
@@ -209,9 +211,13 @@ function M.Install(X)
             table.sort(d, function(a, b) return a.d < b.d end)
             for k = 1, math.min(K.NC_LAB_NANOS, #d) do keep[d[k].id] = true end
         end
+        -- CAP_MODE (user 2026-11-08: "Eco and nanos in the nano cols should be reclaimed as they can"): at the unit cap with too few slots free, a block
+        -- past T1 counts as done too
+        local cm = T.WG and T.WG.CapMode
+        local capShort = cm and cm.on and (cm.free or 0) < (cm.want or 0)
         local function Final(j, r)
             local b = X.NcBlock(nc, j, r)
-            if b then return b.state == "final" or (b.state == "t1done" and b.kind == "lab") end
+            if b then return b.state == "final" or (b.state == "t1done" and (b.kind == "lab" or capShort)) end
             return not nc.L.RowOK(r)              -- a row off the map (or on the line / spine / enemy side) never gets built
         end
         local targets = {}
@@ -263,11 +269,87 @@ function M.Install(X)
         end
     end
 
+    -- ── nanos the metal sink may fly away (bar_framework/sink_lift.lua, user 2026-11-04) ─────────────────────────────────────
+    -- nc.LiftPick(n, x, z, busy, maxTier): up to n block nanos for the sink (maxTier 0: only reclaim candidates, 0.5: + fill rows, 1: + parked, 2: any), nearest (x, z) first, where those the reclaim rule would take anyway (every
+    -- block in reach final) beat parked ones by 800 elmos and parked ones beat the rest by 800.  Never a focused / reclaiming / unfinished nano, one on work at
+    -- HANDOFF priority or higher, or one of the NC_LAB_NANOS kept by each T2 air lab.  busy(id) -> true skips more.
+    -- nc.Forget(id): the nano left the block (carried away): out of the registry, so focus / park / reclaim leave it alone.  Its spot reads
+    -- empty, so recovery rebuilds it while a block in its reach still needs build power.
+    function X.NcLiftApi(T, nc)
+        local function Final(j, r)
+            local b = X.NcBlock(nc, j, r)
+            if b then return b.state == "final" or (b.state == "t1done" and b.kind == "lab") end
+            return not nc.L.RowOK(r)
+        end
+        function nc.LiftPick(n, x, z, busy, maxTier)
+            local K, NANO = T.CFG, T.BP.NANO
+            local keep = {}
+            for _, lab in pairs(nc.labIDs or {}) do
+                local d = {}
+                for id, nn in pairs(nc.nanos) do d[#d + 1] = { id = id, d = (nn.x - lab.x) ^ 2 + (nn.z - lab.z) ^ 2 } end
+                table.sort(d, function(a, b) return a.d < b.d end)
+                for k = 1, math.min(K.NC_LAB_NANOS or 0, #d) do keep[d[k].id] = true end
+            end
+            local cands = {}
+            for id, nn in pairs(nc.nanos) do
+                if not keep[id] and not nc.focus[id] and not nc.reclaiming[id] and not (busy and busy(id))
+                   and not Spring.GetUnitIsBeingBuilt(id) and not (NANO and NANO.IsBusy(id, NANO.PRIO.HANDOFF)) then
+                    local all = #nn.reach > 0
+                    for _, br in ipairs(nn.reach) do if not Final(br.j, br.r) then all = false; break end end
+                    -- distance first (a flight is the bottleneck), each tier counts as 800 elmos further
+                    -- fill-row nanos (extra density: the pattern left the row empty in T1) right after the reclaim candidates
+                    local tier = all and 0 or (nn.fill and 0.5) or (nc.parked[id] and 1 or 2)
+                    if tier <= (maxTier or 2) then cands[#cands + 1] = { id = id, tier = tier, d = math.sqrt((nn.x - x) ^ 2 + (nn.z - z) ^ 2) + 800 * tier } end
+                end
+            end
+            table.sort(cands, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.id < b.id end)
+            local out = {}
+            for k = 1, math.min(n, #cands) do out[k] = cands[k].id end
+            return out
+        end
+        -- nc.NurseryPick(n, x, z, busy): up to n finished nanos standing in nursery blocks, nearest (x, z) first (they are not in the registry)
+        function nc.NurseryPick(n, x, z, busy)
+            local nd = UnitDefNames[ROLES.Get("nano")]
+            if not nd then return {} end
+            local cands = {}
+            for _, b in pairs(nc.blocks) do
+                if b.kind == "nursery" then
+                    for _, it in ipairs(nc.L.BlockItems("nursery", b.j, b.r)) do
+                        for _, uid in ipairs(Spring.GetUnitsInCylinder(it.x, it.z, 20, T.teamID) or {}) do
+                            if Spring.GetUnitDefID(uid) == nd.id and not Spring.GetUnitIsBeingBuilt(uid) and not (busy and busy(uid)) then
+                                cands[#cands + 1] = { id = uid, d = (it.x - x) ^ 2 + (it.z - z) ^ 2 }
+                            end
+                        end
+                    end
+                end
+            end
+            table.sort(cands, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.id < b.id end)
+            local out = {}
+            for k = 1, math.min(n, #cands) do out[k] = cands[k].id end
+            return out
+        end
+        function nc.Forget(id)
+            if not nc.nanos[id] then return end
+            nc.nanos[id] = nil
+            nc.nanoN = nc.nanoN - 1
+            nc.focus[id], nc.parked[id], nc.reclaiming[id] = nil, nil, nil
+        end
+    end
+
+    -- nursery blocks (any state) and whether the sink wants another (nc.nurseryWant, set by sink_lift.lua)
+    function X.NcNurseryCount(nc)
+        local n = 0
+        for _, b in pairs(nc.blocks) do if b.kind == "nursery" then n = n + 1 end end
+        return n
+    end
+    function X.NcNurseryWanted(nc) return (nc.nurseryWant or 0) > X.NcNurseryCount(nc) end
+
     function X.NcNanos(T, nc, frame, res)
         local K = T.CFG
         if K.NC_FOCUS and frame % 30 == 0 then Focus(T, nc, frame, res) end
         if frame % 60 == 0 then Park(T, nc, frame, res) end
-        if K.NC_RECLAIM_NANOS and nc.t2 and frame % 300 == 0 then Reclaim(T, nc, frame) end
+        local cm = T.WG and T.WG.CapMode
+        if K.NC_RECLAIM_NANOS and (nc.t2 or (cm and cm.on)) and frame % 300 == 0 then Reclaim(T, nc, frame) end
     end
 end
 

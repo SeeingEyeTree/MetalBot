@@ -43,6 +43,7 @@ local CFG = {
     -- within this of our base or the wing's station (behind the army).  nil / false = the old wing.
     NO_SWEEP      = false,
     HUNT_NEAR_R   = nil,
+    ESCORT_LEAD   = 350,      -- ESCORT: the fighters fly this far ahead of the proxy convoy's transports, toward the site
 }
 M.CFG = CFG
 
@@ -52,6 +53,7 @@ local MM, UQ, EI, ARMY
 local combat, guards, bombersSet
 local wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
 local stationFn = nil      -- o.station(frame) -> x, z: where the idle wing waits (RAID_BOT: click_army.FighterPost)
+local convoyFn = nil       -- o.convoy() -> WG.ProxyConvoy (the proxy base's transports in flight) or nil
 local totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
                  killValue = 0 }
 local nextLog = 0
@@ -72,6 +74,7 @@ function M.Init(o)
     MM, UQ, EI, ARMY = o.MM, o.UQ, o.EI, o.ARMY
     combat, guards, bombersSet = o.combat, o.guards, o.bombers
     stationFn = o.station
+    convoyFn = o.convoy
     BC.Apply("air_wing", CFG, o.cfg, o.label, M.NIL_OPTIONS)
     wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
     totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
@@ -221,6 +224,27 @@ function M.Update(frame)
 
     local fly = #fighters >= CFG.FIGHTER_MIN
     local stx, stz = Station(frame)
+
+    -- ESCORT (user 2026-11-08, the proxy base: "The air trans should move as one group and be escorted by the fighters"): while the proxy's convoy
+    -- (WG.ProxyConvoy, the macro side's sink_lift.lua) gathers or flies, every wing fighter (any number; a hunt is dropped, a strike keeps its own)
+    -- FIGHTs a point ESCORT_LEAD ahead of the transports' centre, toward the site.
+    local cv = convoyFn and convoyFn()
+    if cv and cv.x and cv.tx and wing.mode ~= "strike" and #fighters > 0 then
+        if wing.mode ~= "escort" then
+            Log(frame, "ESCORT: %d fighters (%d) with the proxy convoy (%d transports, %s) at %d,%d -> %d,%d", #fighters, fv, cv.n or 0, tostring(cv.state), cv.x, cv.z, cv.tx, cv.tz)
+            wing.mode, wing.t0 = "escort", frame
+        end
+        local dx, dz = cv.tx - cv.x, cv.tz - cv.z
+        local d = math.sqrt(dx * dx + dz * dz)
+        local k = (d > 1) and math.min(CFG.ESCORT_LEAD, d) / d or 0
+        for _, u in ipairs(fighters) do Claim(frame, u.uid, CMD_FIGHT, cv.x + dx * k, cv.z + dz * k) end
+        for _, u in ipairs(bombers) do Claim(frame, u.uid, CMD_MOVE, stx, stz) end
+        return
+    elseif wing.mode == "escort" then
+        Log(frame, "ESCORT ends after %ds (the convoy is down)", math.floor((frame - wing.t0) / 30))
+        Release(fighters)
+        wing.mode = "idle"
+    end
 
     -- end of a sortie / run
     if wing.mode == "hunt" or wing.mode == "strike" then

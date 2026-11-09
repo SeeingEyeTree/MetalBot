@@ -339,6 +339,17 @@ function M.SetNanoFloor(f) if S then S.nanoFloor = f or 0 end end
 -- PAINTKID_BOT: asked for ahead of its gator stream; 0 / unset changes nothing for the other bots.
 function M.SetSpendFloor(mps) if S then S.spendFloor = mps or 0 end end
 function M.Share() return S and S.share or 0 end
+-- Energy per metal of what the spine builds: the comp's share-weighted energyCost / metalCost (the ledger's spine figure, eco_ledger EnergyTarget).
+-- nil until a comp is set.
+function M.EnergyPerMetal()
+    if not S or not S.units or #S.units == 0 then return nil end
+    local e, m = 0, 0
+    for _, u in ipairs(S.units) do
+        local d = UnitDefs[u.defID]
+        if d then e, m = e + u.share * (d.energyCost or 0), m + u.share * (d.metalCost or 0) end
+    end
+    return m > 0 and e / m or nil
+end
 -- { [unitName] = true }: units other systems ask the labs for (lab_rules passes WG.LabOrders.Wanted() every tick); PlanLabs keeps a lab for each
 function M.SetRequired(names) if S then S.required = names end end
 

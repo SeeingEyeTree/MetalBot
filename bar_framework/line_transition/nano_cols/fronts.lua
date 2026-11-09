@@ -32,6 +32,7 @@ function M.Install(X)
 
     local KIND_RANK = { nano = 1, build = 2, retro = 3 }
     local RedoReady                     -- (defined with Startable)
+    local LaterPick                     -- (NC_PLAN: defined with StartBuild)
     -- projections only (Full Metal Plate: every extractor sits on 4 squares of 592.5 metal; knowledge/economy_numbers.md)
     local M_MEX, M_MOHO = 15 * 2.37, 15 * 9.48
 
@@ -169,7 +170,8 @@ function M.Install(X)
     end
 
     local function NanoFill(T, nc, f)
-        if not (T.CFG.NC_FILL and nc.t2) then return nil end
+        -- T2 fill; or, while the metal sink is short of nanos to fly (nc.nurseryRowsWant, sink_lift.lua SINK_NURSERY = "rows"), already in T1
+        if not (T.CFG.NC_FILL and (nc.t2 or (nc.nurseryRowsWant or 0) > 0)) then return nil end
         return f.skipped[1]
     end
 
@@ -189,7 +191,7 @@ function M.Install(X)
     local function RetroCandidates(nc, f)
         local out = {}
         for _, b in pairs(nc.blocks) do
-            if b.j == f.col and b.state == "t1done" and b.kind ~= "lab" and b.kind ~= "airlab" and ((f.dir > 0) == (b.r >= 0)) then out[#out + 1] = b end
+            if b.j == f.col and b.state == "t1done" and b.kind ~= "lab" and b.kind ~= "airlab" and b.kind ~= "nursery" and ((f.dir > 0) == (b.r >= 0)) then out[#out + 1] = b end
         end
         return out
     end
@@ -212,6 +214,7 @@ function M.Install(X)
             return NanoForward(T, nc, f) ~= nil or NanoFill(T, nc, f) ~= nil
         elseif f.kind == "build" then
             if #f.redo > 0 and RedoReady(T, nc, f.redo[1]) then return true end
+            if f.later and #f.later > 0 and LaterPick(T, nc, f, nc.plan) then return true end
             -- NC_BUILD_EARLY_MAX: while the block has few nanos only this many block sessions run at once, so the nano fronts keep most cons
             local early = T.CFG.NC_BUILD_AFTER_NANOS and nc.nanoN < (T.CFG.NC_BUILD_EARLY_NANOS or 12)
             if early then
@@ -288,6 +291,7 @@ function M.Install(X)
         local items = nc.L.NanoItems(f.col, q)
         local st = NewSession(T, conID, items, items[2].x, items[2].z)
         st.nc = { front = f, kind = "nano", q = q, fill = fill }
+        if fill then nc.fillRows = nc.fillRows or {}; nc.fillRows[f.col .. ":" .. q] = true end      -- a fill row: extra density the sink's lift may take
         nc.rows[f.col .. ":" .. q] = "run"
         nc.added = nc.added + 3
         return st
@@ -303,8 +307,64 @@ function M.Install(X)
         return true
     end
 
+    -- ── NC_PLAN (nano_cols/plan.lua): the kind of a new block, and skipped blocks that come back ─────────────────────────────────
+    local function EnergyKind(T, nc)            -- what an energy block is now: wind blocks in T1 (and while NC_WIND_UNTIL_FUSION holds), else a gap for fusions
+        if nc.t2 and not (T.CFG.NC_WIND_UNTIL_FUSION and (nc.count.fusion or 0) + (nc.count.afus or 0) < T.CFG.NC_WIND_UNTIL_FUSION) then return "gap" end
+        return "wind"
+    end
+    local function KindType(kind)
+        if kind == "mex" or kind == "moho" then return "metal" end
+        if kind == "wind" or kind == "gap" or kind == "fusion" or kind == "afus" then return "energy" end
+        return nil
+    end
+    -- while the plan is severe, redo blocks of the other kind wait on f.later (a raid killed the winds: the mex blocks wait, the winds go first)
+    local function SortRedo(T, nc, f, P)
+        if not (P and P.severe) then return end
+        for k = #f.redo, 1, -1 do
+            local b = f.redo[k]
+            local t = KindType(b.kind)
+            if t and t ~= P.severe then
+                table.remove(f.redo, k)
+                b.state = "skipped"
+                f.later[#f.later + 1] = b
+            end
+        end
+    end
+    -- a skipped block that may come back now: its kind is wanted (or nothing of it stands: it is re-planned), or the front has no row ahead
+    LaterPick = function(T, nc, f, P)
+        if #f.later == 0 then return nil end
+        local ahead = BuildForward(T, nc, f) ~= nil
+        for k, b in ipairs(f.later) do
+            local t = KindType(b.kind)
+            if not P or t == P.want or (b.built or 0) == 0 then return k end
+            if not ahead and not (P.severe and t ~= P.severe) then return k end     -- no row ahead: back to it, but never the wrong kind while severe
+        end
+        return nil
+    end
+
     local function StartBuild(T, nc, f, conID, res)
+        local P = X.NcPlan(T, nc, res)
+        f.later = f.later or {}
+        SortRedo(T, nc, f, P)
         local b = (#f.redo > 0 and RedoReady(T, nc, f.redo[1])) and table.remove(f.redo, 1) or nil
+        if not b then
+            local k = LaterPick(T, nc, f, P)
+            if k then
+                b = table.remove(f.later, k)
+                b.recovered = true                   -- (rebuilds only its holes: NewSession marks what stands)
+                if (b.built or 0) == 0 and P then
+                    -- nothing of it stands: it takes the kind the plan wants now
+                    local kind = (P.want == "energy") and EnergyKind(T, nc) or "mex"
+                    if kind == "gap" then
+                        b.kind, b.state = "gap", "t1done"
+                        nc.count.gap = nc.count.gap + 1
+                        Echo(T, "%s: skipped block %d becomes an energy gap", FrontName(f), b.r)
+                        b = nil
+                    else b.kind = kind end
+                end
+                if b then Echo(T, "%s: back to skipped block %d (%s)", FrontName(f), b.r, b.kind) end
+            end
+        end
         if not b then
             local r = BuildForward(T, nc, f)
             while r do
@@ -314,6 +374,10 @@ function M.Install(X)
                 elseif (T.CFG.NC_T1_AIR_LAB or 0) > 0 and not nc.t1AirPlanned and Income(res) >= T.CFG.NC_T1_AIR_LAB then
                     kind = "airlab"                                   -- NC_T1_AIR_LAB: one T1 air lab (the lift's transports, more fighters)
                     nc.t1AirPlanned = true
+                elseif X.NcNurseryWanted(nc) then
+                    kind = "nursery"                                  -- the metal sink is short of nanos to fly (nc.nurseryWant, sink_lift.lua)
+                elseif P then
+                    kind = (P.want == "energy") and EnergyKind(T, nc) or "mex"     -- NC_PLAN: the look-ahead (nano_cols/plan.lua)
                 elseif nc.t2 and not (T.CFG.NC_WIND_UNTIL_FUSION and (nc.count.fusion or 0) + (nc.count.afus or 0) < T.CFG.NC_WIND_UNTIL_FUSION) then
                     kind = NeedEnergyFuture(T, nc, res) and "gap" or "mex"
                 else kind = NeedEnergyT1(T, nc, res) and "wind" or "mex" end
@@ -346,7 +410,9 @@ function M.Install(X)
         local cands = RetroCandidates(nc, f)
         if #cands == 0 then return false end
         local K = T.CFG
-        local needE = NeedEnergyNow(T, nc, res)
+        local P = X.NcPlan(T, nc, res)
+        local needE
+        if P then needE = P.want == "energy" else needE = NeedEnergyNow(T, nc, res) end
         local tight = nc.ecoUnits > K.NC_CAP_WIND_FIRST * Budget(T)
         local function Score(b)
             local s
@@ -434,6 +500,15 @@ function M.Install(X)
         elseif info.kind == "build" then
             local b = info.block
             if b.kind == "mex" or b.kind == "wind" then nc.run[b.kind] = math.max(0, nc.run[b.kind] - 1) end
+            if st.ncSkip and not ok then
+                -- skipped (fronts' Skip): what stands stays, the block comes back later (f.later)
+                local built = 0
+                for _, it in ipairs(st.queue) do if it.built then built = built + 1 end end
+                b.state, b.built = "skipped", built
+                f.later = f.later or {}
+                f.later[#f.later + 1] = b
+                return
+            end
             if ok and b.recovered then
                 b.state, b.recovered = "t1done", nil
                 Echo(T, "%s: block %d (%s) rebuilt", FrontName(f), b.r, b.kind)
@@ -570,6 +645,7 @@ function M.Install(X)
                      count = { mexT1 = 0, windT1 = 0, gap = 0 }, labsPlanned = 0, t2 = false, ecoUnits = 0, added = 0,
                      nanoRowsBuilt = 0, startFrame = frame, nanos = {}, nanoN = 0, parked = {}, focus = {}, reclaiming = {}, parkTarget = 0, helpers = {}, ferryRows = {} }
         T.nc = nc
+        if X.NcLiftApi then X.NcLiftApi(T, nc) end      -- nc.LiftPick / nc.Forget (the metal sink's air lift, nanos.lua)
         local mid = L.width / 2
         local function Add(kind, col, cc)
             for _, d in ipairs({ 1, -1 }) do
@@ -623,7 +699,7 @@ function M.Install(X)
 
     -- [NC] map: one line per block row (top = furthest +a); building columns show the block (lower case T1, upper case T2:
     -- m/M mex/moho, w wind, g gap, F fusion, A afus, L lab, ~ being built, . empty); nano columns the nano rows standing (0-4)
-    local MAPCH = { mex = "m", wind = "w", gap = "g", lab = "L", moho = "M", fusion = "F", afus = "A" }
+    local MAPCH = { mex = "m", wind = "w", gap = "g", lab = "L", moho = "M", fusion = "F", afus = "A", nursery = "n" }
     local function MapDump(T, nc)
         local lo, hi = 0, -1
         for _, b in pairs(nc.blocks) do lo, hi = math.min(lo, b.r), math.max(hi, b.r) end
@@ -700,6 +776,32 @@ function M.Install(X)
             nc.conLabHeld = nc.conLab ~= nil and Want(T, "retro") > 0
         end
         NcNanos(T, nc, frame, res)
+        -- NC_SKIP (user 2026-11-04: "give the fronts some basic ability to skip to what is needed if there is a larger short fall"): while the plan is
+        -- severe, build sessions of the other kind that are less than NC_SKIP_MAX_DONE built stop; their blocks wait on f.later and the cons start
+        -- what is needed (at most NC_SKIP_PER_TICK per tick)
+        if K.NC_PLAN and frame % (K.NC_PLAN_EVERY or 60) == 0 then X.NcPlan(T, nc, res) end
+        if K.NC_PLAN and K.NC_SKIP and frame % (K.NC_PLAN_EVERY or 60) == 0 then
+            local P = X.NcPlan(T, nc, res)
+            if P and P.severe then
+                local n = 0
+                for _, st in ipairs(T.ncSessions.build) do
+                    if n >= K.NC_SKIP_PER_TICK then break end
+                    local b = st.nc and st.nc.block
+                    local t = b and KindType(b.kind)
+                    if not st.done and t and t ~= P.severe then
+                        local built, total = 0, #st.queue
+                        for _, it in ipairs(st.queue) do if it.built then built = built + 1 end end
+                        if total > 0 and built / total < K.NC_SKIP_MAX_DONE then
+                            st.ncSkip, st.done = true, true
+                            if st.builderID and Spring.GetUnitDefID(st.builderID) then Spring.GiveOrderToUnit(st.builderID, X.CMD_STOP, {}, {}) end
+                            n = n + 1
+                            nc.skips = (nc.skips or 0) + 1
+                            Echo(T, "%s: skips block %d (%s, %d/%d built): %s is short -- it comes back later", FrontName(st.nc.front), b.r, b.kind, built, total, P.severe)
+                        end
+                    end
+                end
+            end
+        end
         if frame % K.NC_LOG_EVERY == 0 then Status(T, nc, frame) end
         -- a session whose builder has stood with an empty queue for 20 s: log what its queue holds (a stuck session holds its con for ever)
         if frame % 900 == 0 then

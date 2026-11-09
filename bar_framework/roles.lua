@@ -49,6 +49,13 @@ M.TABLE = {
         heavy_t2_veh = "corgol",       -- T2 heavy tank (Tzar): army_groups' stop element ("stopping power", 292 aoe); only heavy transports lift it
         transport_heavy = "corseah",   -- T2 heavy air transport (T2 air lab): lifts a Tzar (air_lift.lua)
         transport_heavy_t1 = "corhvytrans",   -- T1 heavy air transport: lifts a Tzar too (air_lift.lua)
+        -- static defence the proxy base builds (bar_framework/proxy/): T1 laser tower (Twin Guard), T2 pop-up laser (Scorpion),
+        -- T2 pop-up artillery (Persecutor), long-range plasma cannon (Basilisk, range 4950)
+        hllt         = "corhllt",   def_t2_popup = "corvipe",   def_t2_arty = "cortoast",   lrpc = "corint",
+        jammer_t1    = "corjamt",   jammer_t2 = "corshroud",    radar_t2 = "corarad",       -- static jammers (Castro, Shroud), the T2 radar tower
+        rez_bot      = "cornecro",                                                          -- the T1 bot lab's rez bot (Graverobber)
+        def_t2_bulwark = "cordoom", aa_long = "corscreamer",  lrpc_t3 = "corbuzz",  heavy_t3 = "corjugg",   -- Bulwark, Screamer, Calamity, Behemoth (proxy ramp)
+        heavy_t3_bot = "cordemon",                                                          -- Demon (T3): with the Behemoth the only ground army at the cap (cap_mode)
     },
     arm = {},      -- Armada: fill in (armdecom, armawac, armfig ...); a missing entry falls back to the Cortex name
 }

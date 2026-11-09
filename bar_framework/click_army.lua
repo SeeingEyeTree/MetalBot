@@ -333,6 +333,21 @@ local CFG = {
     SURVIVE_STANDOFF   = 250,
     SURVIVE_HOLD       = 120,
     SURVIVE_UNIT_HP    = 0.45,
+    -- PROXY (user 2026-11-08, the proxy base: "When the proxy signal comes in 2 of the army groups should stop raiding and be pulled in as defenders for the
+    -- area where the base will be.  That lets them clear scouts and create a buffer"): M.Retask turns the biggest raid groups into proxy groups (state
+    -- "proxy"): they walk to the spot, attack every enemy ground unit or building seen within PROXY_CLEAR_R of it, then stand a MOVE line across the
+    -- spot -> enemy axis PROXY_LINE_OUT out.  They are not raid groups any more (FastCount skips them, so new raid groups launch).
+    PROXY_ARRIVE       = 700,     -- the group's centre this close to the spot: arrived
+    PROXY_CLEAR_R      = 900,     -- enemies this close to the spot are cleared ...
+    PROXY_SEEN_AGE     = 150,     -- ... (mobile ones seen this recently, frames)
+    PROXY_LINE_OUT     = 400,     -- the line stands this far out from the spot toward the enemy
+    PROXY_SPACING      = 70,      -- between units on the line
+    PROXY_ROW          = 16,      -- units per row of the line (more stand in rows behind)
+    PROXY_RETASK_S     = 90,      -- groups are taken for this long after the request (a group launched in that time can be taken)
+    -- ... and for PROXY_REINFORCE_S new fast units join the weakest proxy group until the proxy groups are worth PROXY_WANT_AV (game 1, 2026-11-08:
+    -- the raid groups at 8:00 were 14 and 6 units; one was gone before it got there)
+    PROXY_REINFORCE_S  = 150,
+    PROXY_WANT_AV      = 6000,
     UNSEEN_FIRST       = false,   -- blind groups (the enemy not located: the mirror guess) head for the nearest never-seen enemy-half sector (Init o.unseen) instead of the mirror lane point
 }
 M.CFG = CFG
@@ -483,7 +498,7 @@ end
 -- On an attack: no per-unit retreat (the attack is a commitment, like a raider).
 function M.IsRaiding(uid)
     local g = byId[unitGroup[uid]]
-    return g ~= nil and g.state == "attack"
+    return g ~= nil and (g.state == "attack" or g.state == "proxy")     -- (a proxy group holds its spot: no per-unit retreat either)
 end
 function M.IsSquadRetreating(uid) return squad[uid] ~= nil end
 function M.StagePoint() return stageX, stageZ end
@@ -869,7 +884,7 @@ end
 -- Fast groups are the MAX_GROUPS; the slow group is the one more, so at most MAX_GROUPS + 1 are out.
 local function FastCount()
     local n = 0
-    for _, g in ipairs(groups) do if not g.slow then n = n + 1 end end
+    for _, g in ipairs(groups) do if not g.slow and g.state ~= "proxy" then n = n + 1 end end
     return n
 end
 
@@ -1751,8 +1766,10 @@ local function UpdateAttack(frame, g, list)
         tx, tz = MM.Clamp(fx + px * off, fz + pz * off, CFG.MARGIN)
         -- UNSEEN_FIRST: the enemy is not located yet (the foe is the mirror guess): go where nobody has looked, the likeliest place for it
         local usx, usz
-        if CFG.UNSEEN_FIRST and unseenFn and MM.FoeSource and MM.FoeSource() == "mirror" then
-            usx, usz = unseenFn(cx, cz, frame)
+        -- (also when the sighted base is gone and nothing is known: search the whole map, not the dead base)
+        local foeLost = MM.FoeLost and MM.FoeLost()
+        if CFG.UNSEEN_FIRST and unseenFn and MM.FoeSource and (MM.FoeSource() == "mirror" or foeLost) then
+            usx, usz = unseenFn(cx, cz, frame, foeLost)
             if usx then tx, tz = MM.Clamp(usx, usz, CFG.MARGIN) end
         end
         if not usx and Dist(cx, cz, tx, tz) < CFG.NO_TARGET_R then
@@ -1941,6 +1958,72 @@ local function UpdateFall(frame, g, list)
     end
 end
 
+-- PROXY: a proxy group walks to its spot, clears it, then holds a line in front of it (MOVE only).  The line stands proxyLine out (the unit side sets it
+-- 300 past the static's front edge: user 2026-11-08, "have the normal units that are pulled in fight a little bit further up ... the grid has trouble
+-- expanding since the normal units don't push up with the wall"), and what it clears is round the spot and round the line
+local proxyLine
+function M.SetProxyLine(d) proxyLine = d end
+local function UpdateHold(frame, g, list)
+    local n = #list
+    if n == 0 then
+        Log(frame, "proxy group #%d gone: no units left", g.id)
+        return RemoveGroup(g)
+    end
+    local cx, cz, v = Centroid(list)
+    g.cx, g.cz, g.value, g.n = cx, cz, v, n
+    if n > g.peakN then g.peakN = n end
+    local h = g.hold
+    if not g.arrivedF then
+        if Dist(cx, cz, h.x, h.z) <= CFG.PROXY_ARRIVE then
+            g.arrivedF = frame
+            Log(frame, "proxy group #%d at the spot %d,%d: %d units av=%d, %ds after the retask", g.id, h.x, h.z, n, v, math.floor((frame - (g.proxyF or frame)) / 30))
+        else
+            local lx, lz = LegPoint(frame, cx, cz, h.x, h.z, v, nil, list)
+            for _, u in ipairs(list) do
+                if Dist(u.x, u.z, cx, cz) > CFG.STRAGGLER_R then Claim(frame, u.uid, CMD_MOVE, cx, cz) else Claim(frame, u.uid, CMD_MOVE, lx, lz) end
+            end
+            return
+        end
+    end
+    -- what is on the spot: enemy ground units seen recently, enemy buildings remembered
+    local tgts = {}
+    local out0 = math.max(CFG.PROXY_LINE_OUT, proxyLine or 0)
+    local lx, lz = h.x + (h.ax or 1) * out0, h.z + (h.az or 0) * out0
+    for _, rec in pairs(EI.Records()) do
+        local c = rec.c
+        if not c.air and (not c.mobile or frame - rec.frame <= CFG.PROXY_SEEN_AGE)
+           and (Dist(rec.x, rec.z, h.x, h.z) <= CFG.PROXY_CLEAR_R or Dist(rec.x, rec.z, lx, lz) <= CFG.PROXY_CLEAR_R) then
+            tgts[#tgts + 1] = rec
+        end
+    end
+    g.foes = #tgts
+    if #tgts > 0 then
+        g.clearSince = nil
+        for _, u in ipairs(list) do
+            local best, bd
+            for _, rec in ipairs(tgts) do
+                local d = Dist(u.x, u.z, rec.x, rec.z)
+                if not bd or d < bd then best, bd = rec, d end
+            end
+            Claim(frame, u.uid, CMD_FIGHT, best.x, best.z)
+        end
+        return
+    end
+    g.clearSince = g.clearSince or frame
+    -- the line: rows of PROXY_ROW across the spot -> enemy axis, PROXY_LINE_OUT out
+    table.sort(list, function(a, b) return a.uid < b.uid end)
+    local ax, az = h.ax, h.az
+    local px, pz = -az, ax
+    for i, u in ipairs(list) do
+        local row, col = math.floor((i - 1) / CFG.PROXY_ROW), (i - 1) % CFG.PROXY_ROW
+        local inRow = math.min(CFG.PROXY_ROW, n - row * CFG.PROXY_ROW)
+        local off = (col - (inRow - 1) / 2) * CFG.PROXY_SPACING
+        local out = out0 - row * CFG.PROXY_SPACING
+        local x, z = MM.Clamp(h.x + ax * out + px * off, h.z + az * out + pz * off, CFG.MARGIN)
+        Claim(frame, u.uid, CMD_MOVE, x, z)
+    end
+end
+
 -- The attacking FAST group with the least value: where a new fast unit is most useful.
 local function WeakestAttacker()
     local best
@@ -1983,6 +2066,100 @@ function M.Adopt(frame, uids)
         Log(frame, "%d interceptors that met a contact far out -> group #%d", #fast, g.id or 0)
     end
     return #fast
+end
+
+-- PROXY: take the `n` biggest raid groups (or a group of free units, if none is out) for the spot (x, z); (ax, az) = the unit vector from the
+-- spot toward the enemy.  Groups are taken as they come for PROXY_RETASK_S; a second call moves the proxy groups to the new spot.
+local proxyReq
+function M.Retask(frame, n, x, z, ax, az, why)
+    proxyReq = { n = n or 2, x = x, z = z, ax = ax or 1, az = az or 0, f = frame, why = why or "proxy" }
+    for _, g in ipairs(groups) do
+        if g.state == "proxy" then g.hold, g.arrivedF, g.clearSince = proxyReq, nil, nil end
+    end
+    Log(frame, "PROXY: %d group(s) wanted at %d,%d (%s)", proxyReq.n, x, z, proxyReq.why)
+end
+-- GO (user 2026-11-08, "keep the ground units ... further out ... synced up with when the trans come in"): the proxy groups waited at the stage; now they
+-- move onto the spot (x, z) itself
+function M.ProxyGo(frame, x, z)
+    if not proxyReq then return end
+    proxyReq = { n = proxyReq.n, x = x, z = z, ax = proxyReq.ax, az = proxyReq.az, f = proxyReq.f, why = "go", wantAV = proxyReq.wantAV }
+    for _, g in ipairs(groups) do if g.state == "proxy" then g.hold, g.arrivedF, g.clearSince = proxyReq, nil, nil end end
+    Log(frame, "PROXY GO: the proxy groups move from the stage onto the spot %d,%d", x, z)
+end
+-- more for the proxy (user 2026-11-08: "keep pulling raid groups in as needed to defend ... it can pull units from the main base to help get it online even
+-- after it has landed"): up to n proxy groups and wantAV of value, taken / reinforced for a fresh PROXY_RETASK_S / PROXY_REINFORCE_S
+local lastProxy
+function M.ProxyMore(frame, n, wantAV, why)
+    local r = proxyReq or lastProxy
+    if not r then return end
+    proxyReq = { n = n, x = r.x, z = r.z, ax = r.ax, az = r.az, f = frame, why = why or "more", wantAV = wantAV }
+    for _, g in ipairs(groups) do if g.state == "proxy" then g.hold = proxyReq end end
+    Log(frame, "PROXY: more -- up to %d group(s), %d value (%s)", n, wantAV or CFG.PROXY_WANT_AV, proxyReq.why)
+end
+-- the proxy groups raid again from where they stand (the base is lost, or it holds on its own)
+function M.ReleaseProxy(frame, why, keep)
+    lastProxy = keep and proxyReq or nil
+    proxyReq = nil
+    for _, g in ipairs(groups) do
+        if g.state == "proxy" then
+            g.state, g.target, g.hold, g.arrivedF, g.clearSince = "attack", nil, nil, nil, nil
+            Log(frame, "proxy group #%d released (%s): it raids from %d,%d with %d units", g.id, why or "-", g.cx or 0, g.cz or 0, g.n or 0)
+        end
+    end
+end
+-- { { id, n, value, cx, cz, arrivedF, clearSince, foes }, ... }
+function M.ProxyGroups()
+    local out = {}
+    for _, g in ipairs(groups) do
+        if g.state == "proxy" then
+            out[#out + 1] = { id = g.id, n = g.n or 0, value = g.value or 0, cx = g.cx, cz = g.cz, arrivedF = g.arrivedF, clearSince = g.clearSince, foes = g.foes or 0 }
+        end
+    end
+    return out
+end
+
+local function ToProxy(frame, g)
+    g.state, g.hold, g.target, g.arrivedF, g.clearSince, g.proxyF = "proxy", proxyReq, nil, nil, nil, frame
+    g.engage = nil
+    Log(frame, "group #%d (%d units av=%d) stops raiding: proxy group for %d,%d", g.id, g.n or 0, g.value or 0, proxyReq.x, proxyReq.z)
+end
+
+-- one group a tick: the biggest raid group, else (none out) the free fast units if they are worth a launch.  Returns the free list without them.
+local function FillProxy(frame, free)
+    if not proxyReq then return free end
+    local age = frame - proxyReq.f
+    local have, pv, weakest = 0, 0, nil
+    for _, g in ipairs(groups) do
+        if g.state == "proxy" then
+            have, pv = have + 1, pv + (g.value or 0)
+            if not weakest or (g.value or 0) < (weakest.value or 0) then weakest = g end
+        end
+    end
+    if have >= proxyReq.n or age > CFG.PROXY_RETASK_S * 30 then
+        local want = proxyReq.wantAV or CFG.PROXY_WANT_AV
+        if weakest and age <= CFG.PROXY_REINFORCE_S * 30 and pv < want then
+            local rest, n, v = {}, 0, 0
+            for _, u in ipairs(free) do
+                if not u.slow and pv < want then JoinGroup(frame, weakest, u); pv, n, v = pv + u.v, n + 1, v + u.v
+                else rest[#rest + 1] = u end
+            end
+            if n > 0 then Log(frame, "PROXY: %d new unit(s) av=%d -> proxy group #%d (the proxy groups av=%d of %d wanted)", n, v, weakest.id, pv, want) end
+            return rest
+        end
+        return free
+    end
+    local best
+    for _, g in ipairs(groups) do
+        if g.state == "attack" and not g.slow and g.cx and (not best or (g.value or 0) > (best.value or 0)) then best = g end
+    end
+    if best then ToProxy(frame, best); return free end
+    local fast, rest = {}, {}
+    for _, u in ipairs(free) do if not u.slow then fast[#fast + 1] = u else rest[#rest + 1] = u end end
+    if #fast == 0 or SumValue(fast) < CFG.LAUNCH_MIN_AV then return free end
+    local g = Launch(frame, fast, false)
+    g.n = #fast
+    ToProxy(frame, g)
+    return rest
 end
 
 -- ── Bombers ───────────────────────────────────────────────────────────────────
@@ -2233,12 +2410,15 @@ function M.Update(frame)
         end
     end
 
+    free = FillProxy(frame, free)
     local snapshot = {}      -- groups can be removed while updating
     for i, g in ipairs(groups) do snapshot[i] = g end
     for _, g in ipairs(snapshot) do
         local list = byGroup[g.id] or {}
         if g.state == "attack" and mode == "hold" then EndGroup(frame, g, "hold", #list) end
-        if g.state == "attack" then UpdateAttack(frame, g, list) else UpdateFall(frame, g, list) end
+        if g.state == "attack" then UpdateAttack(frame, g, list)
+        elseif g.state == "proxy" then UpdateHold(frame, g, list)
+        else UpdateFall(frame, g, list) end
     end
 
     -- Units in no group.

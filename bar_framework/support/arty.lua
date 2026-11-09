@@ -148,6 +148,9 @@ local function AimDensity(uid, range, cfg, t)
     return t
 end
 
+-- area_defence's wall (defence/wall.lua) keeps its Tzars on the same density target
+M.AimDensity, M.Range = AimDensity, Range
+
 function M.Update(rec, units, cfg, frame, ctx)
     local LIFT = ctx.LIFT
     local key = M.name .. " g" .. rec.id

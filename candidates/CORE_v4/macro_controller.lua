@@ -40,11 +40,24 @@ MACRO.Install(widget, WG, {
     SINK_UNIT   = "corcrwh",       -- the sink unit: a Dragon (the framework default, named here so it is visible)
     -- user 2026-10-26 (slimegirl game): nothing is known about the enemy at first, so the army share is 35% (SHARE.unscouted) and the units hold at home;
     -- once the enemy is located, game_plan's `scout` rule picks raid_open (weak enemy army) or stays on hold (strong), see strategy_hooks.game_plan
+    -- PROXY (user 2026-11-08, proof of concept; bar_framework/proxy_base.lua): when the raids trade badly, a forward base 4k from the enemy's build power near a
+    -- map edge -- an air con builds a vehicle plant, the sink's lift flies 4 nanos in, area_defence holds it.  FORCE_FRAME = the test (8:00 whatever the trade):
+    -- remove it to start only on bad trades.
+    -- user 2026-11-08 (second version): two raid groups take the spot first (unit side PROXY_ARMY), then 8 nanos come in one escorted wave (CONVOY), and the
+    -- CREW (proxy/crew.lua: the air con + 4 T1 cons from the proxy lab) builds nanos, Twin Guards, Thistles and a T2 lab; the labs make Pounders / Tzars.
+    -- (GROUND_CON: the lab's builder is a spine ground con flown in with the convoy, under its escort; the air con only if none can be lifted)
+    PROXY = { FORCE_FRAME = 8 * 60 * 30, NANOS = 8, CONVOY = true, BEACH = true, CREW = {}, GROUND_CON = true, SCOUTS = 0, BEACH_WAIT_S = 240 },   -- (SCOUTS 0: the Condor waves never showed in a real game; the proxy's air lab scouts instead)   -- (SCOUTS: Condors for the guns' targets, 2026-11-08)
+    -- CAP_MODE (user 2026-11-08, bar_framework/cap_mode.lua): at 90% of the cap T1 eco is reclaimed (self-destructed where no nano reaches) to keep 200
+    -- slots free for Dragons and the proxy; the labs build only Dragons, air scouts, Demons, Behemoths and cons; the unit side culls fighters, Wasps,
+    -- Shurikens and T1 army and sends everything else at the enemy.
+    CAP_MODE = {},
+    LINE_CONS_HIGH = true,         -- user 2026-11-08: the line's cons build at HIGH builder priority (first dibs on metal over the spine nanos)
     CMDR_TO_SPINE = true,          -- user 2026-10-27: the commander moves to the spine once its part of the row is done
     ARMY_SHARE_MAX = 0.8,          -- user 2026-10-29 (BM_akumar6 game: the share sat at 1.0 for 2.5 min and the income went flat): never more than 80% to the army, at least 20% eco
-    MACHINE    = "v4_rows_raid",   -- user 2026-11-01: raid stances only (rows_eco_legacy without t1_hold / t2_hold; machines/v4_rows_raid.lua).  Was "rows_eco_legacy".
+    -- 2026-11-08 (AREA_DEFENCE): v4_rows_raid with the wall stances (12 Incisors / 10 Brutes : 1 Pounder) and defended eco bursts (machines/v4_defence.lua)
+    MACHINE    = "v4_defence",     -- user 2026-11-01: raid stances only (rows_eco_legacy without t1_hold / t2_hold; machines/v4_rows_raid.lua).  Was "rows_eco_legacy".
     -- state machines (machines/core_default.lua, machine_editor.html): when to switch stance and army share; the options below are the fallback if it fails to load
-    STANCE     = "legacy/raid_start",          -- opening game plan: hold until the enemy is located
+    STANCE     = "legacy/raid_start_wall",          -- opening game plan: hold until the enemy is located
     HOLD_STANCE = "legacy/t1_hold",          -- after bad trades while behind (strategy_hooks.game_plan)
     PLAN        = { raid = "legacy/raid_open", hold = "legacy/t1_hold", start_hold = true, scout = { min_stay = 1800 } },
     SHARE       = { unscouted = 0.35 },
@@ -54,6 +67,17 @@ MACRO.Install(widget, WG, {
     -- no nano parking near a swap, an idle lab becomes a T2 bot lab
     SINK_MAX    = 40,              -- 2026-10-25: 10 labs absorb ~4.3k m/s (10 x ~430) and the bank floated to 600k at 9.4k income; one lab with 32 decoys takes ~430 m/s
     SINK_PARALLEL = 5,             -- labs being placed at once (24+ are needed at 9-10k m/s)
+    -- user 2026-11-04: the sink makes its own decoys and brings its own build power (eco_sim 2026-11-04, 30 min at 0 / 20 / 60% army: the line's 6 decoy labs made
+    -- 40-50 decoys a minute where 100-120 were needed, 0.7-2.4M metal wasted; their exits got blocked in real games).  DECOY_LINE is off (LT_CFG below).
+    --   SINK_DECOY_LABS: T2 bot labs at sink spots, placed by a T1 bot con flown there, 11 decoys of their own (~3.9k BP, a decoy every ~9 s)
+    --   SINK_LIFT: nano-column nanos flown to the sink sites (16 per decoy lab, up to 32 per sink lab), given back as decoys arrive (bar_framework/sink_lift.lua)
+    SINK_DECOY_LABS = true, SINK_LIFT = true,
+    SINK_HELPERS = 1,              -- (was 6) the lifted nanos build the lab frames; 6 air-con helpers per frame took the block's cons (eco_sim 2026-11-04: mohos 813 vs 887 at 20:00)
+    SINK_NURSERY = "rows",         -- user 2026-11-04: when the block's idle nanos run out, the nano fronts fill the rows the pattern skipped (and refill them once flown)
+    SINK_FORECAST = true,          -- user 2026-11-04: the sink sizes itself for the surplus 150 s ahead (the eco's spending falling off, nano_cols/plan.lua forecast)
+    SINK_CAP_RESERVE = 40,         -- no new decoys (and no nanos lifted) while fewer than 40 + 2 per sink lab unit-cap slots are free: the Dragons need them
+    SINK_PITCH  = 512,             -- room for a lab's ring of lifted nanos between spots (was 384)
+    SINK_ROW = 7, SINK_SPARE_ROWS = 6,   -- wider rows, and more spare ones (eco_sim 2026-11-04: "no free sink spot" at 25:56 with 25 labs; with the 512 pitch many spots fall off the map)
     -- the 4-6k opening (CORE_6K, user 2026-10-26): few nanos on the line and the spine until 7:00 -- the metal goes to the army.  CORE_6K's other half (GRIDS_OPENING 1 / MAX 2, no air-con reserve) is NOT used:
     -- in eco_sim it cut 20-min income from ~4.9k to ~0.9k for about the same army
     -- LINE_NANO_CAP removed 2026-10-27 (user): the line builds as many nanos as it can use -- they are the build power the eco scales with; eco_sim: with the cap the bank sat at ~1300 at 5:00, without ~400
@@ -68,13 +92,17 @@ MACRO.Install(widget, WG, {
         SPINE_EARLY = true,    -- the spine (and with it the labs' army want) starts when the vehicle plant has a site, not with the first grid: the army starts at 4:00, the air lab at 5:30.  (These four options sat inside the comment above until 2026-10-27 and were never applied.)
         NANO_FIRST = 2, GRID_REACH = true, GRID_REACH_WAIT = 1800,    -- a new grid opens only when a finished nano reaches one of its nano spots (replaces the bridge nano); after 60 s of waiting it opens anyway (eco_sim rows6.json: no wait limit 1722 m/s at 18:00, 60 s 2858, 20 s 2774, gate off 2890)
         GRID_BRIDGE = false,   -- every grid starts with 2 chained nanos; a grid out of reach of a nano gets a bridge nano from its neighbour first (user 2026-10-26)
-         VP2 = true, RAID_FOCUS = false, VP_NANO_ASSIST = false, VP_NANOS_FIRST = true, AIR_LAB_NANOS_FIRST = true, AIR_LAB_NANO_ASSIST = false, VP_WAIT_AIR_LAB = false, VP_DONE_FRAME = 4 * 60 * 30 + 15 * 30, GRID_FAST_INCOME = 1, LAB_NANOS_FIRST_GRID = true, GRID_START = { cap = 2, eco = 0, nanos = 2, wait = 30 * 30 }, T2BOT_LAB = true, DECOY_LINE = true, REZ_LAB = true, REZ_LAB_INCOME = 250,
+         VP2 = true, RAID_FOCUS = false, VP_NANO_ASSIST = false, VP_NANOS_FIRST = true, AIR_LAB_NANOS_FIRST = true, AIR_LAB_NANO_ASSIST = false, VP_WAIT_AIR_LAB = false, VP_DONE_FRAME = 4 * 60 * 30 + 15 * 30, GRID_FAST_INCOME = 1, LAB_NANOS_FIRST_GRID = true, GRID_START = { cap = 2, eco = 0, nanos = 2, wait = 30 * 30 }, T2BOT_LAB = true, DECOY_LINE = false, REZ_LAB = true, REZ_LAB_INCOME = 250,
          SCOUT_LAB = true, RADAR_RING = true, NC_BUILD_AFTER_NANOS = 3, T2BOT_INCOME = 400, NC_T2_LAB_INCOME = 450, NC_WIND_UNTIL_FUSION = 4,
          NC_T2_LABS_MAX = 10, NC_T2_LAB_AIR_EXTRA = 2, NC_T2_LAB_FLOAT_S = 45,
-         NC_T1_AIR_LAB = 280 },   -- user 2026-11-01: one T1 air lab in the block from 280 m/s: the air lift's transports (Quakers / flak trucks to their groups) and more fighters   -- user 2026-10-31: a lab block holds TWO T2 air labs; up to 10 labs, 2 more while enemy air is near a raid (raidAir), 1 more while the bank floats over 45 s of income.  T2 earlier (600 -> 400 / 450) but wind goes on until 4 fusions stand (user 2026-10-30: E stalled and metal floated; eco_sim 4 seeds: income at 18:00 2591 vs 2520, metal float at 16:00 11.5k vs 13k)
+         NC_T1_AIR_LAB = 280,
+         NC_PLAN = true, EP_RATIO = false,
+         NC_UNIT_FRAC = 0.55 },        -- user 2026-11-08 ("it was building the nano col larger than the unit cap would allow"): the block's eco budget 70% -> 55% of the cap   -- user 2026-11-04: the block's mex / energy choice by look-ahead (nano_cols/plan.lua); the energy push uses the same target (no fixed 15)   -- user 2026-11-01: one T1 air lab in the block from 280 m/s: the air lift's transports (Quakers / flak trucks to their groups) and more fighters   -- user 2026-10-31: a lab block holds TWO T2 air labs; up to 10 labs, 2 more while enemy air is near a raid (raidAir), 1 more while the bank floats over 45 s of income.  T2 earlier (600 -> 400 / 450) but wind goes on until 4 fusions stand (user 2026-10-30: E stalled and metal floated; eco_sim 4 seeds: income at 18:00 2591 vs 2520, metal float at 16:00 11.5k vs 13k)
     --     -- NC_BUILD_AFTER_NANOS 3 (user 2026-10-30; eco_sim: first block 7:46 -> 7:01) -- SPAM_LAB (user 2026-10-30): a T1 bot lab + 4 nanos on the line that makes Grunts for the army groups' spam element (line_transition/spam_lab.lua; unit_controller SUPPORT)   -- REZ_LAB: a T1 bot lab on the line for the rez floor (line_transition/rez_lab.lua)        -- a T2 bot lab on the line's last slots at 600 m/s (t2bot_lab.lua): T2 bot cons for the blocks
     -- SCOUT_LAB (SCOUT WING, user 2026-10-30): an air lab (from 7:00) + a vehicle lab (at 250 m/s), 2 nanos each, past the end of lane 4, that make only scouts, rebuilt when killed (line_transition/scout_lab.lua; unit_controller SCOUT_WING)
-    SPINE_CFG   = { CONS_MIN = 1, CONS_PER_INCOME = 500, CONS_MAX = 4, EARLY_CONS_LABS = 3, EARLY_CONS_UNTIL = 10 * 60 * 30, CON_CAP = 1, CON_CAP_UNTIL = 10 * 60 * 30, NANO_SHARE_CAP = 0.6, NANO_BUILD_UTIL = 0.45, LAB_MIN_NANOS = 2, CORE_NANOS = 2, GUARD_NANOS = false, BLOCK_LAB_NANOS = 4, RUSH_NANOS = false, RUSH_SHARE = 2, REBUILD_NANOS = true, FLOAT_MULT = 2.5, EARLY_CONS = 1, FIRST_VP = 2, FIRST_LAB_NANOS = 2, LAB_CANDIDATES = { "corlab", "corvp", "corap", "coralab", "coravp", "coraap", "corgant" }, FRONT = 600, BLOCK_PITCH = 320, WAVE_SWAP = false, BLOCK_CONS = true, IDLE_LAB_T2 = true, BUILD_AHEAD = 0.5, NANO_UTIL_GATE = 0 },
+    SPINE_CFG   = { CONS_MIN = 1, CONS_PER_INCOME = 500, CONS_MAX = 4, EARLY_CONS_LABS = 3, EARLY_CONS_UNTIL = 10 * 60 * 30, CON_CAP = 1, CON_CAP_UNTIL = 10 * 60 * 30, NANO_SHARE_CAP = 0.6, NANO_BUILD_UTIL = 0.45, LAB_MIN_NANOS = 2, CORE_NANOS = 2, GUARD_NANOS = false, BLOCK_LAB_NANOS = 4, RUSH_NANOS = false, RUSH_SHARE = 2, REBUILD_NANOS = true, FLOAT_MULT = 2.5, EARLY_CONS = 1, FIRST_VP = 2, FIRST_LAB_NANOS = 2, LAB_CANDIDATES = { "corlab", "corvp", "corap", "coravp", "coraap", "corgant" }, FRONT = 600, BLOCK_PITCH = 320, WAVE_SWAP = false, BLOCK_CONS = true, BLOCK_CON_UNITS = { "corcv" }, AIR_LABS = { coraap = true, corgant = true }, IDLE_LAB_T2 = true, BUILD_AHEAD = 0.5, NANO_UTIL_GATE = 0 },
+    -- SPINE_CFG (user 2026-11-08: "The bot lab that makes cons for the spine got blocked. Just remove it and use air cons for the t3 labs in the spine"): no T2
+    -- bot lab in the spine's candidates and no T2 bot con as a block resident; the T3 lab is an AIR_LABS lab (a T2 air con places it, like the T2 air plant).
     -- SPINE_CFG (user 2026-10-27): GUARD_NANOS false = nanos in the spine are left alone (no guard of a lab), they are only parked to the army share; REBUILD_NANOS replaces nanos the enemy killed
     -- everything else: the defaults in macro_runtime.lua (RAID_BOT's values)
 })

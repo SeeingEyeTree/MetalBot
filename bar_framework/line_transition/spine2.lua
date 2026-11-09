@@ -123,7 +123,8 @@ function M.Install(X)
             local ST = T.WG.Strategy
             if ST and ST.InstallSlotSpine then ST:InstallSlotSpine(set) end
         end
-        LEDGER.Register(T.WG, "spine", { capacity = function() return (set.SpendCapacity()) end })
+        LEDGER.Register(T.WG, "spine", { capacity = function() return (set.SpendCapacity()) end,
+                                         energyPerMetal = set.EnergyPerMetal and function() return set.EnergyPerMetal() end or nil })
         CB.AddPool(T.CB, "spine2-ground", {
             take  = function(owner, req) return mod2.PoolTake(owner, req) end,
             give  = function(uid, owner) mod2.PoolGive(uid, owner) end,

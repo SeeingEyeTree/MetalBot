@@ -126,6 +126,7 @@ local function Class(defID)
         bp        = d.buildSpeed or 0,
         radarR    = d.radarRadius or 0,        -- radar / jammer reach (structures only matter: see RadarCovers)
         jamR      = d.jammerRadius or 0,
+        shield    = not mobile and d.customParams ~= nil and d.customParams.shield_power ~= nil,   -- a shield generator (proxy LRPC targets)
         mex       = (d.extractsMetal or 0) > 0,      -- Facts mexes / mexesT2 (signals enemy_income_est, eco_ratio)
         eco       = (d.extractsMetal or 0) > 0 or (d.energyMake or 0) > 0
                     or (d.windGenerator or 0) > 0 or (d.tidalGenerator or 0) > 0,

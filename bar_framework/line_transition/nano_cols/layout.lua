@@ -33,9 +33,12 @@ do
     -- 160..304: both are 8 mod 16 like every 144-wide footprint
     SPEC.lab  = { { role = "lab_t2_air", dc = 72, da = 8 }, { role = "lab_t2_air", dc = 232, da = 8 } }
     SPEC.airlab = { { role = "lab_t1_air", dc = 160, da = 0 } }     -- a T1 air lab (144 x 96) when the line's is lost (nano_cols/recovery.lua)
+    -- a NURSERY (user 2026-11-04): 6x4 nanos on the wind grid, built to be flown to the metal sink (sink_lift.lua) and rebuilt; an empty one the sink no
+    -- longer needs becomes a mex block (nano_cols/recovery.lua)
+    SPEC.nursery = grid("nano", { 40, 88, 136, 184, 232, 280 }, { -72, -24, 24, 72 })
 end
 M.SPEC = SPEC
-M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 2, airlab = 1 }
+M.UNITS = { mex = 15, moho = 15, wind = 24, fusion = 8, afus = 6, lab = 2, airlab = 1, nursery = 24 }
 
 -- o = { ox, oz (world point of a = 0, c = 0), ux, uz (unit vector of +a), vx, vz (unit vector of +c), nc, mapX, mapZ, margin }
 function M.New(o)

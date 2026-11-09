@@ -41,7 +41,11 @@ M.SCHEMA = {
     UQSnap      = { kind = "table", open = true },                  -- { [teamID] = per-frame unit snapshot } (unit_query.lua, C5)
     EcoLedger   = { kind = "table", open = true },                  -- { consumers = { [name] = {capacity, energyPerMetal} } } (eco_ledger.lua)
     SinkLabs    = { kind = "table" },                               -- { [labID] = {id, x, z, ready, decoys, decoyMax, unit, spot} } (metal_sink.lua)
-    DecoyLabs   = { kind = "table" },                               -- { [labID] = {id, x, z, ready, decoys, decoyMax, line = true} } the line's decoy T2 bot labs (line_decoy.lua)
+    DecoyLabs   = { kind = "table" },                               -- { [labID] = {id, x, z, ready, decoys, decoyMax, line = true[, sink = true]} } decoy T2 bot labs: the line's (line_decoy.lua) or the sink's (metal_sink.lua SINK_DECOY_LABS)
+    SinkPlan    = { kind = "table", fields = { rate = "number", perLab = "number", jobs = "number", decoyLabs = "boolean", capReserve = "number" } },   -- metal_sink.lua: one decoy's metal/s on the sink unit, decoys per sink lab, sink labs in flight, the sink owns the decoy labs, unit-cap slots kept for the sink unit
+    SinkLiftTids = { kind = "table" },                              -- { transportID, ... } the metal sink's air lift (sink_lift.lua); air_lift.lua leaves them alone
+    ProxyBase   = { kind = "table", open = true },                  -- proxy_base.lua: the forward base { x, z, key, labID, state, go, labs, want, static, lrpc ... }
+    ProxyConvoy = { kind = "table", open = true },                  -- sink_lift.lua: the proxy's nano convoy in flight { state, x, z, tx, tz, n } (air_wing escorts it)
     DragonLab   = { kind = "table", fields = { id = "number", x = "number", z = "number", ready = "boolean", decoys = "table", decoyMax = "number", unit = "string", spot = "number" } },
     DragonLabs  = { kind = "table" },                               -- { [labID] = DragonLab-shaped }
     LabBroker   = { kind = "table", fields = { LB = "any", lb = "any" } },
@@ -163,6 +167,11 @@ M.DragonLabs = M.SinkLabs
 -- The line's decoy labs { [labID] = { id, x, z, ready, decoys, decoyMax, line } } (line_transition/line_decoy.lua), or an empty table.
 function M.DecoyLabs(WG)
     return (WG and WG.DecoyLabs) or EMPTY
+end
+
+-- The sink's plan for the decoy count (metal_sink.lua): { rate, perLab, jobs, decoyLabs }, or nil before a sink lab is wanted.
+function M.SinkPlan(WG)
+    return WG and WG.SinkPlan or nil
 end
 
 return M

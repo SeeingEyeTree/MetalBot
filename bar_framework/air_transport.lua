@@ -11,6 +11,9 @@
 --        opts.timeout (frames, default 45 s) -- the job fails if it is not done by then
 --        opts.arrive  (elmos, default 200)   -- "done" = set down within this of (x, z)
 --        opts.force   (default false)        -- skip AT.CanCarry and let the engine decide
+--        opts.hold    (default false)        -- LOAD only: the transport keeps the unit until AT.Go (a convoy loads, gathers, then flies together)
+--   AT.Go(transportID, x, z, frame [, opts])     -> sets a held job down at (x, z) (opts.timeout from now; opts.via = { {x, z}, ... } waypoints first)
+--   AT.MoveTo(transportID, x, z [, via])         -> a held job flies to (x, z) (through the via waypoints) and keeps its load (a rally point)
 --   AT.Update(frame)                             -> list of jobs that finished this call (job.state = "done" | "failed", job.why)
 --   AT.Job(transportID)                          -> the transport's current job (nil when idle)
 --   AT.Cancel(transportID)                       -> stops the transport and forgets its job
@@ -55,14 +58,41 @@ function M.Move(transportID, unitID, x, z, frame, opts)
     end
     local y = Spring.GetGroundHeight(x, z) or 0
     Spring.GiveOrderToUnit(transportID, M.CMD_LOAD_UNITS, { unitID }, {})
-    Spring.GiveOrderToUnit(transportID, M.CMD_UNLOAD_UNIT, { x, y, z }, { "shift" })
+    if not opts.hold then Spring.GiveOrderToUnit(transportID, M.CMD_UNLOAD_UNIT, { x, y, z }, { "shift" }) end
     local job = { transport = transportID, unit = unitID, x = x, z = z, startF = frame or 0, state = "pickup",
-                  timeout = opts.timeout or M.TIMEOUT, arrive = opts.arrive or M.ARRIVE }
+                  timeout = opts.timeout or M.TIMEOUT, arrive = opts.arrive or M.ARRIVE, hold = opts.hold or nil }
     jobs[transportID] = job
     return job
 end
 
 function M.Job(transportID) return jobs[transportID] end
+
+function M.Go(transportID, x, z, frame, opts)
+    local job = jobs[transportID]
+    if not job then return false end
+    opts = opts or {}
+    job.hold, job.x, job.z = nil, x or job.x, z or job.z
+    job.startF, job.timeout = frame or job.startF, opts.timeout or job.timeout
+    local y = Spring.GetGroundHeight(job.x, job.z) or 0
+    local first = true
+    for _, p in ipairs(opts.via or {}) do
+        Spring.GiveOrderToUnit(transportID, CMD and CMD.MOVE or 10, { p.x, Spring.GetGroundHeight(p.x, p.z) or 0, p.z }, first and {} or { "shift" })
+        first = false
+    end
+    Spring.GiveOrderToUnit(transportID, M.CMD_UNLOAD_UNIT, { job.x, y, job.z }, first and {} or { "shift" })
+    return true
+end
+
+function M.MoveTo(transportID, x, z, via)
+    if not jobs[transportID] then return false end
+    local first = true
+    for _, p in ipairs(via or {}) do
+        Spring.GiveOrderToUnit(transportID, CMD and CMD.MOVE or 10, { p.x, Spring.GetGroundHeight(p.x, p.z) or 0, p.z }, first and {} or { "shift" })
+        first = false
+    end
+    Spring.GiveOrderToUnit(transportID, CMD and CMD.MOVE or 10, { x, Spring.GetGroundHeight(x, z) or 0, z }, first and {} or { "shift" })
+    return true
+end
 
 function M.Cancel(transportID)
     if jobs[transportID] and Spring.GetUnitDefID(transportID) then
@@ -95,7 +125,7 @@ function M.Update(frame)
                 local busy = (Spring.GetUnitCommandCount and (Spring.GetUnitCommandCount(tid) or 0) > 0)
                 if job.state == "carrying" and near then
                     Finish(out, job, "done", nil, frame)
-                elseif job.state == "carrying" and not busy then
+                elseif job.state == "carrying" and not busy and not job.hold then
                     Finish(out, job, "failed", "set down away from the spot", frame)
                 elseif job.state == "pickup" and not busy and frame - job.startF > 30 then
                     Finish(out, job, "failed", "the transport dropped the load order", frame)

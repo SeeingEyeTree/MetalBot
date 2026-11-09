@@ -222,7 +222,7 @@ function M.Sync(frame)
     -- live records: click_army's attacking groups + the stage
     local live = { [0] = true }
     for _, g in ipairs((CA and CA.Groups and CA.Groups()) or {}) do
-        if g.state == "attack" and g.cx then
+        if (g.state == "attack" or g.state == "proxy") and g.cx then     -- (a proxy group keeps its Tzars / AA: click_army PROXY)
             local rec = records[g.id]
             if not rec then
                 rec = { id = g.id, kind = g.slow and "slow" or "raid", since = frame }

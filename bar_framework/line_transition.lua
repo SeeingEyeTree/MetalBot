@@ -365,6 +365,27 @@ LT.CFG = {
     NC_HELPER_CAP     = 16,            -- ... at most this many helpers in all
     NC_E_RATIO_T1     = 15,            -- T1: a wind block when energy income (+ blocks being built) < this x metal income (eco_sim nc2: 12 -> 15 = income at 16:00 3.8k -> 4.8k)
     NC_E_RATIO        = 15,            -- T2: an energy gap / energy retrofit when energy < this x metal (the T1 mex blocks counted as mohos for a new block)
+    -- NC_PLAN (user 2026-11-04, nano_cols/plan.lua): the block's metal / energy choice from a look-ahead against the ledger's energy target (the sink's unit
+    -- once it is wanted, else army share x the spine comp + the rest x NC_PLAN_ECO_RATIO) with moho / mex upkeep; replaces NC_E_RATIO_T1 / NC_E_RATIO
+    NC_PLAN           = false,
+    NC_PLAN_EVERY     = 60,            -- frames between plan updates
+    NC_PLAN_HORIZON   = 120,           -- seconds of look-ahead (the income trend is projected this far)
+    NC_PLAN_TREND_MAX = 0.5,           -- the trend adds at most this share of the income
+    NC_PLAN_PLANNED_W = 0,             -- weight of work not started yet (T1 mex blocks still to retrofit, energy gaps waiting for a T2 con); eco_sim 2026-11-04: 0.5 counted
+                                       -- a retrofit backlog of minutes as coming metal (~1k m/s at 12 min, 60% army) and the block overbuilt energy
+    NC_PLAN_BAND      = 0.05,          -- |short| under this: balanced -- the kind with fewer blocks in flight (frames of both for the nano focus)
+    NC_PLAN_FLOAT_S   = 30,            -- metal "floats" while the bank holds more than this many seconds of income
+    NC_PLAN_FLIGHT_W  = 1,             -- blocks in flight count this much of their output (0.5 was tried: energy overbuilt, eco_sim 2026-11-04)
+    NC_PLAN_MSTALL_PULL = 1.25,        -- metal is short (for a severe "metal") only while the pull is at least this x the income with the bank empty
+    NC_PLAN_ECO_RATIO = 12,            -- E per metal of the eco's own spending (moho 12.7, fusion 6.1, nano 13.9) for the share blend
+    NC_PLAN_LOG_EVERY = 900,
+    NC_FORECAST_BLOCK_UNITS = 21,      -- eco units one more block takes (15 extractors + its share of the nano rows): the budget room in blocks (log only)
+    NC_FORECAST_UNIT_COST = 1300,      -- metal one free eco unit of the budget will still cost, retrofits included (eco_sim 2026-11-04, 0% army: the eco spent
+                                       -- 1.73M from 14:00 on, with ~1000 free units and a 0.4M retrofit backlog then)
+    NC_SKIP           = true,          -- with NC_PLAN: while the plan is severe (stall one way, float the other for NC_SKIP_HOLD), build fronts skip the other kind
+    NC_SKIP_HOLD      = 20 * 30,       -- frames the stall + float must hold
+    NC_SKIP_MAX_DONE  = 0.6,           -- a session more built than this share runs on
+    NC_SKIP_PER_TICK  = 2,             -- sessions stopped per plan tick at most
     NC_ENERGY_UNIT    = "fusion",      -- what an energy block becomes at T2: roles "fusion" (4x2) or "afus" (3x2)
     NC_T2_LAB_INCOME  = 600,           -- metal income at which the first T2 air lab block is placed (or NC_T2_LAB_CAP_FRAC of the unit budget filled) ...
     NC_T2_LAB_CAP_FRAC = 0.5,
@@ -428,7 +449,7 @@ local X = { LT = LT, CB = CB, BC = BC, CH = CH, Clock = Clock, Key = Key, jobs =
 setmetatable(X, { __index = function(_, k) error("line_transition: X." .. tostring(k) .. " read before a module exported it (install order)", 2) end })
 for _, name in ipairs({ "con_orders", "grid_recovery", "grid_core", "grid_interrupts", "grid_helpers", "grid_retrofit",
                         "energy", "nano_crew", "silo", "line_recovery", "second_lab", "t2bot_lab", "rez_lab", "spam_lab", "scout_lab", "radar_ring", "line_decoy", "radar_posts", "spine_cons", "spine2",
-                        "nano_cols/nanos", "nano_cols/ferry", "nano_cols/fronts", "nano_cols/recovery" }) do
+                        "nano_cols/nanos", "nano_cols/ferry", "nano_cols/plan", "nano_cols/fronts", "nano_cols/recovery" }) do
     VFS.Include(INC .. name .. ".lua").Install(X)
 end
 local JOB_ORDER = { "silo", "consolidate", "retrofit", "lab2", "linenano", "nanocrew", "grid", "fusionhelp", "gridhelp", "radar", "spine",
@@ -1007,7 +1028,8 @@ StartSpine = function(T, frame)
     T.spineOn = true
     -- the spine's ground cons are a broker pool (C2): the sink / the line decoy labs borrow them through CB.TakeAny and give them back by owner
     local SM = T.spineMod
-    if SM.SpendCapacity then LEDGER.Register(T.WG, "spine", { capacity = function() return (SM.SpendCapacity()) end }) end   -- what its nanos can spend
+    if SM.SpendCapacity then LEDGER.Register(T.WG, "spine", { capacity = function() return (SM.SpendCapacity()) end,      -- what its nanos can spend
+                                                         energyPerMetal = SM.EnergyPerMetal and function() return SM.EnergyPerMetal() end or nil }) end   -- ... and its comp's E per metal
     if SM.PoolTake then            -- (the older spine.lua of LINE_CLICK_v16 / LINE_BOMB has no pool API)
         CB.AddPool(T.CB, "spine-ground", {
             take  = function(owner, req) return SM.PoolTake(owner, req) end,

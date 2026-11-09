@@ -67,7 +67,9 @@ function M.Init(o)
     O = o or {}
     for k, v in pairs(O.cfg or {}) do M.CFG[k] = v end
     trans, jobs, parked, stats = {}, {}, {}, { done = 0, failed = 0 }
-    if O.WG then O.WG.AirLift = { Request = M.Request, Busy = M.Busy, Waiting = M.Waiting, Cancel = M.Cancel } end
+    -- (RouteClear: the macro side's proxy convoy asks it too, sink_lift.lua)
+    if O.WG then O.WG.AirLift = { Request = M.Request, Busy = M.Busy, Waiting = M.Waiting, Cancel = M.Cancel,
+                                  RouteClear = function(ax, az, x, z) return M.RouteClear(Spring.GetGameFrame(), ax, az, x, z) end } end
     Spring.Echo(string.format("[LIFT] air lift on (transports %d..%d)", M.CFG.MIN, M.CFG.MAX))
 end
 
@@ -118,6 +120,7 @@ local function RouteClear(frame, ax, az, x, z)
     end
     return true
 end
+M.RouteClear = function(...) return RouteClear(...) end
 
 -- The drop point: stepped back toward home until the route there from the transport is clear; nil when no step clears it (the unit walks)
 local function SafeDrop(frame, tid, x, z)
@@ -144,6 +147,7 @@ local function Adopt(frame)
     if #ids == 0 then return end
     local ferry = {}
     for _, tid in ipairs((O.WG and O.WG.NcFerryTids) or {}) do ferry[tid] = true end
+    for _, tid in ipairs((O.WG and O.WG.SinkLiftTids) or {}) do ferry[tid] = true end     -- the metal sink's own (sink_lift.lua)
     for _, tid in ipairs(Spring.GetTeamUnitsByDefs(Spring.GetMyTeamID(), ids) or {}) do
         if not trans[tid] and not ferry[tid] and not Spring.GetUnitIsBeingBuilt(tid) then
             trans[tid] = Spring.GetUnitDefID(tid)

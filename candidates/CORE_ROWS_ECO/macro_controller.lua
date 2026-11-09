@@ -24,6 +24,7 @@ local ROW_GAP, ROW_INCOME = setmetatable({ [2] = 20 * 30, [3] = 20 * 30 }, { __i
 
 MACRO.Install(widget, WG, {
     NAME        = "CORE_ROWS_ECO",
+    LINE_CONS_HIGH = true,   -- user 2026-11-08: the line cons build at high builder priority (first dibs on metal over the spine nanos)
     -- ROWS THAT SCALE (user 2026-10-26): the 4 lanes as CORE, then a new row (two halves running east and west from the middle of the line, ROW_CONS cons on
     -- each) whenever a con has no lane -- on the side away from the enemy, until the map edge or ROW_UNIT_FRAC of the unit cap.  A con is ordered 5 s after the last one is out
     -- (a metal-bank gate only slowed the T1 phase in eco_sim; CON_BANK_TRIGGER / CON_FALLBACK_FRAMES are the knobs).  T1 phase only; no air lab, so no mex grids yet.

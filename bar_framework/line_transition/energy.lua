@@ -160,7 +160,7 @@ function M.Install(X)
         -- as the metal is spent -- build energy now instead of after the float starts.
         local mi = res.metalIncomeS or res.metalIncome or 0
         -- ... or the ratio the metal sink asks for: its unit's energy per metal (the ledger's EnergyTarget, registered by metal_sink.lua)
-        local ratio = LEDGER.EnergyTarget(T.WG, C.EP_RATIO)
+        local ratio = LEDGER.EnergyTarget(T.WG, C.EP_RATIO, C.NC_PLAN and { share = (T.spineMod and T.spineMod.Share and T.spineMod.Share()) or 0, ecoRatio = C.NC_PLAN_ECO_RATIO } or nil)
         if ratio and mi >= (C.EP_RATIO_MIN_INCOME or 300) and ei < ratio * mi then return true end
         return mFrac >= C.EP_MFRAC and res.metal >= C.EP_MIN_METAL and low and ep >= C.EP_EPULL * ei
     end

@@ -96,6 +96,8 @@ M.DEFAULTS = {
     -- opening its 300 BP hardly matters) for a safe spot behind the base, where it builds a jammer and 2 AA turrets.
     CMDR_RETIRE_FRAME   = nil,       -- v3b: never retires (it defends the base; v3 lost 4.6k eco by 10:00)
     CMDR_DANGER_VALUE   = 1500,      -- v3b: evade only when armed enemy value near it is at least this (~12 gators)
+    LINE_CONS_HIGH      = false,     -- user 2026-11-08: the line's cons build at HIGH builder priority (BAR GameCMD.PRIORITY; every builder but the commander is low), so the line eco gets first dibs on metal over the spine nanos
+    PING_NAME_FRAME     = 150,       -- user 2026-11-08: ~5 s in, the bot marks its NAME on the map at its commander (who is who in a bot-vs-bot game); 0 = off
     NAME                = "CORE",    -- the bot name in the [CFG] / [CFG-slot_spine] log rows and the line_transition label
     -- STANCE_ECO2's economy (user 2026-10-16: "eco2 has a good eco config, make that the default for CORE"; 7.6k m/s mean at 20:00 in 4 real vacuum
     -- games vs 4.2-5.6k for the RAID_BOT-style list this had): T2_TOPUP not T2_UP_FRONT, no second air lab; RECOVER kept (grid / line recovery
@@ -110,6 +112,13 @@ M.DEFAULTS = {
     -- SINK_SPEND_FRAC of what the spine can spend, sink labs go up in front of the spine and make SINK_UNIT forever, helped by decoy commanders
     -- (the lab controller needs SINK = true too).  Any SINK_* key of metal_sink.lua's M.CFG may be set here (SINK_UNIT, SINK_MAX, SINK_FRONT ...).
     SINK                = false,
+    -- PROXY (user 2026-11-08; false = off, a table = bar_framework/proxy_base.lua's options): when the raids trade badly, a forward base 4k from the enemy's
+    -- build power near a map edge -- an air con builds a vehicle plant, the sink's lift flies 4 nanos in, area_defence holds it.  Needs SINK (its con
+    -- broker and lift).
+    PROXY               = false,
+    -- CAP_MODE (user 2026-11-08; false = off, a table = bar_framework/cap_mode.lua's options): at the unit cap, T1 eco is reclaimed (self-destructed where
+    -- no nano reaches) so FREE slots stay open for Dragons and the proxy; WG.CapMode tells the unit side (cull + attack) and the labs (the whitelist).
+    CAP_MODE            = false,
     -- Units the stances do not build but still want controlled (stance `extras`, added to every stance when SINK is on): the sink unit waits
     -- at the sink lab and raids in waves (behaviors/dragon_raid.lua, dragon_defend.lua).
     SINK_EXTRAS         = { { n = ROLES.Get("sink_unit"), behaviors = { "dragon_raid", "dragon_defend" }, cfg = { dragon_raid = { wave = 50 } } } },
@@ -244,6 +253,7 @@ local function StartBuildOrder()
     LC.ESTOR_KMAX = CFG.ESTOR_KMAX
     LC.ROW_BOTH = CFG.ROW_BOTH
     LC.HELP_LANES = CFG.HELP_LANES
+    LC.CON_HIGH = CFG.LINE_CONS_HIGH and true or false
     LC.GROW, LC.ROW_CONS, LC.ROW_COLS, LC.ROW_MAX = CFG.SCALE_ROWS and true or false, CFG.ROW_CONS, CFG.ROW_COLS, CFG.ROW_MAX
     LC.SITE_K_LAST = CFG.SITE_K_LAST
     if (CFG.EXTRA_LANES or 0) > 0 then LC.AddLanes(CFG.EXTRA_LANES, CFG.LANE_CONS) end
@@ -867,9 +877,28 @@ function widget:Initialize()
                      teamID = myTeamID, Clock = Clock,
                      Capacity = function() local SP = (WG and WG.Spine) or SPINE; return SP and SP.SpendCapacity and (SP.SpendCapacity()) or nil end,   -- WG.Spine is the spine set once a second spine stands
                      BorrowCon = function(defID) return trans and trans.CB and (CB.TakeAny(trans.CB, "sinklab", { defID = defID, kind = "ground" })) or nil end,
-                     GiveBackCon = function(uid) if trans and trans.CB then CB.GiveBack(trans.CB, uid, "sinklab") end end }
+                     GiveBackCon = function(uid) if trans and trans.CB then CB.GiveBack(trans.CB, uid, "sinklab") end end,
+                     extraSites = function() return TS.PX and TS.PX.Sites() or {} end }      -- PROXY: the proxy base is one more site for the lift
+            if CFG.PROXY then
+                local okP, rP = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/proxy_base.lua")
+                if okP and rP then
+                    TS.PX = rP
+                    TS.PX.Init{ cfg = CFG.PROXY, CB = CB, trans = function() return trans end, teamID = myTeamID, Clock = Clock, WG = WG }
+                else
+                    Spring.Echo("[PROXY] ERROR loading proxy_base: " .. tostring(rP))
+                end
+            end
         else
             Spring.Echo("[SINK] ERROR loading metal_sink: " .. tostring(rL))
+        end
+    end
+    if CFG.CAP_MODE then
+        local okC, rC = pcall(VFS.Include, "LuaUI/Widgets/bar_framework/cap_mode.lua")
+        if okC and rC then
+            TS.CAP = rC
+            TS.CAP.Init{ cfg = type(CFG.CAP_MODE) == "table" and CFG.CAP_MODE or nil, teamID = myTeamID, trans = function() return trans end, Clock = Clock, WG = WG }
+        else
+            Spring.Echo("[CAP] ERROR loading cap_mode: " .. tostring(rC))
         end
     end
     if CFG.HOME_DEFENCE then
@@ -910,6 +939,7 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if distState then BP_PLACER.OnUnitCreated(distState, unitID, unitDefID, builderID) end
     if crew then LC.OnUnitCreated(crew, unitID, unitDefID, builderID) end
     if MS then MS.OnCreated(unitID, unitDefID, builderID, currentFrame) end
+    if TS.PX then TS.PX.OnCreated(unitID, unitDefID, builderID, currentFrame) end
     if trans then LT.OnUnitCreated(trans, unitID, unitDefID, builderID) end
     local d = UnitDefs[unitDefID]
     if not d then return end
@@ -933,6 +963,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     end
     if teamID ~= myTeamID then return end
     if MS then MS.OnFinished(unitID, currentFrame) end
+    if TS.PX then TS.PX.OnFinished(unitID, currentFrame) end
     if IsCommander(unitDefID) and not commanderID then
         commanderID = unitID
         StartBuildOrder()
@@ -969,11 +1000,13 @@ end
 
 function widget:UnitFromFactory(unitID, unitDefID, teamID, factID)
     if teamID == myTeamID and trans then LT.OnUnitFromFactory(trans, unitID, unitDefID, factID) end
+    if teamID == myTeamID and TS.PX and TS.PX.OnFromFactory then TS.PX.OnFromFactory(unitID, unitDefID, factID, currentFrame) end   -- PROXY: the proxy labs' cons are its crew's
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID)
     if teamID ~= myTeamID then return end
     if MS then MS.OnDestroyed(unitID, attackerID, attackerDefID, currentFrame) end
+    if TS.PX then TS.PX.OnDestroyed(unitID, currentFrame) end
     if distState then BP_PLACER.OnUnitDestroyed(distState, unitID) end
     if crew then LC.OnUnitDestroyed(crew, unitID) end
     if trans then LT.OnUnitDestroyed(trans, unitID, CFG.SINK and attackerID or nil) end   -- the killer reaches the spine only with the sink on (as DRAGON_ECO)
@@ -987,6 +1020,13 @@ function widget:GameFrame(frame)
     currentFrame = frame
     if not myTeamID or not BP_PLACER then return end
     if startPending and frame >= START_FRAME then BeginBuildOrder() end
+    if (CFG.PING_NAME_FRAME or 0) > 0 and frame >= CFG.PING_NAME_FRAME and not TS.namePinged then
+        TS.namePinged = true
+        local px, py, pz
+        if commanderID then px, py, pz = spGetUnitPosition(commanderID) end     -- (an `and` chain would keep only px)
+        if px and pz and Spring.MarkerAddPoint then Spring.MarkerAddPoint(px, py, pz, tostring(CFG.NAME)) end
+        Spring.Echo("[NAME] team " .. tostring(myTeamID) .. " is " .. tostring(CFG.NAME))
+    end
     if not distState or frame % 10 ~= 0 then return end
 
     local res = ReadResources()
@@ -1017,6 +1057,14 @@ function widget:GameFrame(frame)
     if MS then
         local okL, errL = pcall(MS.Update, frame, res)
         if not okL then Spring.Echo("[SINK] error: " .. tostring(errL)) end
+    end
+    if TS.PX then
+        local okP, errP = pcall(TS.PX.Update, frame)
+        if not okP then Spring.Echo("[PROXY] error: " .. tostring(errP)) end
+    end
+    if TS.CAP then
+        local okC, errC = pcall(TS.CAP.Update, frame)
+        if not okC then Spring.Echo("[CAP] error: " .. tostring(errC)) end
     end
     if DC then
         local okU, errU = pcall(DC.Update, frame, WG and WG.MetalBot)

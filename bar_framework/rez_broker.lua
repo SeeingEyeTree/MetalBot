@@ -100,6 +100,7 @@ local function Cfg(k) return M.CFG[k] end
 
 function M.Init(o)
     RC, MM, ARMY, EI, UQ = o.RC, o.MM, o.ARMY, o.EI, o.UQ
+    M.homeFn = o.home
     combat = o.combat or {}
     for k, v in pairs(o.cfg or {}) do M.CFG[k] = v end
     state, wreckBusy, friendBusy, stats, lastLog = {}, {}, {}, { switches = 0 }, -1e9
@@ -535,6 +536,47 @@ local EVADE = {
     end,
 }
 
+-- HOME (user 2026-11-08, the proxy base: "adds a t1 bot lab after the t2 vech to make rez bots"): a bot with a home (o.home(uid) -> x, z, r) works only
+-- there -- the best wreck within r of it, else a damaged building of ours there, else it waits at the home.  Prio 75: only evade (90) outranks it.
+local HOME = {
+    name = "home", prio = 75,
+    find = function(bot)
+        local hx, hz, r
+        if M.homeFn then hx, hz, r = M.homeFn(bot.uid) end              -- (not `M.homeFn and M.homeFn(...)`: `and` keeps one value)
+        if not hx then return nil end
+        local best, bs
+        local dk = Cfg("DIST_K")
+        for _, w in ipairs(wrecks) do
+            if Room(w.fid) and Dist2(w.x, w.z, hx, hz) <= r * r then
+                local sc = w.metal / (math.sqrt(Dist2(bot.x, bot.z, w.x, w.z)) + dk)
+                if not bs or sc > bs then best, bs = w, sc end
+            end
+        end
+        if best then return { kind = "wreck", fid = best.fid } end
+        local team = Spring.GetMyTeamID and Spring.GetMyTeamID()
+        for _, uid in ipairs((team and Spring.GetUnitsInCylinder(hx, hz, r, team)) or {}) do
+            local d = UnitDefs[Spring.GetUnitDefID(uid) or -1]
+            local h, mh = Spring.GetUnitHealth(uid)
+            if d and (d.speed or 0) == 0 and h and mh and h < 0.95 * mh and not Spring.GetUnitIsBeingBuilt(uid) then return { kind = "repair", uid = uid } end
+        end
+        return { kind = "wait", x = hx, z = hz }
+    end,
+    valid = function(bot, st)
+        local t = st.target
+        if t.kind == "wreck" then return WreckAlive(t.fid) end
+        if t.kind == "repair" then local h, mh = Spring.GetUnitHealth(t.uid); return h ~= nil and h < 0.99 * mh end
+        return false                                                     -- (waiting: look again every pass)
+    end,
+    claim = function(bot, st)
+        local t = st.target
+        if t.kind == "wreck" then return { role = "REZ", cmd = CMD_RECLAIM, targetID = t.fid + MaxUnits() } end
+        if t.kind == "repair" then return { role = "REZ", cmd = CMD_REPAIR, targetID = t.uid } end
+        return { role = "REZ", cmd = CMD_MOVE, x = t.x, z = t.z }
+    end,
+    take = function(bot, st) if st.target.kind == "wreck" then Busy(st.target.fid, 1) end end,
+    drop = function(bot, st) if st.target.kind == "wreck" then Busy(st.target.fid, -1) end end,
+}
+
 function M.ResetJobs()
     jobs, jobByName = {}, {}
     -- rez_crew's RECLAIM_FIRST: a safe wreck outranks repairing; off, repairing comes first
@@ -545,6 +587,7 @@ function M.ResetJobs()
         j.seq = nil
         M.AddJob(j)
     end
+    if M.homeFn then HOME.seq = nil; M.AddJob(HOME) end
 end
 
 -- ── patients ──────────────────────────────────────────────────────────────────

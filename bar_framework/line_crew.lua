@@ -367,6 +367,13 @@ local function AddBuilder(crew, id, laneID, isCmdr, route)
     crew.cons[id] = { id = id, cmdr = isCmdr, lane = lane, phase = "idle", joinFrame = crew.frame, route = route }
     if isCmdr then crew.cmdr = id end
     Spring.GiveOrderToUnit(id, CMD_STOP, {}, {})
+    if LC.CON_HIGH and not isCmdr then      -- LINE_CONS_HIGH: high builder priority, first dibs on metal
+        local gc = Game and Game.CustomCommands and Game.CustomCommands.GameCMD
+        Spring.GiveOrderToUnit(id, (gc and gc.PRIORITY) or 34571, { 1 }, {})
+        -- ... and once more a second later: BAR's stock "Builder Priority" widget sets every con LOW in its own UnitFinished, which runs after ours
+        -- for the row cons (they join the crew in UnitFinished; the first cons join later, so only they stayed high -- user 2026-11-08)
+        crew.cons[id].highAt = (crew.frame or Spring.GetGameFrame()) + 30
+    end
     -- Slots no stop of this lane can reach with THIS builder's range are marked, not left to hang the lane.
     local reach, far = ReachOf(id), 0
     for _, s in ipairs(lane.slots) do
@@ -845,6 +852,11 @@ function LC.Update(crew, frame, res)
             Spring.Echo(string.format("[LN] builder %d on lane %d died", id, c.lane.id))
             LC.Release(crew, id)
         else
+            if c.highAt and frame >= c.highAt then          -- LINE_CONS_HIGH: re-sent after the stock widget's low (AddBuilder)
+                c.highAt = nil
+                local gc = Game and Game.CustomCommands and Game.CustomCommands.GameCMD
+                Spring.GiveOrderToUnit(id, (gc and gc.PRIORITY) or 34571, { 1 }, {})
+            end
             Step(crew, c, res)
         end
     end

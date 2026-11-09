@@ -32,6 +32,10 @@ LAB.Install(widget, WG, {
     -- user 2026-11-01 (the "spine API"): support elements are ordered through bar_framework/lab_orders.lua at the high tier (ahead of the stance loop, paused while a raid
     -- group is at the spine) instead of group-support / support-rush; PENDING_FIRST: an "ahead" want is not asked for a pick while its lab's pending gate is shut
     SUPPORT_ORDERS = true, PENDING_FIRST = true,
+    -- user 2026-11-08: air on demand.  A T1 air lab joins the spine (after the first two vehicle plants) once the fighter / Shuriken floor has been short for 20 s;
+    -- Shurikens / Wasps also answer covered ground threats (cover_defence pushes them out, which is not a raid), as DEFENCE_BOT did
+    SPINE_AIR_LAB = true, COVER_AIR_RAID = true,
     SINK = true,     -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
+    DECOY_FROM_SPINE = false,  -- user 2026-11-04: decoys come only from the sink's own decoy labs (metal_sink SINK_DECOY_LABS, lab_rules "decoy-lab")
     AIR_AA_GATE = { MIN = 2000, RATIO = 1.0, STATIC_W = 0.25 },   -- user 2026-10-29 (BM_akumar6 game: 24% of metal into Shurikens / Wasps that died to flak + Hawks): none while the enemy AA is large
 })

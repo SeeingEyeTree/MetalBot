@@ -14,7 +14,8 @@
 --   Ledger.Capacity(WG, name)             -> number | nil     what a registered consumer can spend (m/s)
 --   Ledger.Saturated(res, capacity[, o])  -> saturated, capacity   o = { satFrac, minIncome, fallbackIncome }
 --   Ledger.Surplus(res, capacity)         -> income the capacity cannot spend
---   Ledger.EnergyTarget(WG[, override])   -> energy per metal to aim at | nil   (an explicit override wins; else the registered consumers' blend)
+--   Ledger.EnergyTarget(WG[, override[, o]]) -> energy per metal to aim at | nil, source   (an override wins; then a primary consumer (the sink);
+--                                         with o = { share, ecoRatio }: share x the spine's + (1 - share) x the eco's; else the consumers' blend)
 --   Ledger.CapLeft(teamID)                -> units left under the cap, cap, count | nil
 --   Ledger.CapSlack(teamID, frac, absolute) -> min(absolute, frac x cap)
 --   Ledger.DecoyDemand(income, room[, o]) -> decoys wanted  o = { spend, rate, min }
@@ -74,17 +75,35 @@ function M.Surplus(res, capacity) return math.max(0, Income(res) - (capacity or 
 
 -- The ratio of energy to metal the economy should aim at: an explicit override (EP_RATIO) wins; else the capacity-weighted blend of what the
 -- registered consumers' units cost in energy per metal (one consumer = its own figure).  nil when nobody asks for one.
-function M.EnergyTarget(WG, override)
-    if override then return override end
+-- o = { share, ecoRatio } (user 2026-11-04): a consumer registered with `primary = true` that has a figure wins outright (the metal sink, once it is
+-- wanted: "once the sink turns on that can set the main energy ratio"); else, with o.ecoRatio, the army share of the metal goes at the spine's figure
+-- and the rest at the eco's own (o.ecoRatio): share x spine + (1 - share) x eco.  Second value: where it came from ("override" | "primary" | "blend" | "consumers").
+function M.EnergyTarget(WG, override, o)
+    if override then return override, "override" end
     local r = Reg(WG)
-    if not r then return nil end
-    local sum, wsum, n = 0, 0, 0
+    if not r then return (o and o.ecoRatio) or nil, o and o.ecoRatio and "blend" or nil end
     local names = {}
     for name in pairs(r.consumers) do names[#names + 1] = name end
     table.sort(names)
     for _, name in ipairs(names) do
         local c = r.consumers[name]
-        if c.energyPerMetal then
+        if c.primary and c.energyPerMetal then
+            local ok, v = pcall(c.energyPerMetal)
+            v = ok and tonumber(v) or nil
+            if v then return v, "primary" end
+        end
+    end
+    if o and o.ecoRatio then
+        local share = math.max(0, math.min(1, o.share or 0))
+        local sp = r.consumers.spine
+        local v = sp and sp.energyPerMetal and select(2, pcall(sp.energyPerMetal))
+        v = tonumber(v) or o.ecoRatio
+        return share * v + (1 - share) * o.ecoRatio, "blend"
+    end
+    local sum, wsum, n = 0, 0, 0
+    for _, name in ipairs(names) do
+        local c = r.consumers[name]
+        if c.energyPerMetal and name ~= "spine" then      -- (the spine's figure counts only in the share blend above: callers without o see what they saw before)
             local ok, v = pcall(c.energyPerMetal)
             v = ok and tonumber(v) or nil
             if v then
@@ -96,7 +115,7 @@ function M.EnergyTarget(WG, override)
         end
     end
     if n == 0 then return nil end
-    return sum / wsum
+    return sum / wsum, "consumers"
 end
 
 -- ── unit cap ──────────────────────────────────────────────────────────────────────────────────────

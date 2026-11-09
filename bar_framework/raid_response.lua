@@ -49,9 +49,17 @@
 --                    eco with LEAK_ETA_S seconds or less to go.  Interceptors whose contact is gone and that stand past CONVERT_FWD of the way
 --                    to the enemy become raiders where they are (click_army Adopt: a new group, or the weakest one).  mb.contacts = { n, value }.
 --                    MIN_THREAT (default 0): a contact whose threat (cost, scouts at SCOUT_WEIGHT) is under this gets no interceptors (lone scouts).
+--   AIR_PACK         (nil = off; user 2026-11-08: "air units should group up a little instead of trickling in, and either avoid ground AA or get into decent
+--                    numbers to fire it down") { MIN, WAIT_S, AA_RATIO, AA_R, AA_WAIT_S, RALLY }.  Shurikens and Wasps answering a raid wait at a rally point (RALLY of the
+--                    way from the base to the raid) until MIN of them are there (or WAIT_S passed), then go together.  Enemy AA (armed ground units that hit air, EI) within
+--                    AA_R of the raid: the pack holds until its value is AA_RATIO x that AA (or AA_WAIT_S passed), then every unit focus-fires the AA, nearest first,
+--                    before the pack turns to the stun / kill split.  A pack that has gone stays gone while it has targets.
 --   COVER            (nil = off; user 2026-10-30, CORE_v4 game review): { <cover_defence.lua CFG keys> }.  The GROUND answer to threats on our
 --                    side goes to bar_framework/cover_defence.lua (radar dots included, a line in front of the threatened eco that pushes out,
 --                    cut-offs, a launch gate through mb.cover); this module keeps air raids, stuns and Wasps.  Replaces CONTACTS for ground.
+--   GROUND_EXTERNAL  (default off; 2026-11-08, bar_framework/area_defence.lua) ground raids are another module's whole job: this pass answers
+--                    air-channel intruders only (with units that hit air), and the raid record's ground groups are that module's fight
+--                    groups (o.ground() -> an object with FightGroups()).  The Shurikens and Wasps are area_defence's air squad.
 
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")
 
@@ -63,8 +71,8 @@ RR.CFG = { NEED_MULT = 2.0, INTRUDER_TTL = 900, PAST_MARGIN = 200, CLUSTER_RADIU
            -- HARD_SHARE x metal income x HARD_S (user 2026-11-02: "20 seconds of 20% army spend": 4000 at 1k m/s), never under HARD_FLOOR
            HARD_SHARE = 0.2, HARD_S = 20, HARD_FLOOR = 150,
            THREAT_HOME = false, THREAT_HOME_R = 1200, SCOUT_WEIGHT = 0.1, REINFORCE_PULL = nil, SQUAD_MIN = nil, SQUAD_WAIT = 20, SQUAD_RALLY = 0.4,
-           CONTACTS = nil, COVER = nil }
-RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN", "CONTACTS", "COVER" }
+           CONTACTS = nil, COVER = nil, AIR_PACK = nil, GROUND_EXTERNAL = false }
+RR.NIL_OPTIONS = { "KEEP_MULT", "HOME_R", "REINFORCE_PULL", "SQUAD_MIN", "CONTACTS", "COVER", "AIR_PACK" }
 
 function RR.New(o)
     local C = {}
@@ -80,6 +88,8 @@ function RR.New(o)
         cfg = C.COVER, ARMY = o.ARMY, UQ = o.UQ, TM = o.TM, EI = o.EI, MM = o.MM, CA = o.CA,
         combatUnits = combatUnits, musterPool = musterPool, responding = responding, teamID = o.teamID, allyID = o.allyID } or nil
     r.cover = COV
+    -- GROUND_EXTERNAL: the module that answers ground raids (area_defence), asked for lazily (it is built after this one)
+    local function Ground() if COV then return COV end; return C.GROUND_EXTERNAL and o.ground and o.ground() or nil end
     local myTeamID, myAllyID = o.teamID, o.allyID
     local IsCommander, LineAdvAt = o.isCommander, o.lineAdvAt
     local function host() return o.host and o.host() end
@@ -203,112 +213,12 @@ function RR.New(o)
         return groups
     end
 
-    -- LINE_CLICK_v13 (user): Shuriken micro.  ~30 Shurikens all stunned the SAME unit.  Their weapon paralyses: stun a
-    -- unit, leave ONE on it to keep it stunned, and send the rest to the next enemy that is still moving.  Each responding
-    -- Shuriken gets an ATTACK on its own target: an unstunned target gets NEED Shurikens (2-6 by its health), a stunned
-    -- one keeps a single keeper; the rest spread over the unstunned targets.  Assignments stick while they still fit.
-    local STUN = { NAMES = { corbw = true }, R = 1200, HP_PER = 700, NEED_MIN = 2, NEED_MAX = 6, LOG_EVERY = 900,
-             STUNS = true, tag = "stun", target = {}, logF = -1e9 }
-    -- LINE_CLICK_v16 (user): the same split for Wasps.  No stun, so every target counts as still moving: NEED Wasps by its
-    -- health, the spare spread round-robin over the targets.
-    local SPLIT_WASP = { NAMES = { corape = true }, R = 1500, HP_PER = 900, NEED_MIN = 1, NEED_MAX = 8, LOG_EVERY = 900,
-                   tag = "wasp", target = {}, logF = -1e9 }
-    local CMD_ATTACK_ = (CMD and CMD.ATTACK) or 20
-
-    local AssignStuns = function(frame, ids, P, cx, cz)
-        P = P or STUN
-        local stunTarget = P.target
-        if #ids == 0 then return end
-        -- the enemies near the stunners: mobile, visible, not dead
-        local sx, sz = 0, 0
-        for _, uid in ipairs(ids) do
-            local x, _, z = spGetUnitPosition(uid)
-            if x then sx, sz = sx + x, sz + z end
-        end
-        sx, sz = sx / #ids, sz / #ids
-        -- a raid group's own spot: the pack looks for targets there, not at the middle of packs on different sides
-        if cx then sx, sz = cx, cz end
-        local targets, byId = {}, {}
-        for _, eid in ipairs(spGetUnitsInCylinder(sx, sz, P.R) or {}) do
-            local defID = spGetUnitDefID(eid)
-            if defID and spGetUnitAllyTeam(eid) ~= myAllyID and UQ.is_mobile(defID) then
-                local hp, mhp, para = spGetUnitHealth(eid)
-                if hp and mhp and mhp > 0 then
-                    local ud = UnitDefs[defID]
-                    local v = ud and ((ud.metalCost or 0) + (ud.energyCost or 0) / 70) or 0
-                    local t = { id = eid, stunned = P.STUNS and (para or 0) > mhp or false, mhp = mhp, v = v, have = {} }
-                    if P.STUNS then
-                        t.need = t.stunned and 1 or math.max(P.NEED_MIN, math.min(P.NEED_MAX, math.ceil(mhp / P.HP_PER)))
-                    else
-                        -- damage dealers: enough to kill what is LEFT of it (current health), then they move on
-                        t.need = math.max(P.NEED_MIN, math.min(P.NEED_MAX, math.ceil(hp / P.HP_PER)))
-                        t.score = v / t.need            -- value killed per Wasp committed
-                    end
-                    targets[#targets + 1] = t
-                    byId[eid] = t
-                end
-            end
-        end
-        if #targets == 0 then      -- nothing to stun near them yet: fly at the intruders like everyone else
-            for _, uid in ipairs(ids) do
-                stunTarget[uid] = nil
-                local g = responding[uid]
-                if g then ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_FIGHT, x = g.x, z = g.z }, frame) end
-            end
-            return
-        end
-        -- unstunned (still moving) first, then the most valuable
-        table.sort(targets, function(a, b)
-            if a.stunned ~= b.stunned then return not a.stunned end
-            if a.score and b.score and a.score ~= b.score then return a.score > b.score end
-            return a.v > b.v
-        end)
-        -- keep sticky assignments that still fit
-        local free = {}
-        for _, uid in ipairs(ids) do
-            local t = byId[stunTarget[uid] or -1]
-            if t and #t.have < t.need then t.have[#t.have + 1] = uid else free[#free + 1] = uid end
-        end
-        -- fill what is still needed, nearest stunner first
-        for _, t in ipairs(targets) do
-            if #free == 0 then break end
-            local tx, _, tz = spGetUnitPosition(t.id)
-            while #t.have < t.need and #free > 0 and tx do
-                local bi, bd
-                for i, uid in ipairs(free) do
-                    local x, _, z = spGetUnitPosition(uid)
-                    local d = x and ((x - tx) ^ 2 + (z - tz) ^ 2) or math.huge
-                    if not bd or d < bd then bi, bd = i, d end
-                end
-                t.have[#t.have + 1] = table.remove(free, bi)
-            end
-        end
-        -- spare stunners: round-robin over the unstunned targets (never pile onto a stunned one)
-        local moving = {}
-        for _, t in ipairs(targets) do if not t.stunned then moving[#moving + 1] = t end end
-        local k = 0
-        -- damage dealers pile the spare onto the best few kills (overkill only wastes seconds); stunners spread out
-        if not P.STUNS then while #moving > 3 do table.remove(moving) end end
-        while #free > 0 and #moving > 0 do
-            k = k % #moving + 1
-            local t = moving[k]
-            t.have[#t.have + 1] = table.remove(free, 1)
-        end
-        local nStun, nMove = 0, 0
-        for _, t in ipairs(targets) do
-            for _, uid in ipairs(t.have) do
-                stunTarget[uid] = t.id
-                ARMY.Claim(ARMY.PRIO.RESPOND, uid, { role = "RESPOND", cmd = CMD_ATTACK_, targetID = t.id }, frame)
-            end
-            if t.stunned then nStun = nStun + 1 else nMove = nMove + 1 end
-        end
-        if frame - P.logF >= P.LOG_EVERY then
-            P.logF = frame
-            local sec = math.floor(frame / 30)
-            Spring.Echo(string.format("[UC/%s] %d:%02d %d units on %d targets (%d stunned, %d still moving)",
-                P.tag, math.floor(sec / 60), sec % 60, #ids, #targets, nStun, nMove))
-        end
-    end
+    -- Shuriken stuns, the Wasp split and AIR_PACK live in defence/air_micro.lua (shared with area_defence's air squad, 2026-11-08)
+    local AM = VFS.Include("LuaUI/Widgets/bar_framework/defence/air_micro.lua").New{
+        ARMY = ARMY, UQ = UQ, EI = o.EI, allyID = myAllyID, airPack = C.AIR_PACK,
+        base = function() return baseX, baseZ end, groupOf = function(uid) return responding[uid] end }
+    local STUN, SPLIT_WASP = AM.STUN, AM.SPLIT_WASP
+    local AirPack, AssignStuns = AM.AirPack, AM.AssignStuns
 
     -- What the raiders' path is checked against: the commander, factories, build power, mexes and generators.
     -- w = metal cost x a role factor (build power and the commander are what a raid hurts most).
@@ -397,6 +307,10 @@ function RR.New(o)
         if COV then                     -- COVER: ground threats are cover_defence's ground units; this pass answers air raids, and ground raids with aircraft only
             -- (user 2026-10-31: CORE_v4 almost never sent Shurikens at a raid -- this used to drop the ground raids here, so no Shuriken / Wasp answered them)
             for _, g in ipairs(groups) do if g.channel ~= "air" then g.airOnly = true end end
+        elseif C.GROUND_EXTERNAL then   -- ground raids are area_defence's (its wall, air squad and borrowed army): answer air raids only
+            local air = {}
+            for _, g in ipairs(groups) do if g.channel == "air" then air[#air + 1] = g end end
+            groups = air
         end
 
         -- Each responder stays with the group nearest its last one; no group near, stand down.
@@ -657,7 +571,9 @@ function RR.New(o)
                     local l = byGroup[g]; l[#l + 1] = uid
                 end
             end
-            for _, g in ipairs(order) do AssignStuns(frame, byGroup[g], P, g.x, g.z) end
+            for _, g in ipairs(order) do
+                if not AirPack(frame, byGroup[g], P, g) then AssignStuns(frame, byGroup[g], P, g.x, g.z) end
+            end
         end
         PerGroup(stunners, STUN)
         PerGroup(wasps, SPLIT_WASP)
@@ -678,13 +594,14 @@ function RR.New(o)
     -- the raid state the labs read: the intruder clusters now (value, channel, speed), kept for them to apply a TTL
     function r.Publish(frame, mb)
         if COV then COV.Publish(frame, mb) end
-        if #r.clusters > 0 or (COV and #COV.FightGroups() > 0) then
+        local GND = Ground()
+        if #r.clusters > 0 or (GND and #GND.FightGroups() > 0) then
             -- CONTACTS: only leaks are a raid; contacts are published apart (mb.contacts)
             local raidGroups = r.clusters
-            if COV then
+            if GND then
                 raidGroups = {}
                 for _, g in ipairs(r.clusters) do if g.channel == "air" then raidGroups[#raidGroups + 1] = g end end
-                for _, g in ipairs(COV.FightGroups()) do raidGroups[#raidGroups + 1] = g end
+                for _, g in ipairs(GND.FightGroups()) do raidGroups[#raidGroups + 1] = g end
             elseif C.CONTACTS then
                 raidGroups = {}
                 local cn, cv = 0, 0

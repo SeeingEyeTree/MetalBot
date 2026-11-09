@@ -78,7 +78,14 @@ function M.ArmyMode(cur, x, o)
     return "defend", ratio
 end
 
-M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true, AA_LAUNCH_WAIT_S = true, SCOUT_WING = true, SUPPORT_FIRST = true, AIR_LIFT = true, SUPPORT_OFF_GRACE_S = true }
+M.OPTIONS = { FAST_RAIDERS = true, RAID_SQUAD = true, RAID_CARRY = true, ENEMY_INTEL = true, PICKET = true, CLICK_ARMY = true, HOLD_HOME = true, RAID_RESPONSE = true, SPINE_GARRISON = true, HOME_DEFENCE = true, MECH = true, BOMB_RUN = true, ENDGAME = true, STUN_KILL = true, AIR_WING = true, REZ_BROKER = true, SCOUT_NET = true, SUPPORT = true, AA_LAUNCH_WAIT_S = true, SCOUT_WING = true, SUPPORT_FIRST = true, AIR_LIFT = true, SUPPORT_OFF_GRACE_S = true, AREA_DEFENCE = true, PROXY_ARMY = true, LRPC = true, CAP_CULL = true }
+-- PROXY_ARMY (user 2026-11-08, the proxy base; nil = off): { GROUPS = 2, RELEASE_STATIC = n | nil, RELEASE_S = 120, MAX_GROUPS = 4, WANT_AV = 6000, COVER = 1.5,
+-- MORE_S = 15, MORE_EVERY_S = 60 }.  When the macro side's proxy_base.lua publishes a spot (WG.ProxyBase),
+-- GROUPS raid groups stop raiding and take it (click_army PROXY: clear it, then hold a line in front of it); mb.proxyArmy tells proxy_base when
+-- they are there and the ground is clear (its convoy waits for that).  They raid again from where they stand when the proxy is gone, or (RELEASE_STATIC)
+-- once that many T2 defences stand there and the proxy's threats have been covered (area_defence's proxy margin >= 1.5, or none) for RELEASE_S.
+-- LRPC (user 2026-11-08, the proxy base's Basilisks; nil = off, a table = bar_framework/lrpc_fire.lua's cfg): every LRPC of ours shoots enemy buildings,
+-- shields first, then build power, fusions / AFUS, labs; kill_confirm.lua tells when a target out of sight died (a wreck, its radar dot gone).
 -- SCOUT_WING (user 2026-10-30; nil = off): the scout wing, bar_framework/scout_wing.lua (its M.CFG keys): it owns every scout the scout labs
 -- make (line_transition SCOUT_LAB) -- air scouts orbit outside the enemy footprint, then ours, the rest sweep the map; ground scouts hold posts.
 -- SUPPORT (user 2026-10-30; nil = off): the army groups' support elements, bar_framework/army_groups.lua (the table's shape is in its header):
@@ -231,6 +238,19 @@ local SF   = nil   -- bar_framework/slow_front.lua (Lashers + Pounders + rez bot
 -- MECH_BOT tunables, one table so they cost one main-chunk local.
 local MECH = {
     FIND_SCOUTS        = 2,
+    -- Scouting fallbacks (user 2026-11-04).  LINGER_SCOUTS: the first scouts to find the enemy base keep posts just outside it (LINGER_R, +600
+    -- where an armed enemy reaches the post) instead of joining scout_net, so the enemy's growth and army stay in view; replacements for
+    -- the net are built at home.  LOST_*: no enemy record at all for LOST_FRAMES (after LOST_MIN_FRAME) while the foe point is in our sight
+    -- = the base is dead and the commander is elsewhere: FIND restarts map-wide (MM.FoeLost).  FIND_RETRY_*: still not located, or lost,
+    -- FIND_RETRY_AFTER frames on: that many more scouts are wanted.
+    LINGER_SCOUTS      = 2,
+    LINGER_R           = 1600,
+    LOST_FRAMES        = 2700,
+    LOST_MIN_FRAME     = 7200,
+    FIND_RETRY_AFTER   = 9000,
+    FIND_RETRY_EXTRA   = 3,
+    lingerSet          = {},    -- [unitID] = slot: scouts holding a post at the enemy base
+    noneSince          = nil,   -- first frame of the current "no enemy record" stretch
     ANTI_RAID_SHARE    = 0.25,  -- share of raider-type units kept home...
     ANTI_RAID_MIN      = 2,     -- ...at least this many...
     ANTI_RAID_MAX      = 6,     -- ...at most this many
@@ -954,10 +974,77 @@ local function AliveList(set)
     return ids
 end
 
+-- Is the sighted enemy base gone with nothing else known (commander elsewhere)?  Then FIND restarts over the whole map.
+function MECH.CheckLost(frame)
+    if not (EI and SP and SP.FoeFound() and SP.ReopenFind) or frame < MECH.LOST_MIN_FRAME then return end
+    local known = EI.Commander() ~= nil
+    if not known then
+        for _, rec in pairs(EI.Records()) do
+            if not rec.c.mobile or frame - rec.frame <= 900 then known = true; break end
+        end
+    end
+    if known then MECH.noneSince = nil; return end
+    MECH.noneSince = MECH.noneSince or frame
+    if frame - MECH.noneSince < MECH.LOST_FRAMES then return end
+    local fx, fz = MM.Foe()
+    if Spring.IsPosInLos and not Spring.IsPosInLos(fx, 0, fz, myAllyID) then return end   -- not yet seen empty: keep waiting
+    MM.MarkFoeLost(true)
+    SP.ReopenFind(frame)
+    MECH.noneSince = nil
+    for uid in pairs(MECH.lingerSet) do MECH.lingerSet[uid] = nil end
+end
+
+-- The first scouts to reach the enemy base keep a post on a ring just outside it (on the home side, spread by slot).
+-- Returns the set of unitIDs held, so scout_net leaves them alone.
+function MECH.Linger(frame, scouts)
+    local set = MECH.lingerSet
+    for uid in pairs(set) do
+        if not spGetUnitDefID(uid) then set[uid] = nil end
+    end
+    if MECH.LINGER_SCOUTS <= 0 or not SP.FoeFound() or MM.FoeLost() then return set end
+    local fx, fz = MM.Foe()
+    local n = 0
+    for _ in pairs(set) do n = n + 1 end
+    while n < MECH.LINGER_SCOUTS do      -- fill from the scouts nearest the base
+        local best, bestD
+        for _, uid in ipairs(scouts) do
+            if not set[uid] then
+                local x, _, z = Spring.GetUnitPosition(uid)
+                if x then
+                    local d = (x - fx) ^ 2 + (z - fz) ^ 2
+                    if not bestD or d < bestD then best, bestD = uid, d end
+                end
+            end
+        end
+        if not best then break end
+        local slot = 1
+        while true do
+            local used = false
+            for _, s in pairs(set) do if s == slot then used = true end end
+            if not used then break end
+            slot = slot + 1
+        end
+        set[best] = slot; n = n + 1
+    end
+    local hx, hz = MM.Home()
+    local base = math.atan2(hz - fz, hx - fx)
+    for uid, slot in pairs(set) do
+        local a = base + ((slot % 2 == 0) and 1 or -1) * math.ceil((slot - 1) / 2 + 0.5) * 0.5
+        local r = MECH.LINGER_R
+        local px, pz = MM.Clamp(fx + math.cos(a) * r, fz + math.sin(a) * r, 200)
+        if EI and EI.ThreatAt(frame, px, pz, "ground") > 0 then
+            px, pz = MM.Clamp(fx + math.cos(a) * (r + 600), fz + math.sin(a) * (r + 600), 200)
+        end
+        ARMY.Claim(ARMY.PRIO.SCOUT, uid, { role = "SCOUT", cmd = CMD_MOVE, x = px, z = pz }, frame)
+    end
+    return set
+end
+
 -- FIND (scout_lanes) finds the enemy base with the first scouts.  From then on scout_net runs every scout, ground radar
 -- unit and radar plane we have: requests, sacrifice runs, group watch, the perimeter and the sweep.
 local function AssignScouts(frame)
     if not SP or not ARMY then return end
+    MECH.CheckLost(frame)
 
     local scouts, mobile = {}, {}
     for unitID in pairs(scoutUnits) do
@@ -996,7 +1083,16 @@ local function AssignScouts(frame)
         local x, z, f = EI.Commander()
         if x then info.commander = { x = x, z = z, frame = f } end
     end
-    local claims = SN.Step(frame, { scouts = finding and {} or scouts, radars = radars, hawks = hawks }, info)
+    local netScouts = scouts
+    if finding then netScouts = {}
+    else
+        local held = MECH.Linger(frame, scouts)
+        if next(held) then
+            netScouts = {}
+            for _, uid in ipairs(scouts) do if not held[uid] then netScouts[#netScouts + 1] = uid end end
+        end
+    end
+    local claims = SN.Step(frame, { scouts = netScouts, radars = radars, hawks = hawks }, info)
     for unitID, spec in pairs(claims) do
         ARMY.Claim(ARMY.PRIO.SCOUT, unitID, spec, frame)
         if radarPlanes[unitID] then netHawks[unitID] = true end
@@ -1013,7 +1109,13 @@ end
 
 -- How many scouts the lab controller should keep: FIND needs two; after that scout_net sizes it from its jobs.
 local function ScoutWant(frame)
-    if SN and (SP and SP.Mode() ~= "find" or (EG and EG.Hunting())) then return SN.Want().scouts end
+    if SN and (SP and SP.Mode() ~= "find" or (EG and EG.Hunting())) then
+        local n = 0
+        for _ in pairs(MECH.lingerSet) do n = n + 1 end
+        return SN.Want().scouts + n      -- the ones at the enemy base are not home supply: replacements are built at home
+    end
+    -- still searching (not located by FIND_RETRY_AFTER, or the base was lost): more scouts for the map-wide search
+    if frame >= MECH.FIND_RETRY_AFTER then return MECH.FIND_SCOUTS + MECH.FIND_RETRY_EXTRA end
     return MECH.FIND_SCOUTS
 end
 
@@ -1135,6 +1237,7 @@ local function UpdateGroundAA(frame)
     local n = #screen + #escort
     if n == 0 then return end
     local want = math.min(GROUND_AA.SCREEN_MAX, math.max(GROUND_AA.SCREEN_MIN, math.ceil(n * GROUND_AA.SCREEN_FRAC)))
+    if NET.ad then want = want + NET.ad.HomeAAWant() end         -- AREA_DEFENCE: the checklist's air row asks for more base AA
     table.sort(escort)
     while #screen < want and #escort > 0 do
         local uid = table.remove(escort, 1)
@@ -1156,7 +1259,7 @@ local function UpdateGroundAA(frame)
     -- them -- the main push and each raid group -- by value, each escort FIGHTing just behind its group's core
     if #escort > 0 and CA and CA.Groups then
         local gs = {}
-        for _, g in ipairs(CA.Groups() or {}) do if g.state == "attack" and g.cx then gs[#gs + 1] = g end end
+        for _, g in ipairs(CA.Groups() or {}) do if (g.state == "attack" or g.state == "proxy") and g.cx then gs[#gs + 1] = g end end
         if #gs > 0 then
             table.sort(gs, function(a, b) return (a.value or 0) > (b.value or 0) end)
             local tot = 0
@@ -1729,6 +1832,18 @@ local function PublishState(frame)
     end
     mb.threats = threats
     if EI then mb.intel = EI.Summary(frame) end
+    -- where the enemy's build power stands (its labs count 3x a static builder), for proxy_base.lua's spot: { x, z, n, frame }
+    if EI and frame % 150 == 0 then
+        local sx, sz, w, n = 0, 0, 0, 0
+        for _, rec in pairs(EI.Records()) do
+            local c = rec.c
+            if c and not c.mobile and (c.factory or (c.bp or 0) > 0) and rec.x then
+                local k = c.factory and 3 or 1
+                sx, sz, w, n = sx + rec.x * k, sz + rec.z * k, w + k, n + 1
+            end
+        end
+        if w > 0 then mb.enemyBP = { x = sx / w, z = sz / w, n = n, frame = frame } end
+    end
     mb.scoutWant = ScoutWant(frame)
     mb.bombScoutRoom = (BR and brUsed and BR.ScoutRoom) and BR.ScoutRoom() or 0     -- air scouts the bombing runs still want (lab_rules)
     mb.ringRadarWant = (SN and SP and SP.Mode() ~= "find") and SN.Want().radars or 0
@@ -1760,6 +1875,11 @@ local function PublishState(frame)
             if not o.adopt and spGetUnitDefID(uid) then n = n + 1; armyV = armyV + Value(o.defID) end
         end
     end
+    if NET.ad then                                    -- AREA_DEFENCE: the wall's and the air squad's units are army spend too
+        for uid, defID in pairs(NET.ad.Units()) do
+            if spGetUnitDefID(uid) then n = n + 1; armyV = armyV + Value(defID) end
+        end
+    end
     if K.SPINE_GARRISON then mb.garrisonHave, mb.garrisonWant, mb.garrisonMade = NET.gar.Count(), K.SPINE_GARRISON.N or 6, NET.gar.made or 0 end   -- the labs' 'garrison' want reads these
     if K.SPINE_GARRISON and (Spring.GetGameFrame() % 900 == 0) then
         local p = NET.gar.Posts()
@@ -1786,6 +1906,13 @@ local function PublishState(frame)
     for uid, defID in pairs(shadowUnits) do
         if spGetUnitDefID(uid) and not combatUnits[uid] then gv = gv + ((UQ and UQ.metal_cost(defID)) or 0) end
     end
+    if NET.ad then
+        for uid, defID in pairs(NET.ad.Units()) do
+            if spGetUnitDefID(uid) and not combatUnits[uid] then
+                if UQ and UQ.is_air(defID) then av = av + (UQ.metal_cost(defID) or 0) else gv = gv + ((UQ and UQ.metal_cost(defID)) or 0) end
+            end
+        end
+    end
     mb.armyGround, mb.armyAir = gv, av
     mb.trade = CA and CA.TradeSummary and CA.TradeSummary(frame) or nil
     local function Recent(log)
@@ -1803,6 +1930,7 @@ local function PublishState(frame)
     mb.raidAir = CA and CA.AirPressure and CA.CFG and CA.CFG.AIR_PRESSURE and CA.AirPressure() or nil   -- enemy air-to-ground units near a raid group (click_army AIR_PRESSURE): { active, near, lastF }
     -- raid state for the labs (mb.raid, mb.airLosses): raid_response.lua
     if RESP then RESP.Publish(frame, mb) end
+    if NET.ad then NET.ad.Publish(frame, mb) end      -- AREA_DEFENCE: mb.cover (the launch gate, home_quiet_s) and mb.defence
 end
 
 -- Once a minute: what we know and what the new roles are doing, for the logs.
@@ -1844,7 +1972,8 @@ function widget:Initialize()
         ARMY.SetClock(rK)
         -- FAST_RAIDERS (user 2026-10-27): raiders (units in click_army groups, the raid squad) and raid defenders (responders) with an enemy near are commanded at 3 Hz
         if K.FAST_RAIDERS and ARMY.SetFastFn then
-            ARMY.SetFastFn(function(uid) return responding[uid] ~= nil or NET.sq.units[uid] == true or (CA ~= nil and CA.InGroup ~= nil and CA.InGroup(uid)) end)
+            ARMY.SetFastFn(function(uid) return responding[uid] ~= nil or NET.sq.units[uid] == true or (CA ~= nil and CA.InGroup ~= nil and CA.InGroup(uid))
+                                                or (NET.ad ~= nil and NET.ad.Engaged(uid)) end)     -- AREA_DEFENCE: a wall / air unit on a threat
         end
     else Spring.Echo("[UnitCtrl] unit_clock not loaded: " .. tostring(rK)) end
     -- LINE_CLICK: scout_lanes.lua is scout_plan.lua with a lane sweep of the enemy half in FIND mode
@@ -1895,6 +2024,11 @@ function widget:Initialize()
                         teamID = myTeamID, allyID = myAllyID } end
     RB = (RC and K.REZ_BROKER) and Load("rez_broker") or nil
     if RB then RB.Init{ RC = RC, MM = MM, ARMY = ARMY, EI = EI, UQ = UQ, combat = combatUnits,
+                        -- PROXY_ARMY: the proxy's own rez bots (its bot lab's) work only at the proxy while it stands
+                        home = K.PROXY_ARMY and function(uid)
+                            local PB = WG and WG.ProxyBase
+                            if NET.proxyBorn[uid] and PB and PB.x and PB.labID then return PB.x, PB.z, 1200 end
+                        end or nil,
                         -- user 2026-10-31: idle rez bots follow the attack group likely to trade soonest (click_army's groups), else the stage
                         groups = function() return CA and CA.Groups() or nil end,
                         stage = function() if CA then return CA.StagePoint() end end,
@@ -1905,9 +2039,11 @@ function widget:Initialize()
     CA = EI and Load("click_army")
     if CA then
         CA.Init{ cfg = Load("bot_config").Preset("click_army", "RAID", K.CLICK_ARMY), label = "RAID_BOT",     -- CLICK_ARMY = { ... }: a variant's click_army tweaks (CORE_ROWS_ECO: the opening raid)
-                 unseen = function(x, z, f) if SP and SP.NextUnseen then return SP.NextUnseen(x, z, f) end end,   -- (an `and` chain would cut the second return value, z)
-                 holdHome = (K.HOLD_HOME or (K.RAID_RESPONSE and K.RAID_RESPONSE.COVER)) and function()
-                     -- RAID_RESPONSE.COVER (user 2026-10-30): no raid launches, and no batch leaves, while a threat on our side is uncovered (cover_defence)
+                 unseen = function(x, z, f, whole) if SP and SP.NextUnseen then return SP.NextUnseen(x, z, f, whole) end end,   -- (an `and` chain would cut the second return value, z)
+                 holdHome = (K.HOLD_HOME or (K.RAID_RESPONSE and K.RAID_RESPONSE.COVER) or K.AREA_DEFENCE) and function()
+                     if NET.capOn then return false end                  -- CAP: at the unit cap everything goes
+                     -- RAID_RESPONSE.COVER (user 2026-10-30): no raid launches, and no batch leaves, while a threat on our side is uncovered (cover_defence;
+                     -- AREA_DEFENCE publishes the same mb.cover)
                      local cv = WG and WG.MetalBot and WG.MetalBot.cover
                      if cv and Spring.GetGameFrame() - (cv.frame or -1e9) <= 90 and (cv.uncovered or 0) > 0 then
                          if Spring.GetGameFrame() - (NET.coverHoldLogF or -1e9) >= 450 then
@@ -1928,6 +2064,7 @@ function widget:Initialize()
                  -- SUPPORT aa with min_frac (user 2026-10-31): while enemy air is near a raid (mb.raidAir) the next raid group waits until the pool holds that
                  -- share of the group's AA (half a complement), at most K.AA_LAUNCH_WAIT_S (150) seconds so a missing lab cannot stall the raids
                  launchGate = function(frame, nStaged)
+                     if NET.capOn then return false end                  -- CAP: at the unit cap everything goes
                      local ag, ra = NET.ag, WG and WG.MetalBot and WG.MetalBot.raidAir
                      local mbx = WG and WG.MetalBot
                      if frame < (NET.aaPassUntil or -1) then return false end
@@ -1963,13 +2100,19 @@ function widget:Initialize()
             RESP = RRm.New{ cfg = Load("bot_config").Preset("raid_response", "RAID", (function()
                                 local t = K.HOME_DEFENCE and { HOME_R = K.HOME_DEFENCE.R, HOME_SLACK = K.HOME_DEFENCE.SLACK } or {}
                                 for k, v in pairs(K.RAID_RESPONSE or {}) do t[k] = v end     -- RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450 }: a variant's tweaks
+                                -- AREA_DEFENCE (2026-11-08): ground raids are area_defence's; raid_response answers air raids only
+                                if K.AREA_DEFENCE then
+                                    if t.COVER then Spring.Echo("[UnitCtrl] AREA_DEFENCE replaces RAID_RESPONSE.COVER: COVER switched off"); t.COVER = nil end
+                                    t.GROUND_EXTERNAL = true
+                                end
                                 return t
                             end)()), label = "RAID_BOT",
                             ARMY = ARMY, UQ = UQ, TM = TM, CA = CA, MM = MM, EI = EI,
                             combatUnits = combatUnits, musterPool = musterPool, responding = responding,
                             teamID = myTeamID, allyID = myAllyID, isCommander = IsCommander, lineAdvAt = LineAdvAt,
                             line = function() return nodes, baseX, baseZ, advDir, perpDir end,
-                            host = function() return HOST end, ctx = function() return CTX end }
+                            host = function() return HOST end, ctx = function() return CTX end,
+                            ground = function() return NET.ad end }
         end
     end
     MDm = Load("maneuver_defence")      -- built on the first unit of a maneuver plan (EnsureMD), with the plan's settings
@@ -1979,6 +2122,7 @@ function widget:Initialize()
     if AW then AW.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, combat = combatUnits, guards = homeGuards, bombers = bombers,
                         -- RAID_BOT: the idle wing waits at click_army's fighter post (behind the front, out of enemy AA)
                         station = CA and CA.FighterPost and function(f) return CA.FighterPost(f) end or nil,
+                        convoy = function() return WG and WG.ProxyConvoy end,     -- the proxy base's convoy (macro side sink_lift): the wing escorts it
                         cfg = K.AIR_WING, label = "unit_runtime" } end
     -- unit_runtime: bomb_run for stances whose plan has bomb_run (claims at RAID priority, above endgame's BOMBER_WAIT parking)
     BR = EI and Load("bomb_run")
@@ -2072,6 +2216,46 @@ function widget:Initialize()
                 end }
         end
     end
+    if K.LRPC and EI then                                  -- LRPC: the Basilisks' targets and kill confirmation
+        local LFm, KCm = Load("lrpc_fire"), Load("kill_confirm")
+        if LFm and KCm then
+            NET.kc = KCm.New{ teamID = myTeamID }
+            NET.lf = LFm
+            LFm.Init{ cfg = type(K.LRPC) == "table" and K.LRPC or nil, EI = EI, UQ = UQ, KC = NET.kc, teamID = myTeamID }
+        end
+    end
+    -- AREA_DEFENCE (user 2026-11-08; nil = off, a table = its cfg): one owner for defending the areas we have built (bar_framework/area_defence.lua):
+    -- the Pounder / Tzar wall, the air responders (Shurikens, Wasps), army units borrowed for what those cannot cover (handed back after), a threat
+    -- checklist, a construction stub.  Replaces RAID_RESPONSE.COVER and army_groups' home records.
+    if K.AREA_DEFENCE and ARMY and TM and MM then
+        local ADm = Load("area_defence")
+        if ADm then
+            NET.ad = ADm.New{ cfg = type(K.AREA_DEFENCE) == "table" and K.AREA_DEFENCE or nil, label = "unit_runtime",
+                ARMY = ARMY, UQ = UQ, TM = TM, EI = EI, MM = MM, CA = CA, HOST = HOST, LIFT = NET.lift, WG = WG,
+                combatUnits = combatUnits, musterPool = musterPool, responding = responding, teamID = myTeamID, allyID = myAllyID,
+                -- a Tzar the walls no longer want: to the raid groups' stop element, else an ordinary army unit
+                giveBack = function(uid, defID)
+                    if NET.ag and NET.ag.Offer(uid, defID) then return end
+                    combatUnits[uid] = defID; musterPool[uid] = Spring.GetGameFrame()
+                end,
+                -- the base AA screen: its value, its size, and the size it would have without the checklist's extra (the labs' defence:aa request)
+                homeAA = function()
+                    local v, n, all = 0, 0, 0
+                    for uid, role in pairs(GROUND_AA.units) do
+                        local d = spGetUnitDefID(uid)
+                        if d then
+                            all = all + 1
+                            if role == "screen" then n = n + 1; v = v + Value(d) end
+                        end
+                    end
+                    for uid in pairs(homeGuards) do
+                        local d = spGetUnitDefID(uid)
+                        if d and UQ.is_air(d) and UQ.is_dedicated_aa(d) then v = v + Value(d) end       -- home fighters
+                    end
+                    return v, n, math.min(GROUND_AA.SCREEN_MAX, math.max(GROUND_AA.SCREEN_MIN, math.ceil(all * GROUND_AA.SCREEN_FRAC)))
+                end }
+        end
+    end
     if SF then
         SF.Init{ MM = MM, UQ = UQ, EI = EI, ARMY = ARMY, label = "RAID_BOT", cfg = HOST and { CHARGE_SPEED = 1e9 } or nil }
         if HOST and SF.SetHold then SF.SetHold(function(uid, f) return HOST:IsHeld(uid, f) end) end
@@ -2084,6 +2268,11 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
     if teamID ~= myTeamID then return end
     if NET.ag then NET.ag.NoteCreated(unitID, builderID) end     -- SUPPORT: the spam lab's units are known by their builder
     if NET.sw then NET.sw.NoteCreated(unitID, unitDefID, builderID) end   -- SCOUT_WING: so are the scout labs'
+    if NET.ad and NET.ad.NoteCreated then NET.ad.NoteCreated(unitID, unitDefID, builderID) end   -- AREA_DEFENCE: and the proxy labs' (they stay at the proxy)
+    if K.PROXY_ARMY and builderID then                                  -- PROXY_ARMY: units of the proxy's labs (its rez bots stay there)
+        local PB = WG and WG.ProxyBase
+        if PB and PB.labs and PB.labs[builderID] then NET.proxyBorn[unitID] = true end
+    end
     if IsCommander(unitDefID) then commanderID = unitID end
     if IsCommander(unitDefID) and not baseX then
         local x, _, z = spGetUnitPosition(unitID)
@@ -2576,6 +2765,245 @@ local function UpdateCommitted(frame)
 end
 
 local lastStance, lastManeuver = nil, false
+NET.proxyArmy = { key = nil }      -- (NET fields, not locals: Install is at Lua's 200-local limit)
+NET.proxyBorn = NET.proxyBorn or {}
+-- BEHEMOTHS (user 2026-11-08: the proxy's T3 lab "just builds Behemoth (corjugg) that move commands towards the enemy base"; each as it is made): a
+-- Behemoth from a proxy lab MOVEs toward the enemy's build power (role JUGG, RAID priority: click_army and area_defence leave it alone)
+function NET.UpdateJuggs(frame)
+    local jd = UnitDefNames and UnitDefNames[ROLES.Get("heavy_t3") or ""]
+    if not (jd and ARMY) then return end
+    local mb = WG and WG.MetalBot
+    local bp = mb and mb.enemyBP
+    local tx, tz
+    if bp and bp.x then tx, tz = bp.x, bp.z elseif MM and MM.Ready and MM.Ready() then tx, tz = MM.Foe() end
+    if not tx then return end
+    local n = 0
+    for uid in pairs(NET.proxyBorn) do
+        local defID = Spring.GetUnitDefID(uid)
+        if not defID then NET.proxyBorn[uid] = nil
+        elseif defID == jd.id and not Spring.GetUnitIsBeingBuilt(uid) then
+            NET.juggSeen = NET.juggSeen or {}
+            if not NET.juggSeen[uid] then NET.juggSeen[uid] = true; Spring.Echo(string.format("[JUGG] %d:%02d Behemoth %d moves on the enemy's build power at %d,%d", math.floor(frame / 1800), math.floor(frame / 30) % 60, uid, tx, tz)) end
+            ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "JUGG", cmd = 10, x = tx, z = tz }, frame)
+            n = n + 1
+        end
+    end
+    if n > 0 and frame % 1800 == 0 then Spring.Echo(string.format("[JUGG] %d:%02d %d Behemoth(s) moving on %d,%d", math.floor(frame / 1800), math.floor(frame / 30) % 60, n, tx, tz)) end
+end
+
+-- CAP (user 2026-11-08: "Have it self d figs, wasps, t1 mexs, any t1 units and just be super aggressive with units that exist.  At unit cap it is just
+-- about throwing as much metal as possible at the enemy as quickly as possible ... just send everything not needed for defense"): while the macro side's
+-- cap_mode.lua says WG.CapMode.on --
+--   ATTACK: click_army launches at CAP_LAUNCH_AV with up to CAP_GROUPS groups, no hold-home / AA launch gate, no home garrison or home fighters;
+--   CULL: until the free slots reach the cap mode's want (Dragons, the proxy), fighters, Wasps, Shurikens and T1 army are self-destructed (CAP_CULL a
+--   tick, those in their countdown counted as freed); the proxy's own units (within CAP_PROXY_R of it) are left alone -- they hold it.
+NET.cap = { pending = {}, saved = nil, culled = 0 }
+function NET.CapStep(frame)
+    local cm = WG and WG.CapMode
+    local on = cm ~= nil and cm.on == true and frame - (cm.frame or -1e9) <= 300
+    local C = NET.cap
+    local clock = string.format("%d:%02d", math.floor(frame / 1800), math.floor(frame / 30) % 60)
+    if on ~= (NET.capOn == true) then
+        NET.capOn = on
+        local keys = { "MAX_GROUPS", "LAUNCH_MIN_AV", "EARLY_LAUNCH", "LAUNCH_RATIO", "LAUNCH_FORCE_AV" }
+        local mkeys = { "HOME_GROUND_MAX", "HOME_GROUND_MIN", "HOME_GROUND_SHARE", "HOME_FIGHTER_MIN", "HOME_FIGHTER_SHARE" }
+        if on then
+            C.saved = { ca = {}, mech = {} }
+            if CA and CA.CFG then
+                for _, k in ipairs(keys) do C.saved.ca[k] = CA.CFG[k] end
+                CA.CFG.MAX_GROUPS, CA.CFG.LAUNCH_MIN_AV, CA.CFG.EARLY_LAUNCH = math.max(CA.CFG.MAX_GROUPS or 2, 8), 600, nil
+                CA.CFG.LAUNCH_RATIO, CA.CFG.LAUNCH_FORCE_AV = 0, 600
+            end
+            for _, k in ipairs(mkeys) do C.saved.mech[k] = MECH[k]; MECH[k] = 0 end
+            Spring.Echo(string.format("[CAP] %s unit side ON: everything attacks (up to 8 groups from 600 value, no home garrison); fighters, Wasps, Shurikens and T1 army are culled to keep %d slots free", clock, cm.want or 0))
+        elseif C.saved then
+            if CA and CA.CFG then for _, k in ipairs(keys) do CA.CFG[k] = C.saved.ca[k] end end
+            for _, k in ipairs(mkeys) do MECH[k] = C.saved.mech[k] end
+            C.saved = nil
+            Spring.Echo(string.format("[CAP] %s unit side off", clock))
+        end
+    end
+    if not on then return end
+    local inFlight = 0
+    for uid, f in pairs(C.pending) do
+        if not Spring.GetUnitDefID(uid) then C.pending[uid] = nil; C.culled = C.culled + 1
+        elseif frame - f > 450 then C.pending[uid] = nil
+        else inFlight = inFlight + 1 end
+    end
+    local need = (cm.want or 0) - (cm.free or 0) - inFlight
+    if need <= 0 then return end
+    local PB = WG and WG.ProxyBase
+    local pr2 = (PB and PB.x) and 1500 * 1500 or nil
+    local names = {}
+    for _, role in ipairs({ "stunner", "raider" }) do local d = UnitDefNames[ROLES.Get(role) or ""]; if d then names[d.id] = true end end
+    local cands = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        local defID = Spring.GetUnitDefID(uid)
+        local d = defID and UnitDefs[defID]
+        if d and not C.pending[uid] and not d.isBuilder and (d.speed or 0) > 0 and not (d.customParams and d.customParams.iscommander)
+           and not Spring.GetUnitIsBeingBuilt(uid) then
+            local rank
+            if d.canFly and UQ.is_dedicated_aa(defID) then rank = 1                                 -- fighters
+            elseif names[defID] then rank = 2                                                       -- Wasps, Shurikens
+            elseif not d.canFly and UQ.has_weapons(defID) and (tonumber((d.customParams or {}).techlevel) or 1) <= 1 then rank = 3   -- T1 army
+            end
+            if rank and pr2 then
+                local x, _, z = Spring.GetUnitPosition(uid)
+                if x and (x - PB.x) ^ 2 + (z - PB.z) ^ 2 <= pr2 then rank = nil end               -- (the proxy's own: they hold it)
+            end
+            if rank then cands[#cands + 1] = { uid = uid, rank = rank, v = (d.metalCost or 0) } end
+        end
+    end
+    table.sort(cands, function(a, b) if a.rank ~= b.rank then return a.rank < b.rank end return a.v < b.v end)
+    local n = 0
+    for _, c in ipairs(cands) do
+        if n >= math.min(need, K.CAP_CULL or 25) then break end
+        Spring.GiveOrderToUnit(c.uid, 65, {}, {})                   -- CMD.SELFD (once: a second order would cancel it)
+        C.pending[c.uid] = frame
+        n = n + 1
+    end
+    if n > 0 and frame - (C.logF or -1e9) >= 600 then
+        C.logF = frame
+        Spring.Echo(string.format("[CAP] %s %d free of %d wanted: %d unit(s) self-destructing (%d candidates; %d culled so far)", clock, cm.free or 0, cm.want or 0, n, #cands, C.culled))
+    end
+end
+
+-- LRPC SCOUTS (user 2026-11-08: "the lrpcs did not know what to shoot.  Have a wave of 10 t2 air scouts every 90 seconds or so just so they can update
+-- what is actually there"): while the proxy has guns (WG.ProxyBase.lrpc / calamity; the macro side keeps the Condors stocked), every Condor flies out
+-- together every 90 s, spread on a ring round the enemy's build power (role LRPC_SCOUT, RAID priority), and waits at the proxy between waves.
+NET.lsc = { st = {}, waveF = -1e9 }
+function NET.LrpcScouts(frame)
+    local PB = WG and WG.ProxyBase
+    -- the proxy air lab's scouts (user 2026-11-08: "a t2 air lab that makes a scout every 30 seconds to get vision"): each orbits the enemy's build power
+    -- on a 1200 ring, moving on round it (RAID priority, role LRPC_SCOUT) until it dies
+    do
+        local sd = UnitDefNames[ROLES.Get("scout_air") or ""]
+        local mbs = WG and WG.MetalBot
+        local bps = mbs and mbs.enemyBP
+        -- (user 2026-11-08: "You want the scouts to try and get vision in range of the lrpcs, and check where they are firing": each scout flies to one
+        -- of the spots the guns are firing at (lrpc_fire TargetPoints), the next one every 20 s; with nothing being fired at, the ring)
+        local pts = NET.lf and NET.lf.TargetPoints and NET.lf.TargetPoints() or {}
+        if sd and bps and bps.x and ARMY then
+            local i = 0
+            for uid in pairs(NET.proxyBorn) do
+                if Spring.GetUnitDefID(uid) == sd.id and not Spring.GetUnitIsBeingBuilt(uid) then
+                    i = i + 1
+                    local x, z
+                    if #pts > 0 then
+                        local p = pts[(uid + math.floor(frame / 600)) % #pts + 1]
+                        x, z = p.x, p.z
+                    else
+                        local a = (uid % 17) * 0.37 + frame / 30 * 0.05
+                        x, z = bps.x + math.cos(a) * 1200, bps.z + math.sin(a) * 1200
+                    end
+                    ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "LRPC_SCOUT", cmd = 10, x = x, z = z }, frame)
+                end
+            end
+        end
+    end
+    if not (PB and PB.x and ((PB.lrpc or 0) + (PB.calamity or 0)) > 0) then return end
+    local d = UnitDefNames[ROLES.Get("radar_plane") or ""]
+    local mb = WG and WG.MetalBot
+    local bp = mb and mb.enemyBP
+    if not (d and bp and bp.x and ARMY) then return end
+    local L = NET.lsc
+    local mine = {}
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        if Spring.GetUnitDefID(uid) == d.id and not Spring.GetUnitIsBeingBuilt(uid) then mine[#mine + 1] = uid end
+    end
+    for uid in pairs(L.st) do if not Spring.GetUnitDefID(uid) then L.st[uid] = nil end end
+    if not L.firstF and #mine > 0 then L.firstF, L.waveF = frame, frame - 90 * 30 end        -- (the first wave: 5 up, or 3 minutes after the first)
+    if (#mine >= 5 and frame - L.waveF >= 90 * 30) or (#mine > 0 and frame - L.waveF >= 180 * 30) then      -- (a wave, not one at a time)
+        L.waveF = frame
+        table.sort(mine)
+        for i, uid in ipairs(mine) do
+            local a = i * 2 * math.pi / #mine
+            L.st[uid] = { x = bp.x + math.cos(a) * 1200, z = bp.z + math.sin(a) * 1200 }
+        end
+        Spring.Echo(string.format("[LRPC] %d:%02d scout wave: %d Condor(s) over the enemy's build power at %d,%d", math.floor(frame / 1800), math.floor(frame / 30) % 60, #mine, bp.x, bp.z))
+    end
+    for _, uid in ipairs(mine) do
+        local st = L.st[uid]
+        local x, _, z = Spring.GetUnitPosition(uid)
+        if st and x and (x - st.x) ^ 2 + (z - st.z) ^ 2 < 350 * 350 then L.st[uid], st = nil, nil end      -- (over its point: back to the proxy)
+        if st then ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "LRPC_SCOUT", cmd = 10, x = st.x, z = st.z }, frame)
+        else ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "LRPC_SCOUT", cmd = 10, x = PB.x, z = PB.z }, frame) end
+    end
+end
+
+function NET.UpdateProxyArmy(frame)
+    local proxyArmy = NET.proxyArmy
+    local P = K.PROXY_ARMY
+    if not (P and CA and CA.Retask) then return end
+    NET.UpdateJuggs(frame)
+    local PB = WG and WG.ProxyBase
+    local mb = WG and WG.MetalBot
+    if PB and PB.x then
+        local key = PB.key or 0
+        if proxyArmy.key ~= key then
+            proxyArmy.key = key
+            local ax, az = 1, 0
+            local bp = mb and mb.enemyBP
+            if bp and bp.x then
+                local dx, dz = bp.x - PB.x, bp.z - PB.z
+                local d = math.sqrt(dx * dx + dz * dz)
+                if d > 1 then ax, az = dx / d, dz / d end
+            end
+            -- (to the STAGE first, if the macro side has one: they wait out of sight until GO, then move onto the spot -- CA.ProxyGo below)
+            local tx, tz = PB.x, PB.z
+            if PB.stage and not PB.go then tx, tz = PB.stage.x, PB.stage.z end
+            CA.Retask(frame, (type(P) == "table" and P.GROUPS) or 2, tx, tz, ax, az, "proxy base, " .. tostring(PB.state) .. (PB.stage and not PB.go and " (to the stage)" or ""))
+            proxyArmy.go = PB.go or not PB.stage
+        end
+        if PB.go and not proxyArmy.go then
+            proxyArmy.go = true
+            if CA.ProxyGo then CA.ProxyGo(frame, PB.x, PB.z) end
+        end
+        if CA.SetProxyLine then CA.SetProxyLine(math.min((PB.front or 0) + 300, 2200)) end   -- the proxy groups' line: 300 past the static's front edge (2200 at most)
+        -- clear: a proxy group is at the spot (the first one there is enough: eco_sim 2026-11-08, the second walked 113 s) and no proxy group there
+        -- has seen an enemy at it for clearS seconds
+        local gs = CA.ProxyGroups()
+        local clearS, arrived, n, v = nil, false, 0, 0
+        for _, g in ipairs(gs) do
+            n, v = n + g.n, v + g.value
+            if g.arrivedF then
+                arrived = true
+                local s = g.clearSince and (frame - g.clearSince) / 30 or 0
+                clearS = clearS and math.min(clearS, s) or s
+            end
+        end
+        if mb then mb.proxyArmy = { key = key, groups = #gs, n = n, value = v, arrived = arrived, clearS = arrived and (clearS or 0) or 0, frame = frame } end
+        -- the base holds on its own: its T2 static stands and its threats have been covered for RELEASE_S -> the groups raid again
+        local rs = type(P) == "table" and P.RELEASE_STATIC
+        if rs and #gs > 0 then
+            local pd = mb and mb.defence and mb.defence.proxy
+            local ok = (PB.static or 0) >= rs and (not pd or (pd.threats or 0) == 0 or (pd.margin or 0) >= 1.5)
+            if ok then proxyArmy.okF = proxyArmy.okF or frame else proxyArmy.okF = nil end
+            if proxyArmy.okF and frame - proxyArmy.okF >= ((P.RELEASE_S or 120) * 30) then
+                CA.ReleaseProxy(frame, string.format("the proxy holds on its own: %d T2 defences, covered %ds", PB.static or 0, math.floor((frame - proxyArmy.okF) / 30)), true)
+                proxyArmy.okF, proxyArmy.released = nil, key
+            end
+        end
+        -- MORE (user 2026-11-08: "keep pulling raid groups in as needed to defend ... it can pull units from the main base to help get it online even after it
+        -- has landed"): the proxy's threats not covered (area_defence's proxy margin < 1) for MORE_S -> one more raid group (up to MAX_GROUPS) and new
+        -- units until the proxy groups are worth COVER x the threat (at least WANT_AV); again every MORE_EVERY_S while it lasts
+        local pd = mb and mb.defence and mb.defence.proxy
+        local short = pd and (pd.threats or 0) > 0 and (pd.margin or 99) < 1
+        if short then proxyArmy.shortF = proxyArmy.shortF or frame else proxyArmy.shortF = nil end
+        local T = type(P) == "table" and P or {}
+        if proxyArmy.shortF and frame - proxyArmy.shortF >= (T.MORE_S or 15) * 30 and frame - (proxyArmy.moreF or -1e9) >= (T.MORE_EVERY_S or 60) * 30 then
+            proxyArmy.moreF = frame
+            local want = math.max(T.WANT_AV or 6000, (T.COVER or 1.5) * (pd.value or 0))
+            CA.ProxyMore(frame, math.min(T.MAX_GROUPS or 4, #gs + 1), want,
+                string.format("the proxy's threats (%.0f) are not covered: margin %.2f for %ds", pd.value or 0, pd.margin or 0, math.floor((frame - proxyArmy.shortF) / 30)))
+        end
+    elseif proxyArmy.key then
+        proxyArmy.key = nil
+        CA.ReleaseProxy(frame, "the proxy base is gone")
+        if mb then mb.proxyArmy = nil end
+    end
+end
+
 local function StanceHandover(frame)
     local name = WG and WG.Strategy and WG.Strategy.Name and WG.Strategy:Name()
     if name and push.on then name = name .. "+" .. push.mode end    -- unit_runtime: defend <-> push / raid hands the army over like a stance change
@@ -2719,6 +3147,7 @@ end
 
 function widget:UnitFinished(unitID, unitDefID, teamID)
     if teamID ~= myTeamID then return end
+    if NET.lf then NET.lf.OnFinished(unitID, unitDefID) end             -- LRPC: a Basilisk joins the gun line
     local d = UnitDefs[unitDefID]
     if not d or d.isFactory then return end
     -- Rez bots are builders, so this has to come before the builder early-out.
@@ -2746,6 +3175,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
     if RADAR_PLANE_NAMES[d.name] then radarPlanes[unitID] = true; return end
     if K.PICKET and d.name == ROLES.Get("scout_air") and NET.pk.Take(unitID) then return end     -- PICKET (below) before the scout jobs
     if UQ and UQ.is_bomber(unitDefID) then bombers[unitID] = true; return end
+    if NET.ad and NET.ad.Offer(unitID, unitDefID) then return end      -- AREA_DEFENCE: Pounders / Tzars to the wall, Shurikens / Wasps to the air squad
 
     if IsCommander(unitDefID) then
         if not baseX then
@@ -2767,6 +3197,7 @@ function widget:UnitFinished(unitID, unitDefID, teamID)
             else GROUND_AA.units[uid] = nil end
         end
         local want = math.min(GROUND_AA.SCREEN_MAX, math.max(GROUND_AA.SCREEN_MIN, math.ceil((n + 1) * GROUND_AA.SCREEN_FRAC)))
+        if NET.ad then want = want + NET.ad.HomeAAWant() end     -- AREA_DEFENCE: the checklist's air row asks for more base AA
         -- SUPPORT aa: once the base screen has its share, the groups' AA elements are filled before the shared escort
         -- a raid group held for its AA (mb.supportHold, launchGate): the element takes the unit before the base screen does
         local hold = WG and WG.MetalBot and WG.MetalBot.supportHold
@@ -2848,6 +3279,13 @@ end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID, attackerTeam)
     if NET.sw and teamID == myTeamID then NET.sw.Lost(unitID) end     -- SCOUT_WING
+    if NET.lf then                                                     -- LRPC: a gun lost / a target seen dying
+        if teamID == myTeamID then NET.lf.OnDestroyed(unitID) elseif NET.kc then NET.kc.OnDestroyed(unitID) end
+    end
+    if NET.ad then                                                     -- AREA_DEFENCE: its losses, and what its units killed
+        if teamID == myTeamID then NET.ad.OnDestroyed(unitID, unitDefID)
+        elseif attackerTeam == myTeamID and attackerID then NET.ad.NoteKill(attackerID, unitDefID) end
+    end
     -- unit_runtime: the ground army's own trade (GroundTrade)
     do
         local f = Spring.GetGameFrame()
@@ -3004,8 +3442,25 @@ local function EchoThreat(frame)
     end
 end
 
+-- AREA_DEFENCE: once per raid-response pass (a planner error is logged, not fatal to the unit controller)
+function NET.DefenceStep(frame)       -- (a NET field: Install is at the 200-locals limit)
+    if not NET.ad then return end
+    local ok, err = pcall(NET.ad.Step, frame)
+    if not ok and frame - (NET.adErrF or -1e9) >= 300 then NET.adErrF = frame; Spring.Echo("[DEF] error: " .. tostring(err)) end
+end
+
+-- LRPC's kill confirmation (kill_confirm.lua): wrecks (features are always visible), radar dots leaving, our own shells' impacts (BAR's VisibleExplosion)
+if K.LRPC then
+    function widget:FeatureCreated(featureID, allyTeam) if NET.kc then NET.kc.OnFeatureCreated(featureID) end end
+    function widget:UnitLeftRadar(unitID, unitTeam) if NET.kc then NET.kc.OnLeftRadar(unitID, Spring.GetGameFrame()) end end
+    function widget:VisibleExplosion(px, py, pz, weaponID, ownerID)
+        if NET.kc and ownerID and Spring.GetUnitTeam(ownerID) == myTeamID then NET.kc.OnExplosion(px, pz, ownerID, true) end
+    end
+end
+
 function widget:GameFrame(frame)
     if frame % 30 == 0 then EchoGeometry() end
+    if NET.lf then NET.lf.Update(frame) end                            -- LRPC
 
     if TM then
         if frame % TM.SCAN_PERIOD == 0 then TM.ScanContacts(frame) end
@@ -3042,6 +3497,7 @@ function widget:GameFrame(frame)
         UpdateRetreats(frame)
         ReleaseSurplusGuards(frame)
         if RESP then RESP.Dispatch(frame) end
+        NET.DefenceStep(frame)
         UpdateHomeGuard(frame)
         UpdateGroundAA(frame)
         UpdateMuster(frame)
@@ -3059,6 +3515,9 @@ function widget:GameFrame(frame)
         UpdatePush(frame)
         StanceHandover(frame)
         UpdateCommitted(frame)
+        NET.UpdateProxyArmy(frame)
+        NET.CapStep(frame)
+        if K.PROXY_ARMY then NET.LrpcScouts(frame) end
         if ManeuverPlan() then
             -- maneuver plan: the blobs, not click_army, are the ground army
             if MD then
@@ -3108,12 +3567,14 @@ function widget:GameFrame(frame)
     if K.FAST_RAIDERS and (frame % 30 == 10 or frame % 30 == 20) and ARMY.Clock() and ARMY.Clock().AnyFast and ARMY.Clock().AnyFast() then
         ARMY.Sweep(frame)
         if RESP then RESP.Dispatch(frame) end
+        NET.DefenceStep(frame)
         if CA then CA.Update(frame) end
     end
     if frame % 30 == 15 and ARMY.Clock() and ARMY.Clock().AnyHigh() then
         ARMY.Sweep(frame)
         UpdateRetreats(frame)
         if RESP then RESP.Dispatch(frame) end
+        NET.DefenceStep(frame)
         if CA and not ManeuverPlan() then CA.Update(frame) end
     end
 

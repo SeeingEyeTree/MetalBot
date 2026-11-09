@@ -20,7 +20,7 @@
 
 local M = {}
 
-M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_PRESSURE_FIGHTERS", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "REZ_DEMAND", "REZ_INCOME_PER_BOT", "REZ_OVERFLOW", "REZ_LAB_DEPTH", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SUPPORT_ORDERS", "PENDING_FIRST", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
+M.TUNABLES = { "AA_STANDING", "AA_STANDING_FRAME", "SCOUTS_FIRST", "ARMY_QUEUE_MIN", "AA_FLOOR_BASE", "AIR_SCOUTS_EARLY", "SPINE_CON_FIRST", "BUDGET_FREE_BANK", "BUDGET_FREE_FRAC", "AA_FLOOR_MAX", "AA_FLOOR_PER_BOMBER", "AIR_RUSH", "AIR_RUSH_DEPTH", "AIR_RUSH_MULT", "SINK", "SINK_DEPTH", "DECOY_UNIT", "DECOY_SPEND", "DECOY_METAL_RATE", "DECOY_MIN", "DECOY_PER_LAB", "DECOY_ORDER_TTL", "DECOY_FROM_SPINE", "DECOY_LAB_DEPTH", "AA_VALUE_RATIO", "AIRLAB_FIGHTERS", "AIR_ALARM_MIN", "AIR_ALARM_PER_BOMBER", "AIR_PRESSURE_FIGHTERS", "SPINE_AIR_LAB", "SPINE_AIR_FROM", "SPINE_AIR_DEMAND_S", "COVER_AIR_RAID", "AIR_ALARM_TTL", "BOMBER_TARGET", "BUDGET_CAP_SECONDS", "BUDGET_FREE_FILL", "DEFENDER_ENEMY_RATIO", "DEFENDER_MAX", "DEFENDER_TARGET", "DRAGON_FLOAT_OFF", "DRAGON_FLOAT_ON", "FIGHTER_MAX", "FIGHTER_TARGET", "GUARD_BASE", "GUARD_INCOME_SECS", "GUARD_MAX", "GUARD_PER_ENEMY", "GUARD_START_FRAME", "LAB_ORDER_GRACE", "ORDER_TTL", "RADAR_LATE_FRAME", "RADAR_TARGET", "RADAR_TARGET_LATE", "REZ_BASE", "REZ_MAX", "REZ_PER_ARMY", "REZ_START_FRAME", "REZ_DEMAND", "REZ_INCOME_PER_BOT", "REZ_OVERFLOW", "REZ_LAB_DEPTH", "SPAM_LAB_DEPTH", "SCOUT_LAB_DEPTH", "SUPPORT_FROM_BUDGET", "SUPPORT_ORDERS", "PENDING_FIRST", "SCOUT_AHEAD", "SCOUT_TARGET", "SHURI_EARLY", "SHURI_EARLY_FRAME", "SHURI_LIFT_ALWAYS", "SHURI_MAX", "SHURI_RAMP_START", "SHURI_STEP", "SHURI_STEP_FRAMES", "SLOW_SHARE", "SPINE_ORDER_GRACE", "SUPPORT_PER_SCREEN", "T2AIRLAB_FIGHTERS", "T2_SCREEN_NAME", "T2_SLOW_SHARE", "T2_SUPPORT_NAME", "WING_BOMBER_MAX", "WING_BOMBER_SECS", "WING_ENERGY_FRAC", "WING_FIGHTER_MAX", "WING_FIGHTER_SECS", "WING_ON", "WING_START_FRAME" }
 
 M.TABLE_OPTIONS = { "LAB_ORDERS", "AA_PICKS", "AA_FLOOR_PICKS", "ARMY_PICKS", "BLACKLIST", "NOT_SCOUTS", "GUARD_NAMES", "RAID", "RR", "AIR_AA_GATE" }
 -- AIR_AA_GATE (nil = off; user 2026-10-29, the BM_akumar6 game: 24% of all metal went into Shurikens and Wasps that flew into 25-84 flak and
@@ -88,6 +88,10 @@ local DECOY_METAL_RATE = O("DECOY_METAL_RATE", 12.75)
 local DECOY_MIN        = O("DECOY_MIN", 8)
 local DECOY_PER_LAB    = O("DECOY_PER_LAB", 32)
 local DECOY_ORDER_TTL  = O("DECOY_ORDER_TTL", 3600)
+-- user 2026-11-04: the sink owns the decoy labs (metal_sink SINK_DECOY_LABS: T2 bot labs at the sink, WG.DecoyLabs with sink = true; the "decoy-lab" want
+-- owns their queues).  DECOY_FROM_SPINE false: the spine's T2 labs no longer make decoys; the metal rate and the room come from WG.SinkPlan when published.
+local DECOY_FROM_SPINE = O("DECOY_FROM_SPINE", true)
+local DECOY_LAB_DEPTH  = O("DECOY_LAB_DEPTH", 2)
 
 local SCOUTS_FIRST      = O("SCOUTS_FIRST", 0)         -- >0: the first N scouts are inserted at the HEAD of a lab's queue (ahead of the army): the ground scouts (corfav) go out first and look for the enemy
 local ARMY_QUEUE_MIN   = O("ARMY_QUEUE_MIN", 0)          -- army want keeps at least this many orders queued (0 = the old "refill when empty")
@@ -273,6 +277,14 @@ local AA_VALUE_RATIO = O("AA_VALUE_RATIO", 1.0)
 local AIRLAB_FIGHTERS = O("AIRLAB_FIGHTERS", 2)
 local T2AIRLAB_FIGHTERS = O("T2AIRLAB_FIGHTERS", 4)
 local FIGHTER_MAX = O("FIGHTER_MAX", 40)
+-- SQUAD.SPINE_AIR_LAB (user 2026-11-08: "the bot cannot meet the demand for air early, its two air labs make cons and scouts"): a T1 air lab joins the SPINE (slot_spine
+-- REQUIRED: it comes after the FIRST_VP vehicle plants) once the fighter / Shuriken floor has been short for SQUAD.SPINE_AIR_DEMAND_S seconds after SQUAD.SPINE_AIR_FROM; it stays
+SQUAD.SPINE_AIR_LAB = O("SPINE_AIR_LAB", false)
+SQUAD.SPINE_AIR_FROM = O("SPINE_AIR_FROM", 3 * 60 * 30)
+SQUAD.SPINE_AIR_DEMAND_S = O("SPINE_AIR_DEMAND_S", 20)
+-- SQUAD.COVER_AIR_RAID (user 2026-11-08: Shurikens / Wasps were used far less than in DEFENCE_BOT): cover_defence threats that are only pushed out / cut off are not a raid
+-- (mb.raid holds the fight-mode ones), so no stunner / Wasp was queued for them.  With this on, the labs read mb.cover.value as a ground raid for the air answer
+SQUAD.COVER_AIR_RAID = O("COVER_AIR_RAID", false)
 local AIR_PRESSURE_FIGHTERS = O("AIR_PRESSURE_FIGHTERS", 0)   -- extra fighters while raidAir.active (CORE_v4: 6)
 local AIR_ALARM_TTL = O("AIR_ALARM_TTL", 900)   -- LINE_CLICK_v16: frames an air alarm keeps the labs on fighters
 local AIR_ALARM_MIN = O("AIR_ALARM_MIN", 6)     -- fighters wanted the moment bombers head for the base
@@ -1059,11 +1071,13 @@ local function LineLabs()
 end
 local function DecoyWant()
     local list, line = SinkLabs(), LineLabs()
-    if #list == 0 then return 0 end
+    local plan = CH.SinkPlan(WG)
+    if #list == 0 and not (plan and plan.jobs > 0) then return 0 end
     local room = 0
     for _, L in ipairs(list) do room = room + (L.decoyMax or DECOY_PER_LAB) end
     for _, L in ipairs(line) do room = room + (L.decoyMax or 8) end
-    return LEDGER.DecoyDemand(C.metalIncome, room, { spend = DECOY_SPEND, rate = DECOY_METAL_RATE, min = DECOY_MIN })
+    if plan then room = room + plan.jobs * plan.perLab end        -- sink labs being placed: their decoys can be on the way already
+    return LEDGER.DecoyDemand(C.metalIncome, room, { spend = DECOY_SPEND, rate = (plan and plan.rate) or DECOY_METAL_RATE, min = DECOY_MIN })
 end
 local function DecoyHave(frame)
     local n = 0
@@ -1111,11 +1125,18 @@ end
 function SK.Tick(frame, metalIncome)        -- GameFrame, every 60 frames, before the labs are serviced
     C.decoyDef = DefIDOf(DECOY_UNIT)
     C.decoyRoom = DecoyWant() - DecoyHave(frame)
+    -- the unit cap: no new decoys while fewer slots are free than the sink keeps for its unit (WG.SinkPlan.capReserve, metal_sink SINK_CAP_RESERVE)
+    local plan = CH.SinkPlan(WG)
+    if plan and (plan.capReserve or 0) > 0 then
+        local left = LEDGER.CapLeft(myTeamID)
+        if left and left < plan.capReserve then C.decoyRoom = 0 end
+    end
     local list = SinkLabs()
-    if #list == 0 then return end
+    local line = LineLabs()
+    if #list == 0 and #line == 0 then return end         -- (a decoy lab of the sink's can stand before the first sink lab: its decoys assist it)
     local alive = {}
     for _, L in ipairs(list) do alive[L.id] = L end
-    for _, L in ipairs(LineLabs()) do alive[L.id] = L end
+    for _, L in ipairs(line) do alive[L.id] = L end
     for uid in pairs(SK.decoys) do
         if spGetUnitDefID(uid) and not Spring.GetUnitIsBeingBuilt(uid) then
             local L = alive[SK.lab[uid] or -1]
@@ -1177,6 +1198,12 @@ local function Describe(labID, labDefID, frame)
         lab.isStarter, lab.rezDef = true, p and p.rez
     end
     if SINK_ON and IsSinkLab(labID) then lab.isSink = true; return lab end    -- no picks: only the "sink" want applies
+    -- the sink's decoy labs (metal_sink SINK_DECOY_LABS): decoy commanders and nothing else ("decoy-lab" owns them)
+    local dl = SINK_ON and CH.DecoyLabs(WG)[labID]
+    if dl and dl.sink then
+        lab.isDecoyLab, lab.only = true, "decoy-lab"
+        return lab
+    end
     -- the line's rez lab: ONE want ("rez-lab") owns its queue (lab.only), so no floor / scout / radar / army rule can fill it
     if RezLabID() == labID then
         local p = GetArmyPicks(labDefID)
@@ -1187,6 +1214,13 @@ local function Describe(labID, labDefID, frame)
     -- SUPPORT: the spam lab makes the spam element's units and nothing else ("spam-lab" owns it)
     if SQUAD.SpamLabID() == labID then
         lab.isSpamLab, lab.only = true, "spam-lab"
+        return lab
+    end
+    -- PROXY (proxy_base.lua, user 2026-11-08: "It can ignore the stance, its job is to build the best things to stay alive"): a proxy base's lab makes what
+    -- the proxy's crew asks for (WG.ProxyBase.want) and nothing else ("proxy-lab" owns it)
+    local pb = WG and WG.ProxyBase
+    if pb and pb.labs and pb.labs[labID] then
+        lab.isProxyLab, lab.only = true, "proxy-lab"
         return lab
     end
     -- SCOUT WING: a scout lab makes the wing's scouts and nothing else ("scout-lab" owns it)
@@ -1340,6 +1374,14 @@ RegisterWants = function()
         return gateOn
     end
     local function add(spec)
+        if spec.pick then                                                        -- CAP_MODE: nothing off the whitelist at the unit cap
+            local pickC = spec.pick
+            spec.pick = function(lab, frame, slot)
+                local defID, why = pickC(lab, frame, slot)
+                if defID and SQUAD.CapBlocked(defID) then return nil end
+                return defID, why
+            end
+        end
         if GATE and spec.pick then
             local pick0 = spec.pick
             spec.pick = function(lab, frame, slot)
@@ -1507,7 +1549,7 @@ RegisterWants = function()
          pick = function(lab)
              local SP = C.SP
              local defID = SP.NextOrder(lab.id, lab.defID)
-             if not defID and SINK_ON and not lab.t1Spine and C.decoyDef and C.decoyRoom > 0 and CanBuildSet(lab.defID)[C.decoyDef] then
+             if not defID and SINK_ON and DECOY_FROM_SPINE and not lab.t1Spine and C.decoyDef and C.decoyRoom > 0 and CanBuildSet(lab.defID)[C.decoyDef] then
                  C.decoyRoom = C.decoyRoom - 1                -- a decoy commander for a sink lab, ahead of the stance's units
                  SK.orders[#SK.orders + 1] = C.frame
                  return C.decoyDef
@@ -1521,6 +1563,16 @@ RegisterWants = function()
     -- ── the metal sink ── a finished sink lab makes its unit, forever (the macro places the labs; decoys come from the spine's T2 labs)
     if SINK_ON then
         C.sink = SK
+        -- the sink's decoy labs make decoy commanders while the sink is short of them (C.decoyRoom, the same count the spine rule reads)
+        add{ name = "decoy-lab", prio = 200, mode = "topup", why = "decoy", depth = function() return DECOY_LAB_DEPTH end,
+             applies = function(lab) return lab.isDecoyLab end,
+             pick = function(lab)
+                 if C.decoyDef and C.decoyRoom > 0 and CanBuildSet(lab.defID)[C.decoyDef] then
+                     C.decoyRoom = C.decoyRoom - 1
+                     SK.orders[#SK.orders + 1] = C.frame
+                     return C.decoyDef
+                 end
+             end }
         add{ name = "sink", prio = 90, mode = "topup", why = "sink", depth = function() return SINK_DEPTH end,
              applies = function(lab) return lab.isSink end,
              pick = function(lab)
@@ -1588,6 +1640,16 @@ RegisterWants = function()
              local short = w and ((lab.scoutKind == "air") and w.airShort or w.groundShort) or 0
              if short <= 0 then return nil end
              return CheapestScout(GetBuildCache(lab.defID).scouts)
+         end }
+    -- PROXY: a proxy lab keeps 2 of what the proxy's crew wants queued (Pounders / cons from the T1 lab, Tzars / T2 cons from the T2 lab).  Not charged
+    -- to the army budget: the proxy has first call on metal (user 2026-11-08)
+    add{ name = "proxy-lab", prio = 200, mode = "topup", why = "proxy", note = false, depth = function() return 2 end,
+         applies = function(lab) return lab.isProxyLab end,
+         pick = function(lab)
+             local pb = WG and WG.ProxyBase
+             local name = pb and pb.want and pb.want[lab.id]
+             local d = name and DefIDOf(name)
+             if d and CanBuildSet(lab.defID)[d] then return d end
          end }
     add{ name = "rez", prio = 60, mode = "empty",
          applies = function(lab) return lab.picks ~= nil and lab.picks ~= false and RezLabID() == nil end,
@@ -1685,9 +1747,45 @@ RegisterWants = function()
     -- A lab with no army picks builds NOTHING (the bot lab only makes the two con bots the build order asks for, then is reclaimed).
 end
 
+-- CAP_MODE (bar_framework/cap_mode.lua, user 2026-11-08: "The only air unit that should be built is dragons and air scouts.  Only ground unit should be
+-- demons and Behemoth" -- everywhere, the proxy too, but cons may still be built): while WG.CapMode.on every want's pick off that list is refused, and the
+-- queues lose what is off it every 300 frames
+local capAllow
+function SQUAD.CapBlocked(defID)
+    local cm = WG and WG.CapMode
+    if not (cm and cm.on) or not defID then return false end
+    if not capAllow then
+        capAllow = {}
+        for _, role in ipairs({ "sink_unit", "scout_air", "radar_plane", "heavy_t3", "heavy_t3_bot" }) do
+            local d = UnitDefNames and UnitDefNames[ROLES.Get(role) or ""]
+            if d then capAllow[d.id] = true end
+        end
+    end
+    if capAllow[defID] then return false end
+    local d = UnitDefs[defID]
+    if d and d.isBuilder and (d.speed or 0) > 0 and not d.canResurrect then return false end      -- (cons)
+    return true
+end
+function SQUAD.CapPurge(frame)
+    local n = 0
+    for _, uid in ipairs(Spring.GetTeamUnits(myTeamID) or {}) do
+        local d = UnitDefs[spGetUnitDefID(uid) or -1]
+        if d and d.isFactory then
+            local cmds = Spring.GetFactoryCommands and Spring.GetFactoryCommands(uid, -1) or Spring.GetUnitCommands(uid, -1)
+            local blocked
+            for _, c in ipairs(type(cmds) == "table" and cmds or {}) do
+                if c.id and c.id < 0 and SQUAD.CapBlocked(-c.id) then blocked = blocked or {}; blocked[-c.id] = true end
+            end
+            if blocked then lb.remove(uid, blocked); n = n + 1 end
+        end
+    end
+    if n > 0 then Spring.Echo(string.format("[LabCtrl] %d:%02d CAP: %d lab queue(s) cleared of units off the cap whitelist", math.floor(frame / 1800), math.floor(frame / 30) % 60, n)) end
+end
+
 function widget:GameFrame(frame)
     if frame % 60 ~= 0 then return end
     if not myTeamID or not lb then return end
+    if frame % 300 == 0 and WG and WG.CapMode and WG.CapMode.on then SQUAD.CapPurge(frame) end
 
     local ok,  metalCur, metalStorage, metalPull, metalIncome = pcall(spGetTeamResources, myTeamID, "metal")
     local okE, energyCur, energyStorage, energyPull, energyIncome = pcall(spGetTeamResources, myTeamID, "energy")
@@ -1749,6 +1847,11 @@ function widget:GameFrame(frame)
     do
         local raid = mb and mb.raid
         local live = raid ~= nil and frame - raid.frame <= RAID.TTL and (raid.value or 0) > 0
+        local cov = SQUAD.COVER_AIR_RAID and mb and mb.cover
+        if not live and cov and cov.frame and frame - cov.frame <= RAID.TTL and (cov.value or 0) > 0 then
+            raid = { frame = cov.frame, value = cov.value, channel = "ground", ground = cov.value, air = 0 }     -- a covered ground threat: the air answer only
+            live = true
+        end
         local airLosing = mb ~= nil and (mb.airLosses or 0) >= RAID.AIR_LOSSES
         -- a new raid starts the counts over; flickering in and out of sight inside 30 s is the same raid
         if live and frame - RAID.lastLive > 900 then
@@ -1892,7 +1995,21 @@ function widget:GameFrame(frame)
     if C.sink then C.sink.Tick(frame, metalIncome) end
     if SQUAD.LO then
         SQUAD.LO.Tick(frame, labs, C.SP, mb)
-        if C.SP and C.SP.SetRequired then C.SP.SetRequired(SQUAD.LO.Wanted()) end      -- slot_spine plans a lab for a wanted unit no lab makes
+    end
+    if C.SP and C.SP.SetRequired and (SQUAD.LO or SQUAD.SPINE_AIR_LAB) then       -- slot_spine plans a lab for a wanted unit no lab makes
+        local want = {}
+        if SQUAD.LO then for n in pairs(SQUAD.LO.Wanted()) do want[n] = true end end
+        if SQUAD.SPINE_AIR_LAB then
+            local short = frame >= SQUAD.SPINE_AIR_FROM and (C.fighterValue < C.fighterWant or C.shuriRoom > 0)
+            if short then SQUAD.airShortF = SQUAD.airShortF or frame else SQUAD.airShortF = nil end
+            if SQUAD.airShortF and frame - SQUAD.airShortF >= SQUAD.SPINE_AIR_DEMAND_S * 30 and not SQUAD.spineAir then
+                SQUAD.spineAir = true
+                Spring.Echo(string.format("[LabCtrl] %d:%02d air demand unmet for %ds (fighters %.0f / %.0f, Shuriken room %d): a T1 air lab joins the spine",
+                    math.floor(frame / 1800), math.floor(frame / 30) % 60, SQUAD.SPINE_AIR_DEMAND_S, C.fighterValue, C.fighterWant, C.shuriRoom))
+            end
+            if SQUAD.spineAir then want[ROLES.Get("fighter_t1")] = true end
+        end
+        C.SP.SetRequired(want)
     end
     for labID, labDefID in pairs(labs) do
         LB.Service(lb, Describe(labID, labDefID, frame), frame)

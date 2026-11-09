@@ -22,7 +22,21 @@ local UNIT = VFS.Include("LuaUI/Widgets/bar_framework/unit_runtime.lua")
 -- a small garrison after that; new production stays home while a ground raid is on the base (HOLD_HOME), six ground scouts first (FIND_SCOUTS), blind groups go to unseen ground.
 UNIT.Install(widget, WG, {
     RAID_RESPONSE = { KEEP_MULT = 1.5, INTRUDER_TTL = 450, OUR_HALF = true, THREAT_HOME = true,
-                      COVER = {} },   -- COVER (user 2026-10-30, game review A-D; bar_framework/cover_defence.lua): every enemy ground group on our side, radar dots too, gets defenders worth 1.2x it on a line in front of the eco it can reach (pushed out while it does not attack, cutting it off when it dives); no raid launches while one is uncovered. Replaces CONTACTS. Otherwise CORE_ROWS_ECO's army settings
+                      AIR_PACK = { MIN = 6, WAIT_S = 20, AA_RATIO = 1.5, AA_R = 900, AA_WAIT_S = 40, RALLY = 0.2 } },   -- user 2026-11-08: Shurikens / Wasps group up (6 or 20 s), hold off enemy AA until 1.5x its value, then shoot it first
+      -- (COVER, user 2026-10-30, is replaced by AREA_DEFENCE below: its threat model and line / cut / chase orders are area_defence's borrowed-army squad)
+    -- AREA_DEFENCE (user 2026-11-08; bar_framework/area_defence.lua): one owner for defending the base (labs, eco, nanos within 4k of the spawn): the Pounder +
+    -- Tzar WALL stands on the front the raids come from, in front of the eco (the stance makes 1 Pounder per 12 Incisors / 10 Brutes; Pounders over the walls'
+    -- want are reclaimed by the nanos); the AIR squad (every Shuriken and Wasp) answers what the wall cannot reach; ARMY units are borrowed only for the rest
+    -- and handed back after; a threat checklist (ground raids, heavy ground, air-to-ground, nukes, long range) and a construction stub.  Raid_response answers
+    -- air raids only.  mb.defence's def_* signals drive machines/v4_defence.lua's defended eco bursts.
+    AREA_DEFENCE = {},
+    -- PROXY_ARMY (user 2026-11-08, the proxy base): when the macro side picks a proxy spot, 2 raid groups stop raiding and take it (clear scouts, hold a
+    -- line in front of it); the nanos are flown in once they hold it.  area_defence then defends the spot as an area of its own (its own walls, a third of the air).
+    -- Once 6 T2 defences stand there and its threats have been covered for 2 minutes, the groups raid again from there.
+    PROXY_ARMY = { GROUPS = 2, RELEASE_STATIC = 6 },
+    -- LRPC (user 2026-11-08): the proxy's Basilisks shoot shields, then build power, fusions / AFUS, labs; kills out of sight are confirmed by the wreck
+    -- or the radar dot (bar_framework/lrpc_fire.lua, kill_confirm.lua).
+    LRPC = {},
       -- THREAT_HOME (user 2026-10-29): under_attack / the con hold count only threats near the eco, scouts at 0.1   -- OUR_HALF (user 2026-10-28): an enemy seen on our side of the map is an intruder; HOME_R is from the eco footprint
     HOME_DEFENCE = { R = 700, SLACK = 150, POST_R = 550, LEASH = 250, GROUP_UNDER = 6, EARLY_UNTIL = 0, EARLY_MAX = 0 },
     -- HOME_FIGHTER_SHARE / MIN (user 2026-10-31): fighters were half at home guard, the rest at the stage 12% out -- a quarter (at least 2) stays home, the rest wait forward (CLICK_ARMY FIGHTER_*)
@@ -56,10 +70,7 @@ UNIT.Install(widget, WG, {
                          -- user 2026-11-02 ("the quakers did exactly what I wanted ... they just might not be the right unit"): "stopping power" -- 2 Tzars per
                          -- group (support/stop.lua: support/arty.lua's behaviour, SET_TARGET on the densest clump in range; heavy transports lift them).
                          -- The Quaker element is kept: arty = { n = 5, groups = 3, from_income = 300 } in place of stop brings it back.
-                         stop = { n = 2, groups = 3, from_income = 300 } },
-                -- user 2026-11-02 (vs CORE_ROWS_ECO, raided all game): T1 stopping power -- up to 3 home groups of 12 Pounders that hold a sector of the base
-                -- (support/t1stop.lua), added slowly (one Pounder per 20 s, the "normal" lab tier) as raid pressure rises; a defending group gets its 2 Tzars
-                -- first (home records come first in the hand-out)
-                home = { t1stop = { n = 12 }, stop = { n = 2 } } },
+                         stop = { n = 2, groups = 3, from_income = 300 } } },
+                -- (home = { t1stop, stop }, user 2026-11-02: the Pounder / Tzar home groups, is now AREA_DEFENCE's wall)
     SUPPORT_FIRST = true, AIR_LIFT = true, SUPPORT_OFF_GRACE_S = 120,
 })

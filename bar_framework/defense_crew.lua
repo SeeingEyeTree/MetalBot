@@ -113,6 +113,8 @@ local function FindSite(defID, ax, az, minR, maxR, bearing, fails)
     end
 end
 
+M.FindSite = FindSite         -- (the proxy base's crew uses it too: bar_framework/proxy/crew.lua)
+
 -- The nearest of our idle-or-busy constructors that can build defID.
 local function PickBuilder(defID, x, z)
     local best, bestD, bestDef

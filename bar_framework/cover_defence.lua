@@ -485,9 +485,10 @@ function M.New(o)
         end
 
         -- orders, the published state and the fight-mode threats (the raid record)
-        local unc, uncV, cov, fight = 0, 0, 0, {}
+        local unc, uncV, cov, fight, allV = 0, 0, 0, {}, 0
         for _, t in ipairs(threats) do
             Orders(frame, t, mine[t.id] or {})
+            allV = allV + (t.v or 0)
             t.covered = t.have + t.prodCover >= t.need
             if t.covered then cov = cov + 1 else unc, uncV = unc + 1, uncV + t.v end
             if t.mode == "fight" then
@@ -500,7 +501,7 @@ function M.New(o)
         -- signal home_quiet_s: the last frame uncovered enemy ground on our side (no defenders worth 1.2x it) was worth 20 s of 20% of our income
         local _, _, _, inc = Spring.GetTeamResources(Spring.GetMyTeamID(), "metal")
         if uncV >= math.max(C.HARD_FLOOR, C.HARD_SHARE * (inc or 0) * C.HARD_S) then cv.lastHardF = frame end
-        cv.pub = { frame = frame, threats = #threats, uncovered = unc, uncoveredValue = uncV, covered = cov, lastThreatF = cv.lastThreatF,
+        cv.pub = { frame = frame, value = allV, threats = #threats, uncovered = unc, uncoveredValue = uncV, covered = cov, lastThreatF = cv.lastThreatF,
                    lastHardF = cv.lastHardF }
 
         if frame - cv.logF >= C.LOG_EVERY and #threats > 0 then

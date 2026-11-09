@@ -27,6 +27,8 @@ M.LOG_EVERY  = 900
 M.CONS       = true   -- cons reclaim too (not only nanos)
 M.REPAIR     = true
 M.DEBUG      = false
+M.DECOMMISSION = true -- reclaim our own units listed in WG.DefenceReclaim (area_defence's surplus); the list is empty unless a bot runs AREA_DEFENCE
+M.DECOM_NANOS  = 3
 
 local CMD_RECLAIM, CMD_INSERT, CMD_REMOVE = 90, 1, 2
 local frame_now = 0
@@ -197,10 +199,37 @@ function M.Update(frame)
         end
     end
 
-    if (S.started + S.repairs > 0) and frame - S.lastLog >= M.LOG_EVERY then
+    -- 3. DECOMMISSION (2026-11-08): our own units the unit controller's area_defence no longer wants (surplus wall Pounders) walk next to a nano
+    -- and are listed in WG.DefenceReclaim; up to DECOM_NANOS nanos in reach reclaim each one (the metal comes back).  Empty for every other bot.
+    local list = WG and WG.DefenceReclaim
+    if M.DECOMMISSION and list and next(list) and #nanos > 0 then
+        for uid, r in pairs(list) do
+            if not Spring.GetUnitDefID(uid) or frame - (r.frame or -1e9) > 300 then list[uid] = nil
+            else
+                local ux, _, uz = Spring.GetUnitPosition(uid)
+                local k = 0
+                for _, nid in ipairs(nanos) do
+                    if k >= M.DECOM_NANOS then break end
+                    local nx, _, nz = Spring.GetUnitPosition(nid)
+                    local range = UnitDefs[snap.defOf[nid]].buildDistance
+                    if ux and nx and Dist(nx, nz, ux, uz) <= range * M.ENTER then
+                        local a = S.NANO.Assignment(nid)
+                        if a and a.target == uid then k = k + 1
+                        elseif S.NANO.Reclaim(S.NANO.PRIO.DECOM or 1.2, nid, uid) then
+                            k = k + 1
+                            if not r.counted then r.counted = true; S.decoms = (S.decoms or 0) + 1 end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if (S.started + S.repairs + (S.decoms or 0) > 0) and frame - S.lastLog >= M.LOG_EVERY then
         S.lastLog = frame
-        Spring.Echo(string.format("[HD] %d:%02d nano reclaims started %d, repair orders %d, con reclaims active %d",
-            math.floor(frame / 1800), math.floor(frame / 30) % 60, S.started, S.repairs, (function() local n = 0 for _ in pairs(S.conJob) do n = n + 1 end return n end)()))
+        Spring.Echo(string.format("[HD] %d:%02d nano reclaims started %d, repair orders %d, con reclaims active %d, own units decommissioned %d",
+            math.floor(frame / 1800), math.floor(frame / 30) % 60, S.started, S.repairs, (function() local n = 0 for _ in pairs(S.conJob) do n = n + 1 end return n end)(),
+            S.decoms or 0))
     end
 end
 

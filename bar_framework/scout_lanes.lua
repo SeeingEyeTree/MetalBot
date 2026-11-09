@@ -71,6 +71,8 @@ local sectors, sectorSize = nil, nil
 local sectorOf  = {}   -- [unitID] = sector key it is heading for
 local foeFound  = false
 local mode      = "find"
+local reopenFrame = 0      -- ReopenFind: contacts older than this do not pin a new foe
+local cornerDone  = {}     -- [unitID] = true once it has been to its corner
 
 -- The ally ID is passed in rather than read from Spring.GetMyAllyTeamID(): the test
 -- harness patches team IDs in bot files only, and bar_framework is copied unpatched.
@@ -117,7 +119,9 @@ local function CheckFoe()
     local sx, sz, n = 0, 0, 0
     for _, c in pairs(TM.Contacts()) do
         local d = c.defID and UnitDefs[c.defID]
-        if d and (d.isBuilding or d.isFactory or UQ.is_commander(c.defID)
+        -- after a reopen only sightings newer than it count (old contacts are the dead base)
+        if d and (c.frame or 0) >= reopenFrame
+           and (d.isBuilding or d.isFactory or UQ.is_commander(c.defID)
                   or (d.speed or 0) == 0) then
             sx, sz, n = sx + c.x, sz + c.z, n + 1
         end
@@ -132,7 +136,6 @@ end
 
 local function Dist2(ax, az, bx, bz) return math.sqrt((ax - bx) ^ 2 + (az - bz) ^ 2) end
 local laneOf      = {}   -- [unitID] = -1 | +1: which enemy-side corner (by lateral side) it sweeps from
-local cornerDone  = {}   -- [unitID] = true once it has been to its corner
 
 -- The enemy-half map corner on one lateral side (lane -1 = the most negative lateral, +1 = the most
 -- positive).  nil if no corner is on the enemy side.
@@ -180,12 +183,12 @@ end
 
 -- UNSEEN_FIRST (click_army): the nearest sector of the enemy half nobody has looked at (or not for FIND_FRESH) from (x, z) -> its centre, or nil.  A blind raid group heads there
 -- instead of the mirror guess: unscouted ground is where the enemy is most likely to be.
-function M.NextUnseen(x, z, frame)
+function M.NextUnseen(x, z, frame, wholeMap)
     EnsureSectors()
     if not sectors then return nil end
     local best, bestD
     for _, s in pairs(sectors) do
-        if not MM.IsOurHalf(s.x, s.z) and Unseen(s, frame) then
+        if (wholeMap or not MM.IsOurHalf(s.x, s.z)) and Unseen(s, frame) then
             local d = (s.x - x) ^ 2 + (s.z - z) ^ 2
             if not bestD or d < bestD then best, bestD = s, d end
         end
@@ -231,7 +234,27 @@ local function FindTarget(uid, frame, taken)
             end
         end
     end
+    if not bestKey then
+        -- everything was seen within FIND_FRESH and the enemy is still not found: never idle, go to the stalest sector
+        local oldest
+        for key, s in pairs(sectors) do
+            if not taken[key] and (not oldest or s.lastScouted < sectors[oldest].lastScouted) then oldest = key end
+        end
+        bestKey = oldest
+    end
     return bestKey
+end
+
+-- The sighted base is gone (see unit_runtime CheckEnemyLost): search the whole map again until something new is seen.
+function M.ReopenFind(frame)
+    foeFound, mode, reopenFrame = false, "find", frame
+    sectorOf, cornerDone = {}, {}
+    if sectors then
+        for _, s in pairs(sectors) do
+            if not s.lastScouted or frame - s.lastScouted > M.SECTOR_FRESH then s.lastScouted = 0 end
+        end
+    end
+    Spring.Echo(string.format("[SP] enemy lost at frame %d, searching the whole map", frame))
 end
 
 -- Picket posts spread evenly across the arc of the ring that faces the enemy.

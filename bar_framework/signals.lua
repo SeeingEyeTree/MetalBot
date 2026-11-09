@@ -114,6 +114,15 @@ M.list = {
           if ar and ar.rush and ar.frame then last = math.max(last, ar.frame) end
           return ((s.frame or 0) - last) / 30
       end },
+    -- area_defence (user 2026-11-08: "some signal for if more units need to be built to defend ... it could stop unit production for 20 sec to sneak out
+    -- some eco"): built cover = the units on a threat + free units that reach its post in time, no new production.  nil without AREA_DEFENCE.
+    { "def_threats",     "number", "enemy ground groups area_defence is covering", "", function(s) return s.defence and s.defence.threats end },
+    { "def_margin",      "number", "the worst threat's built cover / need (99 with no threats)", "", function(s) return s.defence and s.defence.margin end },
+    { "def_need_units",  "bool",   "the units we have cannot cover a threat (margin < 1), or bombers come while the base AA is short", "",
+      function(s) return s.defence and s.defence.needUnits end },
+    { "def_covered",     "bool",   "every threat is covered by built units with room to spare (margin >= BURST_MARGIN) and no unit is needed", "",
+      function(s) return s.defence and s.defence.covered end },
+    { "def_cover_s",     "number", "seconds def_covered has held", "s", function(s) return s.defence and s.defence.coverS end },
     { "hunt",            "bool",   "the game is won; bombers hunt the commander", "", function(s) return s.hunt end },
     -- army mode (unit_runtime ArmyMode, published as mb.pushMode)
     { "push_mode",       "string", "army mode of a defend plan: defend | push | raid", "", function(s) return s.pushMode end },

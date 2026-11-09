@@ -77,9 +77,28 @@ function M.Install(X)
     X.NcPendingRows = PendingRows
 
     local function CheckBlocks(T, nc)
+        -- CAP_MODE (bar_framework/cap_mode.lua, user 2026-11-08): at the unit cap nothing lost is rebuilt -- the slots go to Dragons and the proxy
+        local cm = T.WG and T.WG.CapMode
+        if cm and cm.on then return end
         local nBlk, nRow = 0, 0
+        local nurseries = X.NcNurseryCount(nc)
         for _, b in pairs(nc.blocks) do
             local kind = StandingKind(b)
+            -- a nursery the sink no longer needs (more of them than nc.nurseryWant): once its nanos are all gone it becomes a mex block on its build
+            -- front (retrofitted later like any other); until then it is not rebuilt
+            if kind == "nursery" and nurseries > (nc.nurseryWant or 0) then
+                local items = nc.L.BlockItems("nursery", b.j, b.r)
+                if Missing(nc, "nursery", b.j, b.r) >= #items then
+                    local f = nc.fk["build:" .. b.j .. ":" .. (b.r >= 0 and 1 or -1)]
+                    if f then
+                        b.kind, b.state, b.recovered = "mex", "redo", nil
+                        InsertByRow(f.redo, b, b.r)
+                        nurseries = nurseries - 1
+                        Echo(T, "nursery %d:%d is empty and no longer needed -- it becomes a mex block", b.j, b.r)
+                    end
+                end
+                kind = nil
+            end
             if kind then
                 local miss = Missing(nc, kind, b.j, b.r)
                 if miss > 0 then
@@ -117,6 +136,8 @@ function M.Install(X)
                         local b = X.NcBlock(nc, br.j, br.r)
                         if nc.L.RowOK(br.r) and not (b and (b.state == "final" or (b.state == "t1done" and b.kind == "lab"))) then useful = true; break end
                     end
+                    -- a fill row is rebuilt while the sink wants nanos to fly (sink_lift.lua SINK_NURSERY = "rows"): it is the nursery
+                    if not useful and nc.fillRows and nc.fillRows[key] and (nc.nurseryRowsWant or 0) > 0 then useful = true end
                     local f = nc.fk["nano:" .. i .. ":" .. (q >= 0 and 1 or -1)]
                     if useful and f then
                         nc.rows[key] = nil
