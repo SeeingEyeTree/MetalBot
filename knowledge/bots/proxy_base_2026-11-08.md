@@ -211,3 +211,112 @@ No T2 bot lab and no T2 bot block con; the T3 lab is an `AIR_LABS` lab (a T2 air
 - Spare main-base Tzars could be flown to the proxy's walls (air_lift already lifts Tzars).
 - The proxy's own statics are the only static defence; the main base's construction squad is still a stub.
 - `[LRPC]` targeting and kill confirmation have not fired in a real game yet.
+
+## Round 5 (2026-11-09, eco_sim only)
+- **Labs in a row.** In game 12 the bot lab blocked the T2 lab's exit, so no Tzars came out and no new T2 cons were made. Now the T2 vehicle, bot and air labs stand in a row beside the T1 lab, across its exit (same facing, `LAB_GAP` 240). No building may stand in any proxy lab's exit lane (`InExit` checks every lab, the T3 labs included).
+- **T3 lab con fallback.** Block 2's T3 lab was never built. If no group has a spare T2 con, any T2 con with no item in a gun or group role becomes the T3 lab's builder.
+- **eco_sim** (seed 1, 28 min, enemyBP patch): 0 Lua errors.
+  - The labs went up side by side at 11648, z 6560 / 7040 (T1) / 7520 / 8240.
+  - T3 lab 1 was up at 16:39 and T3 lab 2 at 22:39; block 3 was planned at 25:54.
+  - 15 Basilisks, 192 of 196 T3 nanos.
+
+## Round 6 (2026-11-09): hot spots, the perimeter group, Behemoth exits, 5 Scorpions
+The user, with a picture of the proxy's static all on one side of the fight: "if it tries to place a building and it dies twice it should pull back a little bit and build perscuters insted of scorpians. It also needs to build static to cover the whole permiter ... it should slowlly create a group to build along the whole perimiter, make sure it would inclused the planed buildings, the extra t3 labs and calamites ... lower the threshold to 5 scorpians ... make sure there is a t2 lab sized hole for them to walk out of."
+- **Hot spots** (`crew.lua` `Fail`, `HOT_*`, `PULL`). Front static attempts are counted as lost when their frame is killed, or when the group's con dies while on them, once per item. Two losses within `HOT_R` 300 make a hot spot, which lasts `HOT_S` 360 s:
+  - No grid spot is used within 300 across the enemy axis of it, from `PULL` 300 behind it outward.
+  - One Persecutor goes in 300 back toward the lab (static_group: right after the radars).
+  - No Scorpions are built while any spot is hot.
+  - Logged as `[PROXY] crew: HOT spot`.
+- **Scorpions:** 5 before Persecutor / Bulwark (was 10).
+- **Perimeter group** (role `gp`, `PERIM_T2` 2 + `PERIM_T1` 4). It starts once group 1 is full, or 4 min after group 1, or with group 2. Its ring:
+  - It wraps everything the proxy has, except the front grid, plus the planned T3 blocks and Calamity blocks. The ring is a support-function envelope round discs, `PERIM_PAD` 300 out, with a slot every `PERIM_STEP` 380.
+  - It builds the same mix as the front groups at the slot farthest from any defence of the same class (ground / AA).
+  - Once every slot has one within 0.6 × step, it builds on the front grid instead.
+  - Its items are flagged `perim` and do not count toward `CR.Front`.
+- **Planned ahead** (`Replan`, every 2 min once T3 block 1 is placed). It reserves every T3 block still to come (up to `T3_MAX`) and `PLAN_BLOCKS` 2 Calamity blocks:
+  - `Reserved` keeps other buildings out of them, the perimeter wraps them, and `T3Plan` / `AddBlock` use the planned spot when it is still clear.
+  - `LB.Centre` now also tries farther out and farther back (eco_sim: a proxy by the map's east edge had no room for its first Calamity block, in round 5 as well).
+- **Behemoth exit.** A T3 lab's lane, planned ones included, is `EXIT_LEN_T3` 3000 long and ±130 wide. Nothing is placed in it, and a Calamity block may not touch it.
+  - A new T3 block prefers a spot whose lane is clear of what already stands out to 1400 (`T3_LANE_CHECK`); without one it is placed as before.
+- **eco_sim** (seed 1, 28 min, enemyBP patch): 0 Lua errors.
+  - T3 labs were up at 17:04 and 23:30; the third was placed at 26:42.
+  - At 14:29 two T3 blocks and two Calamity blocks were planned ahead; Calamity block 1 was placed on its planned spot at 27:15.
+  - The perimeter group started at 15:27; by 27:22 it had 7 standing on a 29-slot ring.
+  - Income at 20:00 was 2425 m/s (round 5: 2203).
+- **Game 13** (standard spawns, 30 min vs CORE_v4_022f31f): **won**, the enemy commander killed by a Dragon at 25:56. The proxy (lab 11648,6784, up 12:28) stood to the end, but it was contested hard:
+  - Lost: 20 front static attempts, the T2 lab once (rebuilt, up 22:25), a T3 lab frame, 37 T3 nanos and 4 Basilisks. One T3 lab up, at 21:09.
+  - Six hot spots fired; the pull-back Persecutors were placed.
+  - **The perimeter failed.** The second planned Calamity block was 3300 from the lab, the ring reached out there, and the perimeter cons died on the way (one hot spot was at 8344,3941). 0 perimeter defences stood at 26:00.
+  - Fixed: blocks are planned only within `PLAN_R` 2400 of the lab (the limit is inside the room test, so a nearer spot is taken). A perimeter slot is skipped while hot, and scores its gap − `PERIM_NEAR_W` 0.3 × its distance from the lab, so the near holes go first.
+  - eco_sim after the fix: 3 T3 blocks planned near, at 14:29, and all built on their planned spots; T3 labs up at 17:14 and 23:07; Calamity block 1 at 26:41 (no near room left to plan it); perimeter 8 standing on 28 slots; 0 Lua errors.
+- **Spawn variations** (30 min vs CORE_v4_022f31f; where the proxy went):
+
+| Game | Spawns | Proxy spot | Result |
+|---|---|---|---|
+| 14 | close | 11648,9088 (east edge) | Won (Dragon, 24:58). The con was shot down 3 times before landing, so the lab went up only at 18:09. The T2 lab frame was killed 6 times on one spot and never stood. |
+| 15 | swapped corners | 11648,6016 (east edge) | Won (Dragon, ~27:00). The proxy held: 2 T3 labs, 8 Basilisks, 2 hot spots. |
+| 16 | left vs right | 11648,2688 (east edge, north) | Won (Dragon, ~28:08). The proxy held: T2 lab 15:19, 2 T3 labs, 10 Basilisks, 8 hot spots, 17 grid Twin Guards lost. |
+| 17 | top vs bottom | 2432,11648 (south edge, west) | Won (Reaper, 20:20). No T2 lab yet, 2 hot spots. |
+
+  Fixed after game 14: a lab frame killed twice on one spot gives that spot up (`labLost`), and the row's next spot is used.
+
+## Round 7 (2026-11-09): static slots, more AA, the labs blueprint, 3 cons in the convoy
+User: "add more aa in the static grid. I like the idea it works like the line with slots and you just fill the slots ... If cons are dying to air it should build more aa, it should also fill in a whole row before going to the next one. For the labs build you can just use the blue print I uploaded". Then, mid-change: "The con that builds the lab does not seem to move with the main convy. Also bring 3".
+- **Slots.** The static grid is a fixed list of slots, computed once per proxy spot (`Slots`):
+  - Rows run across the enemy axis, `GRID` 130 apart from `SLOT_F0` 300 out to 2400, each `GRID` wide out to `GRID_LAT` 900 on each side.
+  - The order is a snake: odd rows left to right, even rows right to left.
+  - Every grid kind takes the first free slot within its own reach (`f1`), so a row fills before the next starts and the cons walk along a row. This covers the T1 Twin Guards, Thistles and nanos and the T2 Scorpions, Persecutors, Bulwarks, Birdshots and Screamers.
+  - A slot whose ground is blocked is looked at again after a minute. Hot spots, exit lanes, reserved blocks and the labs blueprint are skipped.
+  - The crew summary logs `N slot rows full`.
+- **AA.** One per `AA_EVERY` 3 ground defences (was 5). The crew counts losses to air (`CR.OnDestroyed` now gets the attacker's def). When air has killed `AIR_LOSSES` 2 of its cons or buildings within `AIR_WINDOW_S` 180, the rule is one AA per ground defence plus one.
+- **Labs blueprint** (`blueprints/general/proxy_labs.lua`, the user's second, ring version):
+  - The T2 vehicle lab, air lab and bot lab stand in a column with exits on +x and 14 nanos round them. The core list's nanos fill those 14 spots (`nano2` n = 14).
+  - The block is turned to the T1 lab's facing, with the T1 lab at one end of the column, then slid along it until it clears what stands round the T1 lab (the convoy's ring of nanos), nearest first. Every blueprint nano reaches every blueprint lab (at most 347 apart; nano range is 400).
+  - The air lab keeps its drawn orientation (air units need no exit). The blueprint is reserved from the first crew tick. With no room for it, the old row is used.
+- **3 ground cons in the convoy** (`GROUND_CONS` 3, CORE_v4). In game 14 the one con was shot down at the rally point, and each replacement was borrowed after the convoy had gone and flew in alone (3 lost; lab at 18:09).
+  - Now 3 are borrowed and all ride in the one wave; sink_lift waits up to `CARRY_WAIT_S` 90 for them once its nanos are ready (site `carryWant`).
+  - The first con down places the jammer and the lab, and the others guard it. If it dies, the next landed con takes over. All of them join the crew when the lab stands.
+- **eco_sim** (seed 1): 0 Lua errors. The convoy carried 11 transports (8 nanos + 3 cons), GO was at 12:01, all 3 cons landed at 12:46-47, and the lab was up at 12:57.
+  - The blueprint went at 11560,7472, with the T1 lab at its air lab's end, facing west. The T2 lab was up at 15:12; T3 labs were placed at 16:07, 21:06 and 27:30.
+  - Income at 20:00 was 3062 m/s.
+- **Is the army pulled in given to area_defence? No.** The proxy groups stay click_army groups (state "proxy": clear the spot, then hold a MOVE line `PROXY_LINE_OUT` + the static's front out). area_defence's borrowed-army pool skips units in click_army groups (`CA.InGroup`). Its proxy area has its own walls (Pounders and Tzars from the proxy labs) and 1/3 of the air squad. Its margin does not count the proxy groups, so a short margin pulls in MORE groups (`ProxyMore`).
+- **Game 18 vs DEFENCE_BOT** (standard spawns, 30 min, single): **won**, our Dragon killed its commander at 29:22. This is the first win over DEFENCE_BOT; before it was 0 won, 1 drawn, the rest lost.
+  - DEFENCE_BOT out-earned us until 25:00 (8.3k vs 6.9k m/s), then its income fell to 4.5k and its army from 2.28M to 1.61M by 29:00.
+  - The proxy went at 5504,11648 (south edge). It was weak:
+    - The wave left with 1 of 3 cons (no free spine con 8:00-11:30), and that con died landing. The late ones flew alone and 3 died, so the lab went up only at 16:06.
+    - Air killed cons (`air hot` from 17:50, so AA went up). The T2 lab was up at 20:58.
+    - 1 T3 lab with 96 nanos, 5 Basilisks, 9 `[JUGG]` rows. LRPC: kills confirmed by wreck 2, dot gone 3, seen 1.
+    - The labs blueprint was placed (T1 lab at its bot lab's end, facing north).
+  - Fixed after it: the borrow may take a con off a nano block job (`allowBlock`). When still short, the proxy asks the labs for T1 vehicle cons (lab_orders `proxy:cons`, high tier). eco_sim: all 3 cons by 8:25 (two made on request), 11 transports, GO 11:13, all 3 landed, proxy lab 11:47 (earliest yet), T2 lab 13:59, T3 labs 16:30 and 22:41.
+
+## Round 8 (2026-11-09): fighters and flak at the proxy
+User, after game 18: "keep some figs closer to the proxy base. Have the figs with the convy stay around the base. You can just pull them from the main base. It does not need to keep them all. Keep figs at the proxy to defend and send more as needed, the aa helps but it can't be there at the start. You could also just have the t2 lab make flack if needed."
+- **PROXY GUARD** (`air_wing.lua`, `PROXY_*`; unit_runtime passes `proxy = WG.ProxyBase`). It starts once the convoy is down (GO given and the con / lab there).
+  - `PROXY_FIGHTERS` 6 wing fighters FIGHT round the proxy: 4 points `PROXY_ORBIT` 450 out, moving on every 10 s. The nearest are picked first, so the escort stays; the guard is sticky.
+  - More come while enemy armed air is seen within `PROXY_AIR_R` 2500 of the proxy (`PROXY_AIR_MARGIN` 1.5 × its value, in fighters of the wing's average value). The guard doubles while the crew is losing to air (`WG.ProxyBase.airHot`). At most `PROXY_FIGHTERS_MAX` 20.
+  - The rest of the wing hunts, strikes or waits as before. `[AW] PROXY GUARD` rows.
+- **Flak trucks.** While the crew is losing to air (`AirHot`), the proxy T2 lab makes flak trucks (`aa_flak_truck`, up to `FLAK_TRUCKS` 6 standing) ahead of cons and Tzars. The unit side holds them in a ring 350 round the proxy (role `PROXY_AA`, RAID priority).
+- eco_sim: the escort ended at 11:33 and its 6 fighters became the guard. 0 Lua errors.
+- **Guard, revised** (user: "You need way more than 6 fighters. All the ones that came with the escort should stay. You want to keep them around the ring not circleling around"):
+  - Every escort fighter stays; the escort is all the wing's fighters. The guard is at least `PROXY_FIGHTERS` 20, plus `PROXY_FIGHTERS` more while losing to air, and more for enemy air seen near the proxy. The cap is `PROXY_FIGHTERS_MAX` 60, or the escort's size if that is larger.
+  - Each fighter holds its own fixed post, evenly round a ring `PROXY_ORBIT` 700 from the proxy, by uid order. It FIGHTs at its post: no circling.
+  - eco_sim: the escort ended at 11:33 and all 25 of its fighters stayed.
+- **Game 19 vs DEFENCE_BOT** (it ran the 6-fighter circling guard, before the revision): **won**, our Dragon killed its commander at 27:55.
+  - The 3-con convoy worked: all 3 cons by 8:25, 11 transports, GO 11:44, all 3 landed (12:03-12:09), proxy lab 12:22 (game 18: 16:06).
+  - The guard grew and shrank with the enemy air seen (6-20 fighters).
+  - **The proxy never got a T2 lab.** The blueprint's T2 lab spot became unbuildable (a bad cell, or something built there) and `Spot` returned nothing, with no fallback. The crew sat on T1 static all game (40 Twin Guards, 32 front attempts lost, 6 hot spots).
+  - Fixed: a blueprint lab spot that cannot be used falls back to the row beside the T1 lab (logged once a minute).
+- **Keep the blueprint's ground clear** (user, during game 20: "The t2 lab did not get built since there were units in the way and twin gaurds were built in it spot. Make sure you keep the area for buildings clear"). Game 20 was stopped and rerun after these fixes:
+  - `Reserved` checks `InBP` (1.5 × each lab's half-size, plus the nano spots), so every placement path keeps off the blueprint's unbuilt spots. That includes defense_crew's last-resort ring search, which had no blueprint check; that hole is the likely way Twin Guards got onto the T2 lab spot.
+  - **The yard** (`ClearYard`, every 3 s): our ground units on a blueprint spot with no frame yet get a MOVE out of it, except that spot's builder. eco_sim: 38 moved at landing, then a few a minute.
+  - `WG.ProxyBase.keepOut` lists the unbuilt lab spots. The proxy's flak-truck ring and the sink lift's top-up nanos (site `keepOut`) avoid them; the lift's nanos had stood on the air lab's spot.
+  - **The grid.** The blueprint's origin is now snapped to the 16-elmo build grid. The T1 lab is 0 mod 16 and the column 8 mod 16, so the whole block had sat 8 off the grid; each piece snapped its own way and the blueprint's own nanos took the air lab's ground.
+  - eco_sim: the T2 lab (13:31), bot lab and air lab (19:30) all stood on their blueprint spots. 0 Lua errors.
+- **Game 20 vs DEFENCE_BOT** (rerun after the yard fixes): **won**, our Dragon killed its commander at 29:43, the third win in a row over DEFENCE_BOT.
+  - GO 11:11, all 3 cons landed, and all 32 escort fighters stayed at the proxy. Proxy lab 11:53.
+  - The T2 lab went up on its blueprint spot at 13:28. The bot lab's spot was blocked, so it took the row; the air lab stood.
+  - By 29:00: 2 T3 labs, 12 Basilisks, 4 hot spots, only 12 front attempts lost.
+  - **The guard wore down:** DEFENCE_BOT's air (3-6k value near the proxy) took it from 32 to 3-10, and nothing replaced the losses.
+- Fixed after game 20:
+  - **Guard replacements.** The guard asks the labs (lab_orders `proxy:fighters`, high tier, `fighter_t2` then `fighter_t1`) for its shortfall against its strength at landing, or what the enemy air there needs, whichever is more (`[AW] PROXY GUARD short` rows).
+  - **The proxy groups' MOVE line** (click_army PROXY) is pushed out of `WG.ProxyBase.keepOut`. The line's Incisors stood on the blueprint's bot lab spot and walked back after every yard sweep. eco_sim: the bot lab went up on its spot at 12:50.

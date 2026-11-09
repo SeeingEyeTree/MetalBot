@@ -2020,6 +2020,17 @@ local function UpdateHold(frame, g, list)
         local off = (col - (inRow - 1) / 2) * CFG.PROXY_SPACING
         local out = out0 - row * CFG.PROXY_SPACING
         local x, z = MM.Clamp(h.x + ax * out + px * off, h.z + az * out + pz * off, CFG.MARGIN)
+        -- (off the proxy's building spots, WG.ProxyBase.keepOut: pushed out of each circle -- eco_sim 2026-11-09, the line stood on the labs blueprint's
+        -- bot lab spot and the lab was never built there; user: "keep the area for buildings clear")
+        local PB = WG and WG.ProxyBase
+        for _, c in ipairs(PB and PB.keepOut or {}) do
+            local dx, dz = x - c.x, z - c.z
+            local d = math.sqrt(dx * dx + dz * dz)
+            if d < c.r + 40 then
+                if d < 1 then dx, dz, d = ax, az, 1 end
+                x, z = c.x + dx / d * (c.r + 40), c.z + dz / d * (c.r + 40)
+            end
+        end
         Claim(frame, u.uid, CMD_MOVE, x, z)
     end
 end

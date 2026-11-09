@@ -51,6 +51,24 @@ MetalBot is an AI bot for the RTS game Beyond All Reason (BAR), implemented as S
 - **Games:** all won; game 11's enemy commander was killed by a proxy Behemoth.
 - **Notes:** `knowledge/bots/proxy_base_2026-11-08.md` (round 4).
 
+**2026-11-09 (later): the proxy base made stable; `candidates/CORE_v4_proxy` = CORE_v4 frozen here** (the 3 controller files, like `CORE_v4_022f31f`: the config is pinned, the shared `bar_framework` is not).
+- **Labs:**
+  - **Proxy labs** come from the user's blueprint `blueprints/general/proxy_labs.lua`: a column of T2 vehicle, air and bot labs with 14 nanos round it, turned to the T1 lab's facing and snapped to the 16-elmo grid.
+  - **Keeping the spots clear:** every placement path skips the blueprint's spots. A yard sweep moves our units off them, and the proxy line, flak trucks and lifted nanos stay out (`WG.ProxyBase.keepOut`).
+  - **Fallback:** a lab spot that can't be built on falls back to a row beside the T1 lab.
+- **Static:**
+  - **Slots:** the static is a grid of slots filled one row at a time.
+  - **Hot spots:** static lost twice in one place means pull back and build a Persecutor there; no Scorpions while a spot is hot.
+  - **Mix:** 5 Scorpions, then Persecutor / Bulwark. AA is 1 per 3 ground defences, rising to 1 per ground defence while air kills the crew.
+  - **Perimeter group:** a ring round everything the proxy has or plans (T3 blocks and Calamity blocks planned ahead within 2400).
+- **T3 labs:** their exit lanes are 3000 long.
+- **Landing:** 3 ground cons ride in the convoy; the labs make them if the spine has none.
+- **Air at the proxy:**
+  - **Fighter guard:** all the escort's fighters stay at the proxy on fixed posts round a 700 ring (at least 20). The guard asks the labs for replacements.
+  - **Flak:** the proxy T2 lab makes flak trucks while air is killing its cons.
+- **Games:** vs CORE_v4_022f31f, 5 spawn layouts (standard, close, swapped corners, left / right, top / bottom), all won; the proxy always went on a map edge about 4k from the enemy's build power. **Vs DEFENCE_BOT: 4 of 4 won** (games 18-21; before this it was never beaten).
+- **Notes:** `knowledge/bots/proxy_base_2026-11-08.md` (rounds 5-8).
+
 **2026-10-30 (superseded 10-31 for the army: machine, stances, support): `candidates/CORE_v4` is the main CORE** (`deploy.ps1` and `eco_sim.py` default to it): CORE_ROWS_ECO + support elements + the nano-column block (`NANO_COLS`, instead of the mex grids; second spine off), run by the raid-only machine `machines/v4_raid.lua` (T1_raid -> T1_5_raid -> t2_raid -> t3_late; raid_response still answers raids at home; T1_5_raid / t2_raid / t3_late give every group spam + scout support elements). `candidates/CORE_v4_ECO` = CORE_v4 at 0% army (pure-eco tests). **Default spawns are now `2816,1904;9472,10384`** (~400 elmos further in, so the block's 3 columns fit; `ecosim/physics.lua` START matches). **A game vs INACTIVE_BOT defaults to** `--server single`, 20 min, a replay and `METALBOT_DEATHMODE=neverend` (the army killed the idle commander at 11:50 otherwise; the match now quits cleanly after the score). `candidates/CORE_ROWS_ECO` is the OLD eco-rows baseline restored from commit d4f046a (grids, second spine, no support), with its machine `machines/rows_eco_legacy.lua`; it and RAID_BOT use stances from `stances/legacy/` (the user dropped them from the main list). The harness now copies `machines/` and `stances/` (recursively) into each match. Notes: `knowledge/bots/nano_cols_2026-10-30.md`.
 
 **2026-10-28: `candidates/CORE_ROWS_ECO` is the main CORE** (user, after a game where it beat him: it out-spent him 1.2x at 10:00 and 2.1x at 20:00); `deploy.ps1` and `eco_sim.py` default to it. New strategies are variants of it (config only, as for CORE). `candidates/CORE` stays as the older baseline (`order_check.py` still runs it). What it adds over CORE: rows that scale with cons (`SCALE_ROWS`), the air lab gated on income (`AIR_LAB_INCOME` 110 m/s from 5:00) or a float, a second spine behind the line started by line cons that finish a lane (`SECOND_SPINE`, `line_transition/spine2.lua`, `spine_set.lua`), `BLOCK_LAB_NANOS` 4 (a lab in a block per 4 nanos), `GUARD_NANOS` false (spine nanos never guard a lab, only park), and the `rows_default` machine (its `t1_push` node uses `raid_start`). `METALBOT_STARTPOS=close` = close positions. 2026-10-26: `candidates/CORE` was the baseline (README.md explains it and how to swap strategies). The v16 notes below are history.

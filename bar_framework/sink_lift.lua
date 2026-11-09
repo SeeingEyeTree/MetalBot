@@ -48,7 +48,8 @@ local nurseryShortF = -1e9 -- last frame the block could not fill a flight (SINK
 local lastShort = nil      -- the short sites of the last Fill pass: { {site, n} } (the transport pool is sized from it)
 local noCarryLogged = false
 local convoys = {}         -- [site key] = { state, tids = { tid, ... }, f, rx, rz, tx, tz, routeF }
-local CONVOY = { LOAD_S = 60, RALLY_D = 2500, RALLY_R = 450, RALLY_S = 150, ROUTE_WAIT_S = 45, TIMEOUT_S = 300, PICK_S = 60 }
+local CONVOY = { LOAD_S = 60, RALLY_D = 2500, RALLY_R = 450, RALLY_S = 150, ROUTE_WAIT_S = 45, TIMEOUT_S = 300, PICK_S = 60, CARRY_WAIT_S = 90 }
+local carryWaitF = {}      -- [site key] = the frame its nanos were ready while its cons were not all there
 local convoyGoF = {}       -- [site key] = the frame the site went `go` (a convoy leaves with all the nanos it wants; with what it has only PICK_S after go:
                            -- game 1, 2026-11-08, waves of 2 left during the beachhead)
 
@@ -125,7 +126,11 @@ local function FreeSlot(site)
     local nd = NanoDef()
     for k, p in ipairs(S.list) do
         local u = S.used[k]
-        if not (u and items[u] and items[u].site == site.key) then
+        local kept = false                                             -- (the site's keepOut: the proxy's labs blueprint spots -- eco_sim 2026-11-09, the
+        for _, c in ipairs(site.keepOut or {}) do                      -- lift's top-up nanos stood on the air lab's spot)
+            if (c.x - p.x) ^ 2 + (c.z - p.z) ^ 2 < (c.r + 24) ^ 2 then kept = true; break end
+        end
+        if not kept and not (u and items[u] and items[u].site == site.key) then
             local y = Spring.GetGroundHeight(p.x, p.z) or 0
             local t = nd and Spring.TestBuildOrder(nd.id, p.x, y, p.z, 0)
             if t and t > 0 then return k, p end
@@ -550,6 +555,12 @@ function M.Convoys(frame, byKey)
         local carryN = 0
         for _, it in ipairs(list) do if it.kind == "unit" then carryN = carryN + 1 end end
         local full = site and #list - carryN >= Want(site) - placed and carryN >= #(site.carry or {}) or false
+        -- (the site's carryWant: all its cons ride in this wave -- user 2026-11-09, "bring 3 just so if one gets shot down it is not stop the whole thing" --
+        -- waited for up to CARRY_WAIT_S once the nanos are ready)
+        if full and site.carryWant and carryN < site.carryWant then
+            carryWaitF[key] = carryWaitF[key] or frame
+            if frame - carryWaitF[key] < CONVOY.CARRY_WAIT_S * 30 then full = false end
+        end
         local late = convoyGoF[key] and frame - convoyGoF[key] >= CONVOY.PICK_S * 30
         local n = (full and #idle >= #list) and #list or (late and math.min(#list, #idle)) or 0
         if site and site.convoy and n > 0 then

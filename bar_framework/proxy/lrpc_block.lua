@@ -70,10 +70,14 @@ function M.Centre(S, i, ok)
     local ax, az = S.ax or 1, S.az or 0
     local px, pz = -az, ax
     local cands = {}
-    for _, side in ipairs({ 1, -1 }) do
-        for _, back in ipairs({ 0.15, 0.5 }) do
-            local d = M.BLOCK_D + (i - 1) * M.NEXT_D
-            cands[#cands + 1] = { S.x + side * px * d - ax * M.BLOCK_D * back, S.z + side * pz * d - az * M.BLOCK_D * back }
+    -- (further out along that line and further back as well: eco_sim 2026-11-09, a proxy by the map's edge with its T3 blocks beside it had no room for
+    -- the first block at the two nearest spots)
+    for e = 0, 4 do
+        for _, side in ipairs({ 1, -1 }) do
+            for _, back in ipairs(e == 0 and { 0.15, 0.5 } or { 0.15, 0.5, 1.0 }) do
+                local d = M.BLOCK_D + (i - 1) * M.NEXT_D + e * M.NEXT_D / 2
+                cands[#cands + 1] = { S.x + side * px * d - ax * M.BLOCK_D * back, S.z + side * pz * d - az * M.BLOCK_D * back }
+            end
         end
     end
     for k = 1, 3 do

@@ -6,6 +6,7 @@
 --
 --   local T3B = VFS.Include("LuaUI/Widgets/bar_framework/proxy/t3_block.lua")
 --   T3B.Place(S, labDef, nanoDef, clear) -> { x, z, facing, nanos = { {x, z}, ... } } | nil   (clear(x, z, r) -> bool: nothing of ours planned there)
+--   T3B.Facing(S) -> the facing a T3 lab gets (its exit toward the enemy)
 
 local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")
 
@@ -35,14 +36,20 @@ local function Rot(x, z, k)
     return x, z
 end
 
+-- the exit (facing) that points most at the enemy
+function M.Facing(S)
+    local ax, az = S.ax or 1, S.az or 0
+    local dirs = { [0] = { 0, 1 }, [1] = { 1, 0 }, [2] = { 0, -1 }, [3] = { -1, 0 } }
+    local facing, best = 1, -2
+    for f = 0, 3 do local d = dirs[f][1] * ax + dirs[f][2] * az; if d > best then facing, best = f, d end end
+    return facing
+end
+
 function M.Place(S, labDef, nanoDef, clear)
     local L = Layout()
     if not (labDef and nanoDef and #L.nanos > 0) then return nil end
     local ax, az = S.ax or 1, S.az or 0
-    -- the exit (facing) that points most at the enemy
-    local dirs = { [0] = { 0, 1 }, [1] = { 1, 0 }, [2] = { 0, -1 }, [3] = { -1, 0 } }
-    local facing, best = 1, -2
-    for f = 0, 3 do local d = dirs[f][1] * ax + dirs[f][2] * az; if d > best then facing, best = f, d end end
+    local facing = M.Facing(S)
     local k = (facing - 1) % 4
     local px, pz = -az, ax
     local cands = {}

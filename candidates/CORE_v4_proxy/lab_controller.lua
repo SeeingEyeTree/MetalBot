@@ -1,0 +1,41 @@
+-- lab_controller.lua -- CORE: the configuration-driven bot (2026-10-16).
+-- The lab rules are bar_framework/lab_rules.lua (RAID_BOT's, unchanged); the overrides below are the only difference from it.
+-- An empty table is RAID_BOT.  Tunables and tables you can override: the header of lab_rules.lua (M.TUNABLES).
+
+function widget:GetInfo()
+    return {
+        name    = "Lab Controller",
+        desc    = "CORE: queue-based lab manager (bar_framework/lab_rules.lua)",
+        author  = "",
+        date    = "2026",
+        license = "GNU GPL, v3 or later",
+        layer   = 0,
+        enabled = true
+    }
+end
+
+local LAB = VFS.Include("LuaUI/Widgets/bar_framework/lab_rules.lua")
+
+LAB.Install(widget, WG, {
+    REZ_START_FRAME = 8 * 60 * 30,    -- rez floor (user 2026-10-25): the line's T1 bot lab (REZ_LAB) makes rez bots from 8:00 ...
+    REZ_BASE = 4, REZ_MAX = 100,      -- ... keeping at least 4 alive (more with the army).  2026-10-25 eco_sim (6 seeds): 3:00 / 8 cost 13% income at 10:00
+    -- user 2026-10-31: above the floor, rez bots follow the work (rez_broker Demand: wreck metal + missing army hp), up to 100, at most one per 8 m/s
+    -- of income, from the starter bot lab too (between its cons) and before 8:00 when there is reclaim near the base (REZ_DEMAND, REZ_INCOME_PER_BOT)
+    AIR_SCOUTS_EARLY = 0,         -- user 2026-10-27: the air lab comes at 5:30, so the first scouts are six GROUND scouts (corfav) from the vehicle plant (unit_controller MECH.FIND_SCOUTS = 6)
+    SCOUTS_FIRST = 6,             -- user 2026-10-27: the first six units out of the vehicle plant are ground scouts (inserted at the head of its queue)
+    ARMY_QUEUE_MIN = 2,           -- user 2026-10-27: every army lab keeps at least two units queued (nanos waited for the next order between units)
+    SPINE_CON_FIRST = true,       -- the spine's first ground con goes ahead of the defence picks
+    BUDGET_FREE_BANK = 800,       -- a metal bank over 800 lifts the army budget (labs were idle with a 2k bank)
+    AA_STANDING = 3, AA_STANDING_FRAME = 5 * 60 * 30,   -- user 2026-10-30: three ground AA at home from 5:00 (all labs were uncovered at 8:00); army groups opt in to AA through unit_controller SUPPORT
+    SCOUT_LAB_DEPTH = 2,          -- SCOUT WING: each scout lab keeps two scouts queued while the wing is short (lab_rules "scout-lab")
+    AIR_PRESSURE_FIGHTERS = 6,    -- user 2026-10-31: 6 more fighters while enemy air-to-ground units are near a raid group (mb.raidAir, click_army AirPressure; DEFENCE_BOT's air)
+    -- user 2026-11-01 (the "spine API"): support elements are ordered through bar_framework/lab_orders.lua at the high tier (ahead of the stance loop, paused while a raid
+    -- group is at the spine) instead of group-support / support-rush; PENDING_FIRST: an "ahead" want is not asked for a pick while its lab's pending gate is shut
+    SUPPORT_ORDERS = true, PENDING_FIRST = true,
+    -- user 2026-11-08: air on demand.  A T1 air lab joins the spine (after the first two vehicle plants) once the fighter / Shuriken floor has been short for 20 s;
+    -- Shurikens / Wasps also answer covered ground threats (cover_defence pushes them out, which is not a raid), as DEFENCE_BOT did
+    SPINE_AIR_LAB = true, COVER_AIR_RAID = true,
+    SINK = true,     -- sink labs make only the sink unit (a Dragon); the macro controller's SINK / SINK_UNIT must match
+    DECOY_FROM_SPINE = false,  -- user 2026-11-04: decoys come only from the sink's own decoy labs (metal_sink SINK_DECOY_LABS, lab_rules "decoy-lab")
+    AIR_AA_GATE = { MIN = 2000, RATIO = 1.0, STATIC_W = 0.25 },   -- user 2026-10-29 (BM_akumar6 game: 24% of metal into Shurikens / Wasps that died to flak + Hawks): none while the enemy AA is large
+})

@@ -59,6 +59,8 @@ M.CFG = {
     LAB_STUCK_S = 20,            -- ... a spot where the con's order made no frame for this long (at the spot) is given up for the next
     GROUND_CON = false,          -- the lab's builder: a ground con borrowed from the spine and flown in with the convoy (needs CONVOY; without it nothing
                                  -- builds the lab -- the air-con builder of the first versions is gone)
+    GROUND_CONS = 1,             -- ... this many ride in the convoy: the first one down places the jammer and the lab, the others help it and take over if it dies
+                                 -- (user 2026-11-09, game 14: the one con was shot down at the rally point and every replacement flew in alone)
     NO_ARMY_S  = 20,             -- no mb.proxyArmy this long after the start: no proxy army, go at once
     CREW       = nil,            -- the crew's options (proxy/crew.lua M.CFG); nil = no crew (the con only guards the lab)
     LAB        = "lab_t1_veh",   -- role of the lab it builds
@@ -102,7 +104,9 @@ local function Publish()
                        stage = S.stageX and { x = S.stageX, z = S.stageZ } or nil,
                        labs = labs, want = CR and CR.Wants() or nil,
                        static = CR and (CR.Standing("grid_pop") + CR.Standing("grid_arty") + CR.Standing("grid_bulwark")) or 0, lrpc = CR and CR.Standing("lrpc") or 0,
-                       calamity = CR and CR.Standing("calamity") or 0, front = CR and CR.Front(S) or 0 }
+                       calamity = CR and CR.Standing("calamity") or 0, front = CR and CR.Front(S) or 0,
+                       airHot = CR and CR.AirHot() or false,           -- (the crew losing to air: the unit side's fighter guard grows)
+                       keepOut = CR and CR.KeepOut() or nil }          -- (the labs blueprint's spots: the unit side parks nothing there)
 end
 
 -- the bad_trade rule (bar_framework/signals.lua) on the unit controller's trade summary
@@ -253,11 +257,13 @@ end
 -- the borrowed ground con goes back to the spine (one that landed is the crew's: CR.Release frees it)
 local function GiveBackGround()
     local T = E.trans and E.trans()
-    if S.gcon and T and T.CB and E.CB and E.CB.GiveBack then
-        if S.con == S.gcon then S.con = nil end
-        E.CB.GiveBack(T.CB, S.gcon, "proxy")
+    for _, u in ipairs(S.gcons or {}) do
+        if Alive(u) and T and T.CB and E.CB and E.CB.GiveBack then
+            if S.con == u then S.con = nil end
+            E.CB.GiveBack(T.CB, u, "proxy")
+        end
     end
-    S.gcon = nil
+    S.gcons = {}
 end
 
 -- GROUND_CON (game 3, 2026-11-08: the air cons flew the long edge route alone; the one that waited 2500 short of the spot was lost before GO and the next
@@ -265,56 +271,106 @@ end
 local function GroundCon(frame)
     if not (K.GROUND_CON and K.CONVOY) then return end
     local T = E.trans and E.trans()
-    -- the landed con died before the lab frame went up: another one is borrowed and flown in
+    S.gcons, S.landed = S.gcons or {}, S.landed or {}
+    -- the landed con died before the lab frame went up: the next landed one takes over, else more are flown in
     if S.gconLanded and not S.frameID and not S.labID and not (S.con and Alive(S.con)) then
-        S.gconLanded, S.gcon, S.con = nil, nil, nil
-        Spring.Echo(string.format("[PROXY] %s the proxy's con died before the lab went up: another one is flown in", Clock(frame)))
+        local nxt
+        for _, u in ipairs(S.landed) do if Alive(u) then nxt = u; break end end
+        if nxt then
+            S.con, S.conF, S.since = nxt, frame, frame
+            SendOpening(nxt)
+            Spring.Echo(string.format("[PROXY] %s the proxy's con died before the lab went up: landed con %d takes over", Clock(frame), nxt))
+        else
+            S.gconLanded, S.con, S.landed = nil, nil, {}
+            Spring.Echo(string.format("[PROXY] %s the proxy's cons died before the lab went up: more are flown in", Clock(frame)))
+        end
+    end
+    for i = #S.gcons, 1, -1 do
+        if not Alive(S.gcons[i]) then
+            table.remove(S.gcons, i)
+            Spring.Echo(string.format("[PROXY] %s a ground con died before it landed (%d still riding)", Clock(frame), #S.gcons))
+        end
+    end
+    -- landed: on the ground near the spot after GO
+    for i = #S.gcons, 1, -1 do
+        local u = S.gcons[i]
+        local x, _, z = Spring.GetUnitPosition(u)
+        local carried = Spring.GetUnitTransporter and Spring.GetUnitTransporter(u)
+        if x and not carried and S.go and (x - S.x) ^ 2 + (z - S.z) ^ 2 <= 500 * 500 then
+            table.remove(S.gcons, i)
+            S.landed[#S.landed + 1] = u
+            if not (S.con and Alive(S.con)) then
+                S.gconLanded, S.con, S.conF, S.since = true, u, frame, frame
+                SendOpening(S.con)
+                Spring.Echo(string.format("[PROXY] %s ground con %d landed with the convoy: it places the jammer and the lab", Clock(frame), S.con))
+            else
+                Spring.Echo(string.format("[PROXY] %s ground con %d landed with the convoy: it helps con %d", Clock(frame), u, S.con))
+            end
+        end
+    end
+    -- the other landed cons help the lab's con (they join the crew when the lab stands)
+    if not S.labID and S.con and Alive(S.con) then
+        for _, u in ipairs(S.landed) do
+            if u ~= S.con and Alive(u) then
+                local q = Spring.GetUnitCommands(u, 1)
+                local c = q and q[1]
+                if not (c and c.id == CMD_GUARD and c.params and c.params[1] == S.con) then Spring.GiveOrderToUnit(u, CMD_GUARD, { S.con }, {}) end
+            end
+        end
     end
     if S.gconLanded then return end
-    if S.gcon and not Alive(S.gcon) then
-        S.gcon = nil
-        Spring.Echo(string.format("[PROXY] %s the ground con died before it landed: another one is borrowed", Clock(frame)))
-    end
-    if S.gcon then
-        -- landed: it is the lab's builder now
-        local x, _, z = Spring.GetUnitPosition(S.gcon)
-        local carried = Spring.GetUnitTransporter and Spring.GetUnitTransporter(S.gcon)
-        if x and not carried and S.go and (x - S.x) ^ 2 + (z - S.z) ^ 2 <= 500 * 500 then
-            S.gconLanded, S.con, S.conF, S.since = true, S.gcon, frame, frame
-            SendOpening(S.con)
-            Spring.Echo(string.format("[PROXY] %s ground con %d landed with the convoy: it places the jammer and the lab", Clock(frame), S.con))
-        end
+    -- borrow up to GROUND_CONS (before the convoy forms they all ride in it); short: the labs make the rest (game 18, 2026-11-09: no free spine con
+    -- 8:00-11:30, the wave left with 1 of 3 and it was shot down landing)
+    local LO = E.WG and E.WG.LabOrders
+    if #S.gcons >= (K.GROUND_CONS or 1) then
+        if LO and LO.Drop then LO.Drop("proxy:cons") end
         return
+    end
+    local cd = UnitDefNames[ROLES.Get("con_t1_veh") or ""]
+    if LO and LO.Request and cd then
+        LO.Request("proxy:cons", { picks = { cd.name }, n = function() return (K.GROUND_CONS or 1) - #(S.gcons or {}) end, tier = "high", require = false })
     end
     -- (no air con as a fallback, user 2026-11-08: "air cons can be killed much more easily. Just don't use air cons": the borrow is retried)
     if frame - (S.gconTryF or -1e9) < 150 then return end
     S.gconTryF = frame
     local lab, td = LabDef(), UnitDefNames[ROLES.Get("transport_air") or ""]
-    local uid = T and T.CB and E.CB and E.CB.TakeAny and lab and E.CB.TakeAny(T.CB, "proxy", { defID = lab.id, kind = "ground", near = { S.x, S.z } })
-    if uid and td and not AT.CanCarry(td.id, Spring.GetUnitDefID(uid)) then
-        E.CB.GiveBack(T.CB, uid, "proxy")
-        Spring.Echo(string.format("[PROXY] %s the light transport cannot lift a %s: trying again", Clock(frame), (UnitDefs[Spring.GetUnitDefID(uid)] or {}).name or "?"))
-        uid = nil
-    end
-    if uid then
-        S.gcon = uid
+    while #S.gcons < (K.GROUND_CONS or 1) do
+        local uid = T and T.CB and E.CB and E.CB.TakeAny and lab and E.CB.TakeAny(T.CB, "proxy", { defID = lab.id, kind = "ground", near = { S.x, S.z },
+                                                                                   allowBlock = true })   -- (off a nano block's job too: game 18, 2026-11-09,
+                                                                                   -- no free spine con 8:00-11:30, so the wave left with 1 of 3)
+        if uid and td and not AT.CanCarry(td.id, Spring.GetUnitDefID(uid)) then
+            E.CB.GiveBack(T.CB, uid, "proxy")
+            Spring.Echo(string.format("[PROXY] %s the light transport cannot lift a %s: trying again", Clock(frame), (UnitDefs[Spring.GetUnitDefID(uid)] or {}).name or "?"))
+            uid = nil
+        end
+        if not uid then
+            if frame - (S.gconLogF or -1e9) >= 1800 then
+                S.gconLogF = frame
+                Spring.Echo(string.format("[PROXY] %s no ground con to borrow yet (%d of %d): trying again", Clock(frame), #S.gcons, K.GROUND_CONS or 1))
+            end
+            break
+        end
+        S.gcons[#S.gcons + 1] = uid
         local gc = Game and Game.CustomCommands and Game.CustomCommands.GameCMD
         Spring.GiveOrderToUnit(uid, (gc and gc.PRIORITY) or 34571, { 1 }, {})
-        Spring.Echo(string.format("[PROXY] %s ground con %d (%s) borrowed from the spine: it rides in with the convoy", Clock(frame), uid, (UnitDefs[Spring.GetUnitDefID(uid)] or {}).name or "?"))
-    elseif frame - (S.gconLogF or -1e9) >= 1800 then
-        S.gconLogF = frame
-        Spring.Echo(string.format("[PROXY] %s no ground con to borrow yet: trying again", Clock(frame)))
+        Spring.Echo(string.format("[PROXY] %s ground con %d (%s) borrowed from the spine: it rides in with the convoy (%d of %d)", Clock(frame), uid,
+            (UnitDefs[Spring.GetUnitDefID(uid)] or {}).name or "?", #S.gcons, K.GROUND_CONS or 1))
     end
 end
 
 local function Lost(frame, why)
     Spring.Echo(string.format("[PROXY] %s %s (try %d of %d)", Clock(frame), why, S.tries, K.TRIES))
-    if S.gcon and Alive(S.gcon) then GiveBackGround() end
+    GiveBackGround()
+    for _, u in ipairs(S.landed or {}) do                          -- (landed helpers that never joined the crew)
+        local T = E.trans and E.trans()
+        if Alive(u) and u ~= S.con and not S.labID and T and T.CB and E.CB then E.CB.Release(T.CB, u, false) end
+    end
     ReleaseCon()
     if CR then CR.Release() end
     S.on, S.x, S.state, S.labID, S.frameID, S.go, S.jamID = false, nil, nil, nil, nil, nil, nil
-    S.gcon, S.gconLanded = nil, nil
+    S.gcons, S.landed, S.gconLanded = {}, {}, nil
     S.badSince = nil
+    if E.WG and E.WG.LabOrders and E.WG.LabOrders.Drop then E.WG.LabOrders.Drop("proxy:cons") end
 end
 
 local function Start(frame, why)
@@ -329,7 +385,7 @@ local function Start(frame, why)
     S.ax, S.az = nil, nil
     Axis()
     S.state, S.go = K.BEACH and "beachhead" or "con", not K.BEACH
-    S.gcon, S.gconLanded, S.gconTryF = nil, nil, nil
+    S.gcons, S.landed, S.gconLanded, S.gconTryF = {}, {}, nil, nil
     S.labX, S.labZ, S.badLab = nil, nil, {}
     -- the STAGE (user 2026-11-08: "it sends out the group to clear the area at ~9 min but the trans don't arrive until 12 min.  The bot saw the units
     -- grouping up out side its base ... keep the ground units that are going to help the proxy further out ... synced up with when the trans come in"):
@@ -468,7 +524,8 @@ function M.Sites()
     local jamFrame = S.jamID and Alive(S.jamID) and Spring.GetUnitIsBeingBuilt(S.jamID) and S.jamID or nil
     return { { key = 1000 + S.tries, x = S.x, z = S.z, facing = S.facing, kind = "proxy", frameID = S.frameID or jamFrame, labID = S.labID, decoys = 0,
                lab = LabDef(), want = K.NANOS, convoy = K.CONVOY and { go = S.go == true } or nil,
-               carry = (S.gcon and not S.gconLanded and Alive(S.gcon)) and { S.gcon } or nil,
+               carry = (not S.gconLanded and S.gcons and #S.gcons > 0) and S.gcons or nil,
+               keepOut = CR and CR.KeepOut() or nil,                    -- (the labs blueprint's spots: no lifted nano there) carryWant = K.GROUND_CON and (K.GROUND_CONS or 1) or nil,
                avoid = (function() local mb = E.WG and E.WG.MetalBot; local bp = mb and mb.enemyBP; return bp and bp.x and { x = bp.x, z = bp.z } or nil end)() } }
 end
 
@@ -498,6 +555,7 @@ function M.OnFinished(uid, frame)
         if CR then
             CR.AddLab(uid, "t1")
             if S.con and Alive(S.con) then CR.AddCon(S.con, frame) end            -- the con that placed it: the crew's first builder
+            for _, u in ipairs(S.landed or {}) do if u ~= S.con and Alive(u) then CR.AddCon(u, frame) end end   -- (and the others that landed with it)
             if S.jamID and Alive(S.jamID) then CR.Adopt(S.jamID, "jammer_t1") end
         end
         Publish()
@@ -520,9 +578,9 @@ function M.OnFromFactory(uid, defID, factID, frame)
     end
 end
 
-function M.OnDestroyed(uid, frame)
+function M.OnDestroyed(uid, frame, attackerDefID)
     if uid == S.con then S.con = nil end
-    if CR then CR.OnDestroyed(uid, frame) end
+    if CR then CR.OnDestroyed(uid, frame, attackerDefID) end   -- (the killer's kind: the crew builds more AA while air kills its cons)
 end
 
 function M.State() return S end

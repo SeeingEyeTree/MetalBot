@@ -2123,6 +2123,12 @@ function widget:Initialize()
                         -- RAID_BOT: the idle wing waits at click_army's fighter post (behind the front, out of enemy AA)
                         station = CA and CA.FighterPost and function(f) return CA.FighterPost(f) end or nil,
                         convoy = function() return WG and WG.ProxyConvoy end,     -- the proxy base's convoy (macro side sink_lift): the wing escorts it
+                        proxy = function() return WG and WG.ProxyBase end,         -- ... and keeps a guard of fighters at the proxy once it is down
+                        request = function(key, spec)                                -- (its losses replaced through the lab-order API)
+                            local LO = WG and WG.LabOrders
+                            if not LO then return end
+                            if spec then LO.Request(key, spec) elseif LO.Drop then LO.Drop(key) end
+                        end,
                         cfg = K.AIR_WING, label = "unit_runtime" } end
     -- unit_runtime: bomb_run for stances whose plan has bomb_run (claims at RAID priority, above endgame's BOMBER_WAIT parking)
     BR = EI and Load("bomb_run")
@@ -2789,6 +2795,27 @@ function NET.UpdateJuggs(frame)
         end
     end
     if n > 0 and frame % 1800 == 0 then Spring.Echo(string.format("[JUGG] %d:%02d %d Behemoth(s) moving on %d,%d", math.floor(frame / 1800), math.floor(frame / 30) % 60, n, tx, tz)) end
+    -- the proxy T2 lab's flak trucks (macro side crew.lua: made while the proxy loses cons / buildings to air) hold a ring round the proxy
+    local fd = UnitDefNames[ROLES.Get("aa_flak_truck") or ""]
+    local PB = WG and WG.ProxyBase
+    if fd and PB and PB.x then
+        local i = 0
+        for uid in pairs(NET.proxyBorn) do
+            if Spring.GetUnitDefID(uid) == fd.id and not Spring.GetUnitIsBeingBuilt(uid) then
+                i = i + 1
+                local a = i * 2.4
+                local px, pz = PB.x + math.cos(a) * 350, PB.z + math.sin(a) * 350
+                for k = 1, 12 do                                     -- (off the labs blueprint's spots: WG.ProxyBase.keepOut)
+                    local inside = false
+                    for _, c in ipairs(PB.keepOut or {}) do if (c.x - px) ^ 2 + (c.z - pz) ^ 2 < c.r * c.r then inside = true; break end end
+                    if not inside then break end
+                    a = a + 0.52
+                    px, pz = PB.x + math.cos(a) * (350 + 30 * k), PB.z + math.sin(a) * (350 + 30 * k)
+                end
+                ARMY.Claim(ARMY.PRIO.RAID, uid, { role = "PROXY_AA", cmd = 10, x = px, z = pz }, frame)
+            end
+        end
+    end
 end
 
 -- CAP (user 2026-11-08: "Have it self d figs, wasps, t1 mexs, any t1 units and just be super aggressive with units that exist.  At unit cap it is just

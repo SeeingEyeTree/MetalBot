@@ -46,7 +46,7 @@ MACRO.Install(widget, WG, {
     -- user 2026-11-08 (second version): two raid groups take the spot first (unit side PROXY_ARMY), then 8 nanos come in one escorted wave (CONVOY), and the
     -- CREW (proxy/crew.lua: the air con + 4 T1 cons from the proxy lab) builds nanos, Twin Guards, Thistles and a T2 lab; the labs make Pounders / Tzars.
     -- (GROUND_CON: the lab's builder is a spine ground con flown in with the convoy, under its escort; the air con only if none can be lifted)
-    PROXY = { FORCE_FRAME = 8 * 60 * 30, NANOS = 8, CONVOY = true, BEACH = true, CREW = {}, GROUND_CON = true, SCOUTS = 0, BEACH_WAIT_S = 240 },   -- (SCOUTS 0: the Condor waves never showed in a real game; the proxy's air lab scouts instead)   -- (SCOUTS: Condors for the guns' targets, 2026-11-08)
+    PROXY = { FORCE_FRAME = 8 * 60 * 30, NANOS = 8, CONVOY = true, BEACH = true, CREW = {}, GROUND_CON = true, GROUND_CONS = 3, SCOUTS = 0, BEACH_WAIT_S = 240 },   -- (SCOUTS 0: the Condor waves never showed in a real game; the proxy's air lab scouts instead)   -- (SCOUTS: Condors for the guns' targets, 2026-11-08)
     -- CAP_MODE (user 2026-11-08, bar_framework/cap_mode.lua): at 90% of the cap T1 eco is reclaimed (self-destructed where no nano reaches) to keep 200
     -- slots free for Dragons and the proxy; the labs build only Dragons, air scouts, Demons, Behemoths and cons; the unit side culls fighters, Wasps,
     -- Shurikens and T1 army and sends everything else at the enemy.

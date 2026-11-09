@@ -16,6 +16,7 @@
 
 local M = {}
 local BC = VFS.Include("LuaUI/Widgets/bar_framework/bot_config.lua")   -- Apply(): merge overrides + one [CFG] log row
+local ROLES = VFS.Include("LuaUI/Widgets/bar_framework/roles.lua")
 
 local CFG = {
     START_FRAME   = 7 * 60 * 30,
@@ -44,6 +45,19 @@ local CFG = {
     NO_SWEEP      = false,
     HUNT_NEAR_R   = nil,
     ESCORT_LEAD   = 350,      -- ESCORT: the fighters fly this far ahead of the proxy convoy's transports, toward the site
+    -- PROXY GUARD (user 2026-11-09: "keep some figs closer to the proxy base. Have the figs with the convy stay around the base. You can just pull them from
+    -- the main base. It does not need to keep them all. Keep figs at the proxy to defend and send more as needed, the aa helps but it can't be there at the
+    -- start"): once the convoy is down and the proxy stands (WG.ProxyBase), PROXY_FIGHTERS wing fighters -- the nearest first, so the escort stays --
+    -- FIGHT round it; more while enemy armed air is seen near it (PROXY_AIR_MARGIN x its value) or the proxy's crew is losing to air (x 2), up to
+    -- PROXY_FIGHTERS_MAX.  The rest of the wing hunts / strikes / waits as before.
+    -- (user, same day: "You need way more than 6 fighters. All the ones that came with the escort should stay. You want to keep them around the ring not
+    -- circleling around": every escort fighter stays, at least PROXY_FIGHTERS, each on its own fixed post on a ring PROXY_ORBIT round the proxy)
+    PROXY_FIGHTERS     = 20,
+    PROXY_FIGHTERS_MAX = 60,
+    PROXY_AIR_R        = 2500,   -- enemy air this close to the proxy counts
+    PROXY_AIR_MARGIN   = 1.5,
+    PROXY_AIR_AGE      = 900,    -- ... seen this recently (frames)
+    PROXY_ORBIT        = 700,    -- the guard's posts: evenly round a ring this far from the proxy (each fighter FIGHTs its own post and stays there)
 }
 M.CFG = CFG
 
@@ -54,6 +68,8 @@ local combat, guards, bombersSet
 local wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
 local stationFn = nil      -- o.station(frame) -> x, z: where the idle wing waits (RAID_BOT: click_army.FighterPost)
 local convoyFn = nil       -- o.convoy() -> WG.ProxyConvoy (the proxy base's transports in flight) or nil
+local proxyFn = nil        -- o.proxy() -> WG.ProxyBase (the proxy base) or nil: the PROXY GUARD
+local requestFn = nil      -- o.request(key, spec) / o.request(key, nil) to drop: WG.LabOrders -- the guard's replacements
 local totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
                  killValue = 0 }
 local nextLog = 0
@@ -75,6 +91,8 @@ function M.Init(o)
     combat, guards, bombersSet = o.combat, o.guards, o.bombers
     stationFn = o.station
     convoyFn = o.convoy
+    proxyFn = o.proxy
+    requestFn = o.request
     BC.Apply("air_wing", CFG, o.cfg, o.label, M.NIL_OPTIONS)
     wing = { mode = "idle", t0 = 0, lastStrikeEnd = -1e9 }
     totals = { sorties = 0, strikes = 0, builderKills = 0, ecoKills = 0, airKills = 0, lostFighters = 0, lostBombers = 0,
@@ -241,9 +259,69 @@ function M.Update(frame)
         for _, u in ipairs(bombers) do Claim(frame, u.uid, CMD_MOVE, stx, stz) end
         return
     elseif wing.mode == "escort" then
-        Log(frame, "ESCORT ends after %ds (the convoy is down)", math.floor((frame - wing.t0) / 30))
+        Log(frame, "ESCORT ends after %ds (the convoy is down): its %d fighters stay at the proxy", math.floor((frame - wing.t0) / 30), #fighters)
+        wing.proxy = wing.proxy or {}
+        for _, u in ipairs(fighters) do wing.proxy[u.uid] = true end              -- (the escort is the proxy's guard)
+        wing.proxyBase = math.max(wing.proxyBase or 0, #fighters)                 -- (its strength: lost ones are replaced up to it)
         Release(fighters)
         wing.mode = "idle"
+    end
+
+    -- PROXY GUARD: some fighters stay at the proxy; they leave the wing's other jobs
+    local PB = proxyFn and proxyFn()
+    if PB and PB.x and PB.go and (PB.labID or PB.frameID or PB.state == "con") and #fighters > 0 then
+        local ev = 0
+        for _, rec in pairs(EI.Records()) do
+            local c = rec.c
+            if c.air and c.mobile and c.armed and not c.scout and frame - rec.frame <= CFG.PROXY_AIR_AGE and Dist(rec.x, rec.z, PB.x, PB.z) <= CFG.PROXY_AIR_R then
+                ev = ev + (c.value or 0)
+            end
+        end
+        local per = fv / #fighters
+        -- (game 20, 2026-11-09: DEFENCE_BOT's air wore the guard from 32 to 3 and none came back -- the labs replace the losses: the guard asks for
+        -- fighters up to its strength at landing, or what the enemy air there needs, whichever is more)
+        local need = math.max(CFG.PROXY_FIGHTERS, wing.proxyBase or 0)
+        if ev > 0 and per > 0 then need = math.max(need, math.ceil(CFG.PROXY_AIR_MARGIN * ev / per)) end
+        need = math.min(need, math.max(CFG.PROXY_FIGHTERS_MAX, wing.proxyBase or 0))
+        local old = wing.proxy or {}
+        local nOld = 0
+        for _, u in ipairs(fighters) do if old[u.uid] then nOld = nOld + 1 end end
+        local want = math.max(CFG.PROXY_FIGHTERS, nOld)                          -- (all the escort stays)
+        if ev > 0 and per > 0 then want = math.max(want, math.ceil(CFG.PROXY_AIR_MARGIN * ev / per)) end
+        if PB.airHot then want = math.max(want, nOld + CFG.PROXY_FIGHTERS) end
+        want = math.min(want, math.max(CFG.PROXY_FIGHTERS_MAX, nOld), #fighters)
+        local keep, rest = {}, {}
+        for _, u in ipairs(fighters) do if old[u.uid] then keep[#keep + 1] = u else rest[#rest + 1] = u end end
+        table.sort(rest, function(a, b) return Dist(a.x, a.z, PB.x, PB.z) < Dist(b.x, b.z, PB.x, PB.z) end)
+        while #keep < want and #rest > 0 do keep[#keep + 1] = table.remove(rest, 1) end
+        while #keep > want do table.insert(rest, 1, table.remove(keep)) end
+        wing.proxy = {}
+        table.sort(keep, function(a, b) return a.uid < b.uid end)                 -- (stable posts: a fighter keeps its place on the ring)
+        for i, u in ipairs(keep) do
+            wing.proxy[u.uid] = true
+            local a = (i - 1) * 2 * math.pi / #keep
+            Claim(frame, u.uid, CMD_FIGHT, PB.x + math.cos(a) * CFG.PROXY_ORBIT, PB.z + math.sin(a) * CFG.PROXY_ORBIT)
+        end
+        if #keep ~= (wing.proxyN or 0) or want ~= (wing.proxyWant or 0) then
+            Log(frame, "PROXY GUARD: %d fighters at the proxy %d,%d (want %d: enemy air there %d%s)", #keep, PB.x, PB.z, want, ev, PB.airHot and ", the crew losing to air" or "")
+            wing.proxyN, wing.proxyWant = #keep, want
+        end
+        if requestFn then
+            local short = need - #keep
+            if short > 0 then
+                requestFn("proxy:fighters", { picks = { ROLES.Get("fighter_t2"), ROLES.Get("fighter_t1") }, n = short, tier = "high", require = false })
+                if frame - (wing.reqLogF or -1e9) >= 1800 then
+                    wing.reqLogF = frame
+                    Log(frame, "PROXY GUARD short %d fighters (%d of %d): asked of the labs", short, #keep, need)
+                end
+            else requestFn("proxy:fighters", nil) end
+        end
+        fighters, fv = rest, SumV(rest)
+        fly = #fighters >= CFG.FIGHTER_MIN
+    elseif wing.proxy then
+        Log(frame, "PROXY GUARD ends (no proxy)")
+        wing.proxy, wing.proxyN, wing.proxyWant, wing.proxyBase = nil, nil, nil, nil
+        if requestFn then requestFn("proxy:fighters", nil) end
     end
 
     -- end of a sortie / run

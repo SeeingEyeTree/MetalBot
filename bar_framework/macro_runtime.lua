@@ -1006,7 +1006,7 @@ end
 function widget:UnitDestroyed(unitID, unitDefID, teamID, attackerID, attackerDefID)
     if teamID ~= myTeamID then return end
     if MS then MS.OnDestroyed(unitID, attackerID, attackerDefID, currentFrame) end
-    if TS.PX then TS.PX.OnDestroyed(unitID, currentFrame) end
+    if TS.PX then TS.PX.OnDestroyed(unitID, currentFrame, attackerDefID) end
     if distState then BP_PLACER.OnUnitDestroyed(distState, unitID) end
     if crew then LC.OnUnitDestroyed(crew, unitID) end
     if trans then LT.OnUnitDestroyed(trans, unitID, CFG.SINK and attackerID or nil) end   -- the killer reaches the spine only with the sink on (as DRAGON_ECO)
