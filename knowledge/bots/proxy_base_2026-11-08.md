@@ -320,3 +320,7 @@ User, after game 18: "keep some figs closer to the proxy base. Have the figs wit
 - Fixed after game 20:
   - **Guard replacements.** The guard asks the labs (lab_orders `proxy:fighters`, high tier, `fighter_t2` then `fighter_t1`) for its shortfall against its strength at landing, or what the enemy air there needs, whichever is more (`[AW] PROXY GUARD short` rows).
   - **The proxy groups' MOVE line** (click_army PROXY) is pushed out of `WG.ProxyBase.keepOut`. The line's Incisors stood on the blueprint's bot lab spot and walked back after every yard sweep. eco_sim: the bot lab went up on its spot at 12:50.
+
+## Later (user, 2026-11-09: fine as it is, notes for when it gets improved)
+- **The static can be built better.** The slot grid works, but the mix and placement are still rough.
+- **The LRPCs are sometimes built out of range of anything useful.** The Basilisk and Calamity spots come from the T3 / Calamity block layout, not from what they could hit. A gun spot could be checked against the enemy's known buildings (range 4950 / 6100) before it is used.
