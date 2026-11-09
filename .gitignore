@@ -29,3 +29,6 @@ threat_map_viz.html
 scratch/
 runs_*/
 runs_*.log
+
+# old game logs from the 2026-10-28 akumar review (65 MB)
+knowledge/sessions/akumar_fmp_2026-10-28/
